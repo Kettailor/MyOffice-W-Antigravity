@@ -95,6 +95,28 @@ function findHostCli() {
 
 const streams = new Map(); // taskId -> res
 
+// Send periodic NDJSON heartbeats so Node undici fetch inside Docker never times out during long Antigravity turns
+setInterval(() => {
+  for (const [id, res] of streams.entries()) {
+    if (!res || res.writableEnded || res.destroyed) {
+      streams.delete(id);
+      continue;
+    }
+    try {
+      res.write(JSON.stringify({ event: 'ping', t: Date.now() }) + '\n');
+    } catch {
+      streams.delete(id);
+    }
+  }
+}, 10_000).unref();
+
+process.on('uncaughtException', (err) => {
+  console.error('[host-bridge] uncaughtException:', err?.message || err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[host-bridge] unhandledRejection:', err?.message || err);
+});
+
 const hostTasks = createTasks({
   dataDir: DATA_DIR,
   claude: findHostCli,
@@ -128,8 +150,9 @@ function isAllowedBridgeClient(req) {
   return (
     ip === '127.0.0.1' ||
     ip === '::1' ||
+    /^10\./.test(ip) ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
-    /^192\.168\.65\./.test(ip)
+    /^192\.168\./.test(ip)
   );
 }
 

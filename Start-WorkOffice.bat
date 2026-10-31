@@ -13,7 +13,9 @@ set "ANTIGRAVITY_CSRF_TOKEN="
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$bridgeUp = $false; try { $rb = Invoke-WebRequest -Uri 'http://127.0.0.1:4311/health' -TimeoutSec 1 -UseBasicParsing; $bridgeUp = ($rb.StatusCode -eq 200) } catch {}; " ^
   "if (-not $bridgeUp) { " ^
-  "  Start-Process node.exe -ArgumentList 'server/host-bridge.mjs' -WorkingDirectory 'E:\WorkOffice' -WindowStyle Hidden " ^
+  "  $vbs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\My Office.vbs'; " ^
+  "  if (Test-Path $vbs) { Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ('wscript.exe \"' + $vbs + '\"'); CurrentDirectory = 'E:\WorkOffice' } | Out-Null } " ^
+  "  else { Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'node.exe E:\WorkOffice\server\host-bridge.mjs'; CurrentDirectory = 'E:\WorkOffice' } | Out-Null } " ^
   "}; " ^
   "$up = $false; try { $r = Invoke-WebRequest -Uri 'http://127.0.0.1:4310/health' -TimeoutSec 2 -UseBasicParsing; $up = ($r.StatusCode -eq 200) } catch {}; " ^
   "if (-not $up) { " ^

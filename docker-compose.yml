@@ -19,5 +19,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
+      - ./server:/app/server
       - C:/Users/lekie/.gemini:/root/.gemini
       - E:/:/mnt/e

@@ -195,21 +195,38 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
     const chosenModel = model ? String(model).trim() : null;
 
     if (bin.kind === 'docker-bridge') {
-      const bridgeUrl = String(bin.url || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311').replace(/\/+$/, '');
+      const primaryUrl = String(bin.url || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311').replace(/\/+$/, '');
+      const candidateUrls = [...new Set([primaryUrl, 'http://host.docker.internal:4311', 'http://192.168.65.254:4311'])];
       const ac = new AbortController();
-      const t = { id, pid: 0, proc: { kill: () => ac.abort() }, bridgeId: null, bridgeUrl, dir, text, at: now, from, by, model: chosenModel, account, sid: from?.sid || null, result: '', error: '', buf: '', isAgyCli: true };
+      const t = { id, pid: 0, proc: { kill: () => ac.abort() }, bridgeId: null, bridgeUrl: primaryUrl, dir, text, at: now, from, by, model: chosenModel, account, sid: from?.sid || null, result: '', error: '', buf: '', isAgyCli: true };
       running.set(id, t); recent.push(now);
       (async () => {
         try {
-          const res = await fetch(`${bridgeUrl}/task/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ dir, text, images: images.slice(0, MAX_IMAGES), from, by, model: chosenModel, account }),
-            signal: ac.signal,
-          });
-          if (!res.ok || !res.body) {
-            t.error = `Host bridge HTTP ${res.status}`;
-            return;
+          let res = null;
+          let lastErr = null;
+          for (let attempt = 0; attempt < 3 && !res; attempt++) {
+            if (attempt > 0) await new Promise((r) => setTimeout(r, 1200));
+            for (const baseUrl of candidateUrls) {
+              try {
+                const candidateRes = await fetch(`${baseUrl}/task/start`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ dir, text, images: images.slice(0, MAX_IMAGES), from, by, model: chosenModel, account }),
+                  signal: ac.signal,
+                });
+                if (candidateRes.ok && candidateRes.body) {
+                  res = candidateRes;
+                  t.bridgeUrl = baseUrl;
+                  break;
+                }
+                lastErr = new Error(`Host bridge HTTP ${candidateRes.status}`);
+              } catch (e) {
+                lastErr = e;
+              }
+            }
+          }
+          if (!res || !res.body) {
+            throw lastErr || new Error('Không kết nối được Host Bridge (cổng 4311)');
           }
           const dec = new TextDecoder();
           for await (const chunk of res.body) {
