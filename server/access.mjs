@@ -19,7 +19,7 @@ export const ROLE_PRESETS = [
 function normWinPath(p = '') {
   const s = String(p || '').trim().replace(/[\\/]+$/, '');
   if (!s) return '';
-  return process.platform === 'win32' ? s.replace(/\//g, '\\').toLowerCase() : s;
+  return (process.platform === 'win32' || /^[A-Za-z]:[\\/]/.test(s)) ? s.replace(/\//g, '\\').toLowerCase() : s;
 }
 
 export function isPathAllowed(targetDir = '', allowedWorkspaces = []) {
@@ -27,7 +27,7 @@ export function isPathAllowed(targetDir = '', allowedWorkspaces = []) {
   if (allowedWorkspaces.includes('*')) return true;
   const t = normWinPath(targetDir);
   if (!t) return false;
-  const sep = process.platform === 'win32' ? '\\' : '/';
+  const sep = (process.platform === 'win32' || /^[A-Za-z]:\\/.test(t)) ? '\\' : '/';
   for (const w of allowedWorkspaces) {
     const nw = normWinPath(w);
     if (!nw) continue;
@@ -307,6 +307,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       ip: member?.ip || '',
       dir: String(payload.dir || ''),
       sid: String(payload.sid || ''),
+      model: String(payload.model || '').trim(),
       targetName: String(payload.targetName || path.basename(String(payload.dir || '')) || 'Dự án'),
       chat: Boolean(payload.chat),
       text: String(payload.text || '').trim().slice(0, 4000),

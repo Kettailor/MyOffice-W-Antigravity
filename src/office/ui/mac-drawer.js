@@ -74,7 +74,7 @@ function renderOthers(rows) {
     // Anthropic not answering for now (it limits how often it's asked): the last reading stays, with when it was read
     if (o.note) block.append(el('small', 'plan-other-note', o.at ? tr('mac.plan.readAt', { time: hhmm(o.at), note: o.note }) : o.note));
   }
-  if (state.limits?.others?.length) rows.append(autoRow());
+  if (state.limits?.others?.length || state.limits?.source === 'agy') rows.append(autoRow());
   // in the order the user dragged them into (the server's: switching goes down it), the switch after them
   const order = state.limits?.auto?.order;
   if (order) for (const b of blocksOf(rows).sort((x, y) => order.indexOf(x.dataset.slug) - order.indexOf(y.dataset.slug))) rows.insertBefore(b, rows.querySelector(':scope > .acct-auto'));
@@ -84,7 +84,7 @@ function renderOthers(rows) {
    The top one is the one new sessions start on; with switching on, they move down the list when one runs out. The block
    moves in the list while it is dragged, so the drop is where it is seen. */
 let dragging = false;
-const blocksOf = (rows) => [...rows.querySelectorAll(':scope > .acct-block')];
+const blocksOf = (rows) => [...rows.querySelectorAll(':scope > .acct-block[data-slug]')];
 function gripFor(slug, label) {
   const g = el('button', 'acct-grip'); g.type = 'button'; g.title = tr('mac.plan.drag'); g.setAttribute('aria-label', `${tr('mac.plan.drag')}: ${acctName(slug, label)}`);
   g.addEventListener('pointerdown', (e) => startDrag(e, g));
@@ -152,6 +152,44 @@ function acctHead(slug, label, info, until) {
   }
   if (until > Date.now()) end.append(el('em', 'acct-badge acct-badge--out', tr('mac.plan.out', { when: new Date(until).toDateString() === new Date().toDateString() ? hhmm(until) : resetText(until) })));
   else if (inUse) end.append(el('em', 'acct-badge acct-badge--on', tr('mac.plan.inUse')));
+  if (slug) {
+    const del = el('button', 'acct-del', '×');
+    del.type = 'button';
+    del.title = tr('mac.plan.removeAccount');
+    del.setAttribute('aria-label', tr('mac.plan.removeAccount'));
+    let delTimer = 0;
+    del.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      if (!del.classList.contains('is-confirm')) {
+        del.classList.add('is-confirm');
+        del.textContent = tr('mac.plan.removeConfirm');
+        clearTimeout(delTimer);
+        delTimer = setTimeout(() => {
+          del.classList.remove('is-confirm');
+          del.textContent = '×';
+        }, 4000);
+        return;
+      }
+      clearTimeout(delTimer);
+      del.disabled = true;
+      const r = await post('/api/accounts/remove', { name: slug });
+      if (!r.ok) {
+        del.disabled = false;
+        del.classList.remove('is-confirm');
+        del.textContent = '×';
+        toast(r.message || tr('mac.plan.useFailed'));
+        return;
+      }
+      if (r.limits) state.limits = r.limits;
+      else if (state.limits) {
+        state.limits.others = (state.limits.others || []).filter((o) => o.name !== slug);
+        if (r.auto) state.limits.auto = r.auto;
+      }
+      renderLimits();
+      toast(tr('mac.plan.removedAccount', { name: acctName(slug, label) }), 5000);
+    });
+    end.append(del);
+  }
   const meta = el('span', 'acct-meta', info); if (!slug) meta.title = tr('mac.plan.account');
   if (order.length > 1) head.append(gripFor(slug, label));
   if (a.on && order.length > 1) { const n = el('span', 'acct-num', String(order.indexOf(slug) + 1)); n.title = tr('mac.plan.numTitle'); head.append(n); }
@@ -198,8 +236,8 @@ async function useAccount(slug, label, btn) {
 }
 // switching by itself when an account runs out
 function autoRow() {
-  const a = state.limits?.auto || {}, box = el('div', 'acct-auto');
-  const sw = el('button', 'acct-switch'); sw.type = 'button'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-checked', String(!!a.on)); sw.disabled = !!a.win;
+  const a = state.limits?.auto || {}, isAgy = state.limits?.source === 'agy', box = el('div', 'acct-auto');
+  const sw = el('button', 'acct-switch'); sw.type = 'button'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-checked', String(!!a.on)); sw.disabled = Boolean(a.win && !isAgy);
   sw.append(el('span', 'acct-knob'), el('span', 'acct-switch-t', tr('mac.plan.autoTitle')));
   sw.addEventListener('click', async () => {
     sw.disabled = true;
@@ -209,9 +247,12 @@ function autoRow() {
     renderLimits();
     toast(tr(r.on ? 'mac.plan.autoNowOn' : 'mac.plan.autoNowOff'), 6000);
   });
-  box.append(sw, el('small', 'acct-auto-sub', tr(a.win ? 'mac.plan.autoWin' : a.on ? 'mac.plan.autoOn' : 'mac.plan.autoOff')));
+  box.append(sw, el('small', 'acct-auto-sub', tr(a.win && !isAgy ? 'mac.plan.autoWin' : a.on ? 'mac.plan.autoOn' : 'mac.plan.autoOff')));
+  if (isAgy && !(state.limits?.others || []).length) {
+    box.append(el('small', 'acct-auto-sub acct-auto-hint', tr('mac.plan.autoAgyHint')));
+  }
   // and the conversations open on the account that ran out: they go over too (on unless turned off)
-  if (a.on && !a.win) {
+  if (a.on && (!a.win || isAgy)) {
     const mv = el('label', 'acct-move'), cb = el('input'); cb.type = 'checkbox'; cb.checked = a.move !== false;
     cb.addEventListener('change', async () => {
       cb.disabled = true;
@@ -225,9 +266,11 @@ function autoRow() {
   }
   if (!switchOn()) return box;
   box.append(el('small', 'acct-auto-sub', tr('mac.plan.running')));
-  editorNotes(box, a);
-  if (!a.win && !(a.editors || []).length) box.append(el('small', 'acct-warn', tr('mac.plan.noEditor')));
-  if (a.alias) { const more = el('details', 'pa-more'); more.append(el('summary', null, tr('mac.plan.terminal')), el('small', null, tr('mac.plan.terminalTip')), codeBox(a.alias)); box.append(more); }
+  if (!isAgy) {
+    editorNotes(box, a);
+    if (!a.win && !(a.editors || []).length) box.append(el('small', 'acct-warn', tr('mac.plan.noEditor')));
+    if (a.alias) { const more = el('details', 'pa-more'); more.append(el('summary', null, tr('mac.plan.terminal')), el('small', null, tr('mac.plan.terminalTip')), codeBox(a.alias)); box.append(more); }
+  }
   return box;
 }
 // the server moved the conversations open on an account that ran out
@@ -266,11 +309,13 @@ export function acctLogin(d) {
 }
 function renderAdd() {
   const box = $('plan-add'); if (!box) return;
-  box.hidden = DEMO || !state.isLocal || state.limits?.source === 'agy'; if (box.hidden) return;
+  box.hidden = DEMO || !state.isLocal; if (box.hidden) return;
+  const isAgy = state.limits?.source === 'agy';
+  const btnText = tr(isAgy ? 'mac.add.buttonAgy' : 'mac.add.button');
   const go = (step) => { adding.step = step; renderAdd(); };
   const quit = () => { if (adding.step === 'login' && adding.data) post('/api/accounts/cancel', { name: adding.data.name }); adding.name = ''; adding.login = null; go('idle'); };
   if (adding.step === 'idle') {
-    const b = el('button', 'plan-add-btn'); b.type = 'button'; b.append(icon('plus'), el('span', null, tr('mac.add.button')));
+    const b = el('button', 'plan-add-btn'); b.type = 'button'; b.append(icon('plus'), el('span', null, btnText));
     b.addEventListener('click', () => { adding.note = ''; go('name'); setTimeout(() => box.querySelector('input')?.focus(), 0); });
     box.replaceChildren(b); return;
   }
@@ -279,7 +324,7 @@ function renderAdd() {
     const f = el('form', 'pa-form'), lab = el('label', null), inp = el('input'); inp.maxLength = 24; inp.placeholder = tr('mac.add.namePh'); inp.value = adding.name; inp.autocomplete = 'off';
     lab.append(el('span', null, tr('mac.add.nameLabel')), inp);
     const chips = el('div', 'pa-chips');   // (a name in one click)
-    for (const n of tr('mac.add.suggest', null, 'list')) { const c = el('button', 'pa-chip', n); c.type = 'button'; c.addEventListener('click', () => { inp.value = n; inp.focus(); }); chips.append(c); }
+    for (const n of tr(isAgy ? 'mac.add.suggestAgy' : 'mac.add.suggest', null, 'list')) { const c = el('button', 'pa-chip', n); c.type = 'button'; c.addEventListener('click', () => { inp.value = n; inp.focus(); }); chips.append(c); }
     const acts = el('div', 'pa-acts'); acts.append(addButton(tr('mac.add.cancel'), '', quit), addButton(tr('mac.add.next'), 'btn--confirm', null, 'submit'));
     f.append(lab, chips, acts);
     f.addEventListener('submit', async (e) => {
@@ -287,11 +332,18 @@ function renderAdd() {
       f.querySelector('[type=submit]').disabled = true;
       const r = await post('/api/accounts', { name: adding.name });
       if (!r.ok) { adding.note = tr('mac.add.failed', { msg: r.message || '' }); renderAdd(); return; }
+      if (r.isAgy || isAgy) {
+        if (r.limits) state.limits = r.limits;
+        adding.step = 'idle'; adding.name = ''; adding.login = null; adding.data = null; adding.note = '';
+        renderAdd(); renderLimits();
+        toast(tr('mac.add.doneTitle', { name: r.label || r.name }), 5000);
+        return;
+      }
       const seen = lastLogin.get(r.name);
       adding.data = r; adding.login = seen && (seen.url || seen.state !== 'waiting') ? seen : r.login; adding.note = '';
       go(r.loggedIn || adding.login?.state === 'done' ? 'done' : 'login');
     });
-    card.append(el('b', null, tr('mac.add.button')), el('p', null, tr('mac.add.intro')), f);
+    card.append(el('b', null, btnText), el('p', null, tr(isAgy ? 'mac.add.introAgy' : 'mac.add.intro')), f);
   } else if (adding.step === 'login') {
     const d = adding.data, L = adding.login || { state: 'waiting' };
     card.append(el('b', null, tr('mac.add.loginTitle', { name: d.name })));

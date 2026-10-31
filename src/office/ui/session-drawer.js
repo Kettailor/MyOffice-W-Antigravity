@@ -8,7 +8,7 @@ import { colorOf, dn, sessions, workers } from '../people/workers.js';
 import { cap, feedRow, fmtTok, fmtUsd, openFromRow, queueUi, toast } from './activity.js';
 import { goView, setView } from './camera-bar.js';
 import { closeMac, doAction, loadMac, macSnap } from './mac-drawer.js';
-import { TOKEN } from '../net/live.js';
+import { TOKEN, removeSession } from '../net/live.js';
 import { unseenDone } from '../life/your-turn.js';
 import { DEMO, demoLog } from '../demo/demo.js';
 import { acctActions } from './session-account.js';
@@ -100,6 +100,7 @@ function renderActions() {
     b.title = tr('drawer.openWindowTitle'); b.addEventListener('click', () => openWindowOf(s)); box.append(b);
   }
   if (state.isLocal && s.pid && s.status === 'rest') box.append(closeSessionButton(s));
+  box.append(deleteSessionButton(s));
   box.append(...acctActions(s, renderActions));
   if (s.link) {
     const a = el('a', 'btn btn--primary btn--sm', tr('drawer.openOnClaude')); a.href = s.link; a.target = '_blank'; a.rel = 'noopener';
@@ -137,6 +138,64 @@ function closeSessionButton(s) {
     if (!proc) toast(tr('drawer.close.gone'));
     else await doAction(`kill:${s.pid}`, { action: 'kill', target: s.pid, start: proc.start });
     closing.delete(key); loadMac(); if (state.selectedId === s.id) renderActions();
+  });
+  return b;
+}
+let deleteArm = null, deleteArmTimer = 0;
+const deleting = new Set();
+export async function deleteSession(s) {
+  if (!s) return false;
+  const live = s.id ? sessions.get(s.id) : null;
+  const label = (live ? dn(live) : null) || s.title || s.name || s.id || s.sid;
+  if (!DEMO) {
+    try {
+      const r = await (await fetch(`/api/session/delete${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: s.id, sid: s.sid }),
+      })).json();
+      if (!r.ok) {
+        toast(r.message || tr('drawer.unreachable'));
+        return false;
+      }
+    } catch {
+      toast(tr('drawer.unreachable'));
+      return false;
+    }
+  }
+  if (s.id) {
+    if (state.selectedId === s.id) closeSession();
+    removeSession(s.id);
+  }
+  toast(tr('drawer.delete.done', { name: label }));
+  return true;
+}
+function deleteSessionButton(s) {
+  const key = `del:${s.id || s.sid}`, armed = deleteArm === key;
+  const b = el('button', 'btn btn--sm act-del-sess' + (armed ? ' btn--danger' : ''));
+  b.type = 'button';
+  b.textContent = deleting.has(key)
+    ? `🗑️ ${tr('drawer.delete.deleting')}`
+    : armed
+      ? `🗑️ ${tr('drawer.delete.confirm')}`
+      : `🗑️ ${tr('drawer.delete.label')}`;
+  b.title = tr('drawer.delete.title');
+  b.disabled = deleting.has(key);
+  b.addEventListener('click', async () => {
+    if (!armed) {
+      deleteArm = key;
+      clearTimeout(deleteArmTimer);
+      deleteArmTimer = setTimeout(() => { deleteArm = null; renderActions(); }, 4500);
+      renderActions();
+      return;
+    }
+    deleteArm = null;
+    clearTimeout(deleteArmTimer);
+    deleting.add(key);
+    renderActions();
+    await deleteSession(s);
+    deleting.delete(key);
+    if (state.selectedId === s.id) renderActions();
   });
   return b;
 }

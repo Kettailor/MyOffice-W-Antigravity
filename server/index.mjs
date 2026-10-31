@@ -20,7 +20,7 @@ import next from 'next';
 import { buildTimeline } from '../src/shared/timeline.js';
 import { dangerKey } from '../src/shared/danger.js';
 import { createChatEngine, REACTIONS } from '../src/shared/chat-engine.js';
-import { createTasks } from './tasks.mjs';
+import { createTasks, resolveContainerDir } from './tasks.mjs';
 import { createTrophies } from './trophies.mjs';
 import { createGit } from './git.mjs';
 import { weekSummary } from './wrapped.mjs';
@@ -122,7 +122,7 @@ const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 // Text pasted into a prompt arrives wrapped in <pasted_content id="…"> tags (the closing one may be cut off): keep the
 // text, drop the tags, so a task reads "Failed to run…" rather than "<pasted_content id="afc8"> Failed…".
 const unwrapPaste = (s) => String(s ?? '').replace(/<\/?pasted_content\b[^>]*>/g, ' ');
-const base = (p) => (p ? path.basename(String(p)) : '');
+const base = (p) => (p ? String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '' : '');
 const tilde = (p) => (p && p.startsWith(HOME) ? '~' + p.slice(HOME.length) : p || '');
 
 const host = (u) => { try { return new URL(u).hostname; } catch { return 'web'; } };
@@ -218,7 +218,8 @@ const images = (() => { try { return new Map(Object.entries(JSON.parse(fs.readFi
 let imgSave = null;
 function imageId(file) {
   if (!file || typeof file !== 'string' || !IMG_EXT[path.extname(file).slice(1).toLowerCase()]) return null;
-  const abs = path.resolve(file), id = crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16);
+  const resolved = resolveContainerDir(file);
+  const abs = path.resolve(resolved), id = crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16);
   if (images.get(id) === abs) return id;
   images.set(id, abs);
   while (images.size > 400) images.delete(images.keys().next().value);
@@ -1000,6 +1001,23 @@ const tasks = createTasks({
 });
 /* Writing to a conversation from the chat ("Gửi tới"): the first message branches it (its whole context, the one open in
    your editor left as it is); what you write next carries on that branch, so it remembers what you said (for 6 hours). */
+const AGY_MODELS = [
+  { id: '', label: 'Tự động (Mặc định phiên)', desc: 'Giữ nguyên model hiện tại của phiên' },
+  { id: 'gemini-4-argon-high', label: '✨ Gemini 3.1 Pro (High)', desc: 'Suy luận chuyên sâu cho kiến trúc phức tạp' },
+  { id: 'gemini-4-argon-medium', label: '✨ Gemini 3.1 Pro (Medium)', desc: 'Cân bằng tốc độ và độ sâu suy luận (Mặc định)' },
+  { id: 'gemini-4-argon-low', label: '✨ Gemini 3.1 Pro (Low)', desc: 'Phản hồi nhanh, tiết kiệm token' },
+  { id: 'gemini-3.8-flash-high', label: '⚡ Gemini 3 Flash (High)', desc: 'Flash tốc độ cao kèm suy luận sâu' },
+  { id: 'gemini-3.8-flash-medium', label: '⚡ Gemini 3 Flash (Medium)', desc: 'Flash cân bằng tốc độ & chất lượng' },
+  { id: 'gemini-3.8-flash-low', label: '⚡ Gemini 3 Flash (Low)', desc: 'Flash phản hồi tức thì' },
+  { id: 'claude-opus-5-5-high', label: '🧠 Claude Opus 4.6 (High)', desc: 'Claude Opus suy luận tối đa' },
+  { id: 'claude-opus-5-5-medium', label: '🧠 Claude Opus 4.6 (Medium)', desc: 'Claude Opus cân bằng' },
+  { id: 'claude-opus-5-5-low', label: '🧠 Claude Opus 4.6 (Low)', desc: 'Claude Opus phản hồi nhanh' },
+  { id: 'claude-sonnet-5-5-high', label: '🎯 Claude Sonnet 4.6 (High)', desc: 'Claude Sonnet suy luận cao' },
+  { id: 'claude-sonnet-5-5-medium', label: '🎯 Claude Sonnet 4.6 (Medium)', desc: 'Claude Sonnet tốc độ & độ chính xác cao' },
+  { id: 'claude-sonnet-5-5-low', label: '🎯 Claude Sonnet 4.6 (Low)', desc: 'Claude Sonnet gọn nhẹ' },
+  { id: 'gpt-oss-120b-medium', label: '🤖 GPT-OSS 120B (Medium)', desc: 'Mô hình mã nguồn mở 120B' },
+];
+const baseNameWinOrPosix = (p = '') => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
 const threads = new Map();   // the conversation's own id -> { sid: the branch, at, running }
 const tasksOut = (local, viewer = null) => {
   const isFullDirector = local || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
@@ -1017,9 +1035,10 @@ const tasksOut = (local, viewer = null) => {
     viewer: viewer ? access.pubMember(viewer) : null,
     scopedByMember: !isFullDirector && dirs.length < allWs.length,
     totalWorkspaces: allWs.length,
+    models: AGY_MODELS,
     running: tasks.list().filter((t) => canSee(t.dir)),
-    projects: dirs.map((d) => ({ dir: tilde(d), rawDir: d, name: path.basename(d) })),
-    sessions: sessList.map((s) => ({ id: s.id, sid: s.sid, name: s.title || s.name, dir: tilde(s.cwd), rawDir: s.cwd, status: s.status })),
+    projects: dirs.map((d) => ({ dir: tilde(d), rawDir: d, name: baseNameWinOrPosix(d) })),
+    sessions: sessList.map((s) => ({ id: s.id, sid: s.sid, name: s.title || s.name, dir: tilde(s.cwd), rawDir: s.cwd, status: s.status, model: s.usage?.model || '' })),
   };
 };
 
@@ -1028,9 +1047,11 @@ const tasksOut = (local, viewer = null) => {
 const DIRS_FILE = path.join(DATA_DIR, 'projects.json');
 const isValidProjectDir = (d) => {
   if (typeof d !== 'string' || !d.trim()) return false;
+  if (/^agy-[0-9a-f]{4}$/i.test(baseNameWinOrPosix(d))) return false;
   if (process.platform === 'win32' && !/^[A-Za-z]:[\\/]/.test(d)) return false;
-  if (!path.isAbsolute(d)) return false;
-  try { return fs.statSync(d).isDirectory(); } catch { return false; }
+  const localDir = resolveContainerDir(d);
+  if (!path.isAbsolute(localDir) && !/^[A-Za-z]:[\\/]/.test(d)) return false;
+  try { return fs.statSync(localDir).isDirectory(); } catch { return false; }
 };
 let knownDirs = [];
 try {
@@ -1044,23 +1065,24 @@ function noteDir(dir) {
 
 /* ---------- Remote Tailscale / LAN Access Control & Pre-Execution Task Approval ---------- */
 const allKnownWorkspaces = () => {
-  const activeRoots = [...new Set([...sessions.values()].map((s) => s.cwd).filter((d) => d && fs.existsSync(d)))];
+  const activeRoots = [...new Set([...sessions.values()].map((s) => s.cwd).filter((d) => d && fs.existsSync(resolveContainerDir(d))))];
   const byKey = new Map();
   const addDir = (raw) => {
-    if (!raw || !fs.existsSync(raw)) return;
-    let d = path.resolve(raw);
+    const localRaw = resolveContainerDir(raw);
+    if (!raw || !fs.existsSync(localRaw)) return;
+    let d = /^[A-Za-z]:[\\/]/.test(raw) ? raw.replace(/\//g, '\\').replace(/\\+$/, '') : path.resolve(raw);
     for (const r of activeRoots) {
-      const rl = r.toLowerCase(), dl = d.toLowerCase();
-      if (dl !== rl && dl.startsWith(rl + path.sep)) { d = r; break; }
+      const rl = r.replace(/\//g, '\\').toLowerCase(), dl = d.replace(/\//g, '\\').toLowerCase();
+      if (dl !== rl && dl.startsWith(rl + '\\')) { d = r; break; }
     }
-    const k = process.platform === 'win32' ? d.toLowerCase() : d;
-    if (!byKey.has(k)) byKey.set(k, { dir: d, name: path.basename(d) || d });
+    const k = d.replace(/\//g, '\\').toLowerCase();
+    if (!byKey.has(k)) byKey.set(k, { dir: d, name: baseNameWinOrPosix(d) || d });
   };
   for (const r of activeRoots) addDir(r);
   for (const d of knownDirs) addDir(d);
   // Keep only top-level roots if one entry is inside another
   const list = [...byKey.values()];
-  return list.filter((item) => !list.some((other) => other.dir !== item.dir && item.dir.toLowerCase().startsWith(other.dir.toLowerCase() + path.sep)));
+  return list.filter((item) => !list.some((other) => other.dir !== item.dir && item.dir.replace(/\//g, '\\').toLowerCase().startsWith(other.dir.replace(/\//g, '\\').toLowerCase() + '\\')));
 };
 const access = createAccessManager({
   dataDir: DATA_DIR,
@@ -1145,6 +1167,7 @@ const agyWatcher = createAntigravityWatcher({
   nextSeq: () => ++seq,
   onUsageChange: () => { fetchPlanUsage(true); },
   onGitCmd: () => { setTimeout(pollGit, 400); setTimeout(pollGit, 1800); },
+  getActiveAccount: () => nowSlug(),
   maxDesks: DESKS,
 });
 const agWatcher = agyWatcher;
@@ -1472,7 +1495,18 @@ async function readLog(s, n = 120, agentId = null) {
 
 /* ---------- HTTP ---------- */
 // (a request through the Cloudflare tunnel comes from cloudflared on 127.0.0.1 but is from the internet: never this Mac)
-const isLoopback = (req) => !req.viaTunnel && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+function isLoopback(req) {
+  if (req.viaTunnel) return false;
+  const addr = String(req.socket?.remoteAddress || '');
+  if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(addr)) return true;
+  if (process.env.OFFICE_DOCKER === '1') {
+    const cleanIp = addr.replace(/^::ffff:/, '');
+    const h = String(req.headers?.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+    const isDockerGateway = /^172\.(1[6-9]|2\d|3[01])\./.test(cleanIp) || /^192\.168\.65\./.test(cleanIp);
+    if (isDockerGateway && ['localhost', '127.0.0.1', '::1'].includes(h)) return true;
+  }
+  return false;
+}
 // who is asking, for the PIN's lockouts and the action log: through the tunnel, the address Cloudflare saw
 const clientIp = (req) => (req.viaTunnel ? String(req.headers['cf-connecting-ip'] || 'tunnel').slice(0, 64) : req.socket.remoteAddress);
 // a POST from this office's own page (not another site's): http on this computer and the LAN, https through the tunnel
@@ -1520,7 +1554,19 @@ function isTailscaleIp(addr = '') {
   const m = /^100\.(\d+)\./.exec(String(addr || ''));
   return !!(m && +m[1] >= 64 && +m[1] <= 127);
 }
+function readDockerHostNet() {
+  try {
+    const f = path.join(DATA_DIR, 'host-net.json');
+    if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8'));
+  } catch { /* ignore */ }
+  return null;
+}
 function ketWifiAddr(forceSync = false) {
+  if (process.env.OFFICE_WIFI_IP) return process.env.OFFICE_WIFI_IP;
+  if (process.env.OFFICE_DOCKER === '1') {
+    const hn = readDockerHostNet();
+    if (hn?.wifiIp) return hn.wifiIp;
+  }
   refreshWifiCache(forceSync || wifiCache.at === 0 || !wifiCache.onKet);
   const nets = os.networkInterfaces();
   for (const [ifName, list] of Object.entries(nets)) {
@@ -1542,6 +1588,11 @@ function ketWifiAddr(forceSync = false) {
   return null;
 }
 function tsAddr() {
+  if (process.env.OFFICE_TS_IP) return process.env.OFFICE_TS_IP;
+  if (process.env.OFFICE_DOCKER === '1') {
+    const hn = readDockerHostNet();
+    if (hn?.tsIp) return hn.tsIp;
+  }
   for (const n of Object.values(os.networkInterfaces()).flat()) {
     if (n && n.family === 'IPv4' && isTailscaleIp(n.address)) return n.address;
   }
@@ -2032,7 +2083,8 @@ function fetchPlanUsage(force = false) {
     const login = await keychainLogin();
     if (!login?.accessToken) {
       if (fs.existsSync(agyBrainDir())) {
-        const q = computeAgyQuota(sessions);
+        const qAll = computeAgyQuota(sessions);
+        const q = agyAccounts.length > 0 ? computeAgyQuota(sessions, null, '') : qAll;
         usageNote = null;
         setLimits(
           [
@@ -2042,20 +2094,21 @@ function fetchPlanUsage(force = false) {
           'agy',
           { id: 'antigravity:local', plan: 'Antigravity', org: `Gemini Models · ${q.billingCycle}` },
           {
-            projects: q.projects,
+            projects: qAll.projects,
             stats: {
               left5hPct: q.left5hPct,
               leftWeekPct: q.leftWeekPct,
-              prompts5h: q.prompts5h,
-              steps5h: q.steps5h,
-              tokens5h: q.tokens5h,
-              prompts7d: q.prompts7d,
-              steps7d: q.steps7d,
-              tokens7d: q.tokens7d,
-              cost7d: q.cost7d,
+              prompts5h: qAll.prompts5h,
+              steps5h: qAll.steps5h,
+              tokens5h: qAll.tokens5h,
+              prompts7d: qAll.prompts7d,
+              steps7d: qAll.steps7d,
+              tokens7d: qAll.tokens7d,
+              cost7d: qAll.cost7d,
             },
           },
         );
+        if (prefs.get('autoSwitch')) repick('auto');
         return;
       }
       usageNote = ['server.usage.keychain'];
@@ -2108,9 +2161,48 @@ function scanAccounts() {
     repick();
   }
 }
+const AGY_ACCOUNTS_FILE = path.join(DATA_DIR, 'agy-accounts.json');
+let agyAccounts = []; // [{ slug, name, dir, addedAt }]
+try {
+  const savedAgy = JSON.parse(fs.readFileSync(AGY_ACCOUNTS_FILE, 'utf8'));
+  if (Array.isArray(savedAgy)) agyAccounts = savedAgy.filter((a) => a && a.slug);
+} catch { /* none yet */ }
+function saveAgyAccounts() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fsp.writeFile(AGY_ACCOUNTS_FILE, JSON.stringify(agyAccounts, null, 2)).catch(() => {});
+  } catch { /* ignore */ }
+}
+function agyWindowsForSlug(slug) {
+  const q = computeAgyQuota(sessions, null, slug);
+  return {
+    q,
+    windows: [
+      { key: 'session', label: tr('server.limits.fiveHour'), pct: q.pct, resetsAt: q.resetsAt ? Date.parse(q.resetsAt) : null },
+      { key: 'weekly', label: tr('server.limits.week'), pct: q.weekPct, resetsAt: q.weekResetsAt ? Date.parse(q.weekResetsAt) : null },
+    ],
+  };
+}
 function othersOut() {
-  return otherDirs.map((d) => { const o = others.get(d) || {}, slug = accName(d);
+  const claudeOthers = otherDirs.map((d) => { const o = others.get(d) || {}, slug = accName(d);
     return { name: slug, label: acctLabel(slug), until: blockedUntil(o.windows, hits.get(slug)), at: o.at || 0, account: o.account || null, windows: (o.windows || []).map((w) => ({ ...w, label: winLabel(w) })), note: o.note ? tr(...o.note) : '' }; });
+  const claudeSlugs = new Set(claudeOthers.map((x) => x.name));
+  const agyOthers = agyAccounts
+    .filter((a) => a.slug && !claudeSlugs.has(a.slug))
+    .map((a) => {
+      const { q, windows } = agyWindowsForSlug(a.slug);
+      return {
+        name: a.slug,
+        label: acctLabel(a.slug) || a.name || a.slug,
+        until: blockedUntil(windows, hits.get(a.slug)),
+        at: Date.now(),
+        isAgy: true,
+        account: { id: `antigravity:${a.slug}`, plan: 'Antigravity', org: `Gemini Models · ${q.billingCycle}` },
+        windows: windows.map((w) => ({ ...w, label: winLabel(w) })),
+        note: '',
+      };
+    });
+  return [...claudeOthers, ...agyOthers];
 }
 const otherBusy = new Map();
 const OTHERS_FILE = path.join(DATA_DIR, 'others-usage.json');
@@ -2141,7 +2233,13 @@ function fetchOtherUsage(dir, force = false) {
 }
 // the account a session belongs to, by its transcript's folder ('' for the main one); one moved to another account and
 // not started again yet: that one
-const acctOf = (s) => { if (s.parked) return s.parked.to; const t = s.transcript || ''; const d = otherDirs.find((x) => t.startsWith(x + path.sep)); return d ? accName(d) : ''; };
+const acctOf = (s) => {
+  if (s.parked) return s.parked.to;
+  if (s.isAgy && s.agyAccount) return s.agyAccount;
+  const t = s.transcript || '';
+  const d = otherDirs.find((x) => t.startsWith(x + path.sep));
+  return d ? accName(d) : '';
+};
 scanAccounts();
 setInterval(scanAccounts, 60_000).unref();   // (a login made in a terminal shows up without a restart)
 
@@ -2165,15 +2263,32 @@ function findClaude() {
   }
   const best = found.filter(isFile).sort((a, b) => ver(b) - ver(a))[0];
   if (best) return (claudeBin = { file: best, onPath: false });
-  // Fallback to Antigravity's native language_server.exe (agentapi CLI)
+  // Fallback to Antigravity standalone CLI (`agy` / `agy.exe`) or native `language_server` (`agentapi`)
   const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-  const agyCandidates = [
-    path.join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', process.platform === 'win32' ? 'language_server.exe' : 'language_server'),
+  const agyExe = process.platform === 'win32' ? 'agy.exe' : 'agy';
+  const lsExe = process.platform === 'win32' ? 'language_server.exe' : 'language_server';
+  const lsCandidates = [
+    path.join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', lsExe),
     '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
     '/usr/local/bin/language_server',
   ];
-  for (const f of agyCandidates) {
-    if (isFile(f)) return (claudeBin = { file: f, onPath: false, kind: 'agy' });
+  const lsFile = lsCandidates.find(isFile) || null;
+  for (const d of String(process.env.PATH || '').split(path.delimiter)) {
+    if (d && isFile(path.join(d, agyExe))) return (claudeBin = { file: path.join(d, agyExe), onPath: true, kind: 'agy-cli', lsFile });
+  }
+  const agyCliCandidates = [
+    path.join(localAppData, 'agy', 'bin', agyExe),
+    path.join(home, '.gemini', 'bin', agyExe),
+    path.join(home, '.local', 'bin', agyExe),
+    '/opt/homebrew/bin/agy',
+    '/usr/local/bin/agy',
+  ];
+  for (const f of agyCliCandidates) {
+    if (isFile(f)) return (claudeBin = { file: f, onPath: false, kind: 'agy-cli', lsFile });
+  }
+  if (lsFile) return (claudeBin = { file: lsFile, onPath: false, kind: 'agy' });
+  if (process.env.OFFICE_DOCKER === '1') {
+    return (claudeBin = { file: 'host-bridge', onPath: true, kind: 'docker-bridge', url: process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311' });
   }
   return null;
 }
@@ -2231,6 +2346,37 @@ function watchLogins() {   // every 4 s for 15 minutes: the new account appears 
 async function prepareAccount(name) {
   const slug = slugOf(name);
   if (!slug) return { ok: false, message: tr('server.account.badName') };
+  const isAgyMode = planLimits?.source === 'agy' || (fs.existsSync(agyBrainDir()) && !(await keychainLogin().catch(() => null))?.accessToken);
+  if (isAgyMode) {
+    const agyDir = path.join(os.homedir(), '.gemini', 'accounts', slug);
+    await fsp.mkdir(agyDir, { recursive: true }).catch(() => {});
+    const label = clip(oneLine(name), 24) || slug;
+    const existing = agyAccounts.find((a) => a.slug === slug);
+    if (existing) {
+      existing.name = label;
+      existing.dir = agyDir;
+    } else {
+      agyAccounts.push({ slug, name: label, dir: agyDir, addedAt: Date.now() });
+    }
+    saveAgyAccounts();
+    const names = { ...(prefs.get('accountNames') || {}) };
+    if (label && label !== slug) names[slug] = label;
+    prefs.set('accountNames', Object.keys(names).length ? names : undefined);
+    repick();
+    broadcast({ k: 'limits', limits: limitsOut(), note: noteText() });
+    return {
+      ok: true,
+      name: slug,
+      label: acctLabel(slug) || label,
+      dir: `~/.gemini/accounts/${slug}`,
+      isAgy: true,
+      loggedIn: true,
+      login: { state: 'done', url: '', note: '' },
+      win: false,
+      run: `agy --account ${slug}`,
+      alias: `agy-${slug}`,
+    };
+  }
   const dir = path.join(os.homedir(), `.claude-${slug}`), settings = path.join(dir, 'settings.json');
   if (path.resolve(dir) === path.resolve(CLAUDE_DIR)) return { ok: false, message: tr('server.account.isMain') };
   await fsp.mkdir(dir, { recursive: true });
@@ -2287,12 +2433,24 @@ function blockedUntil(windows, hit = 0) {
   }
   return until;
 }
-function dirOfSlug(slug) { return otherDirs.find((d) => accName(d) === slug) || ''; }
-function nowSlug() { const d = nowDir && otherDirs.find((x) => path.resolve(x) === path.resolve(nowDir)); return d ? accName(d) : ''; }
+function dirOfSlug(slug) {
+  const claudeDir = otherDirs.find((d) => accName(d) === slug);
+  if (claudeDir) return claudeDir;
+  const agy = agyAccounts.find((a) => a.slug === slug);
+  if (agy) return agy.dir || path.join(os.homedir(), '.gemini', 'accounts', slug);
+  return '';
+}
+function nowSlug() {
+  const d = nowDir && otherDirs.find((x) => path.resolve(x) === path.resolve(nowDir));
+  if (d) return accName(d);
+  const agy = nowDir && agyAccounts.find((a) => path.resolve(a.dir || path.join(os.homedir(), '.gemini', 'accounts', a.slug)) === path.resolve(nowDir));
+  return agy ? agy.slug : '';
+}
 // the accounts top to bottom as the user ordered them in the card (prefs accountOrder; a new one goes last, the main one
 // first by default): new sessions start on the first, and with switching on move down the list when one runs out
 function orderOf() {
-  const all = ['', ...otherDirs.map(accName)], pick = prefs.get('accountPick');   // (accountPick: the one "Use" picked before there was an order)
+  const agySlugs = agyAccounts.map((a) => a.slug).filter(Boolean);
+  const all = [...new Set(['', ...otherDirs.map(accName), ...agySlugs])], pick = prefs.get('accountPick');   // (accountPick: the one "Use" picked before there was an order)
   const saved = (prefs.get('accountOrder') || (pick ? [pick] : [])).filter((s) => all.includes(s));
   return [...new Set([...saved, ...all])];
 }
@@ -2305,12 +2463,23 @@ function writeNow(dir) {
 // the first account in the user's order; with switching on, the first of them with room (none: stay)
 function repick(why = 'auto') {
   if (!switching()) { if (nowDir) writeNow(''); return; }
-  const all = [{ slug: '', dir: '', until: blockedUntil(planLimits?.windows, hits.get('')) },
-    ...otherDirs.map((d) => ({ slug: accName(d), dir: d, until: blockedUntil(others.get(d)?.windows, hits.get(accName(d))) }))];
+  const claudeSlugs = new Set(otherDirs.map(accName));
+  const all = [
+    { slug: '', dir: '', until: blockedUntil(planLimits?.windows, hits.get('')) },
+    ...otherDirs.map((d) => ({ slug: accName(d), dir: d, until: blockedUntil(others.get(d)?.windows, hits.get(accName(d))) })),
+    ...agyAccounts.filter((a) => a.slug && !claudeSlugs.has(a.slug)).map((a) => {
+      const { windows } = agyWindowsForSlug(a.slug);
+      return {
+        slug: a.slug,
+        dir: a.dir || path.join(os.homedir(), '.gemini', 'accounts', a.slug),
+        until: blockedUntil(windows, hits.get(a.slug)),
+      };
+    }),
+  ];
   const order = orderOf(), list = [...all].sort((a, b) => order.indexOf(a.slug) - order.indexOf(b.slug));
   const cur = all.find((a) => a.dir === nowDir), next = !prefs.get('autoSwitch') ? list[0] : list.find((a) => !a.until) || cur || list[0];
   if (next.dir === nowDir && fs.existsSync(NOW_FILE)) return;
-  if (next.dir) shareWithMain(next.dir);
+  if (next.dir && otherDirs.includes(next.dir)) shareWithMain(next.dir);
   writeNow(next.dir);
   if (cur !== next) broadcast({ k: 'acctswitch', why, from: cur ? acctShown(cur.slug) : '', to: acctShown(next.slug), until: cur?.until || 0 });
   if (cur && cur !== next && cur.until) autoMoveSoon(cur.slug);
@@ -2319,10 +2488,17 @@ function repick(why = 'auto') {
 setInterval(repick, 60_000).unref();   // (a reset time passing frees an account without a new reading)
 // a session was told "out of usage": its account waits for the latest reset among its limits that are nearly used up
 // (a few minutes when none is: a short rate limit), and is read again at once
+function windowsOfSlug(slug) {
+  if (!slug) return planLimits?.windows;
+  const d = otherDirs.find((x) => accName(x) === slug);
+  if (d) return others.get(d)?.windows;
+  if (agyAccounts.some((a) => a.slug === slug)) return agyWindowsForSlug(slug).windows;
+  return null;
+}
 function limitHit(slug) {
-  const dir = dirOfSlug(slug), ws = slug ? others.get(dir)?.windows : planLimits?.windows, now = Date.now();
+  const dir = dirOfSlug(slug), ws = windowsOfSlug(slug), now = Date.now();
   hits.set(slug, Math.max(0, ...(ws || []).filter((w) => w.pct >= 90 && w.resetsAt > now).map((w) => w.resetsAt)) || now + 5 * 60e3);
-  if (slug && dir) fetchOtherUsage(dir, true); else if (!slug) fetchPlanUsage(true);
+  if (slug && dir && otherDirs.includes(dir)) fetchOtherUsage(dir, true); else if (!slug) fetchPlanUsage(true);
   repick();
   const to = nowSlug();
   return { to: prefs.get('autoSwitch') && to !== slug ? acctShown(to) : '' };
@@ -2409,7 +2585,8 @@ function setEditorWrapper(on) {
   });
 }
 function autoOut() {
-  return { on: !!prefs.get('autoSwitch'), move: prefs.get('autoMove') !== false, pick: pickSlug(), order: orderOf(), now: nowSlug(), editors: editorsNow, script: SWITCH_FILE, alias: switchAlias, win: process.platform === 'win32' };
+  const isAgyMode = planLimits?.source === 'agy' || fs.existsSync(agyBrainDir());
+  return { on: !!prefs.get('autoSwitch'), move: prefs.get('autoMove') !== false, pick: pickSlug(), order: orderOf(), now: nowSlug(), editors: editorsNow, script: SWITCH_FILE, alias: switchAlias, win: process.platform === 'win32' && !isAgyMode };
 }
 // the card's switch, "use this one" (it goes to the top) and the order dragged into place: the editors' script goes in
 // while switching is on, the top account isn't the main one or a moved conversation is still to start again, and out
@@ -2444,7 +2621,7 @@ const SID_RE = /^[0-9a-f-]{36}$/i;
 function pinned() { try { return fs.readdirSync(PIN_DIR).filter((f) => SID_RE.test(f)); } catch { return []; } }
 const homeOf = (slug) => (slug ? dirOfSlug(slug) : CLAUDE_DIR);
 function sharesHistory(slug) { try { return fs.realpathSync(path.join(homeOf(slug), 'projects')) === fs.realpathSync(path.join(CLAUDE_DIR, 'projects')); } catch { return false; } }
-const untilOf = (slug) => blockedUntil(slug ? others.get(dirOfSlug(slug))?.windows : planLimits?.windows, hits.get(slug));
+const untilOf = (slug) => blockedUntil(windowsOfSlug(slug), hits.get(slug));
 async function moveSession(s, to, why = 'you') {
   if (s.moving) return { ok: false, message: tr('server.move.busy') };
   s.moving = true;
@@ -2452,6 +2629,16 @@ async function moveSession(s, to, why = 'you') {
 }
 async function moveNow(s, to, why) {
   const from = acctOf(s), name = s.title || s.name;
+  if (s.isAgy) {
+    if (to && !dirOfSlug(to)) return { ok: false, message: tr('server.move.noAccount') };
+    if (to === from) return { ok: false, message: tr('server.move.same', { to: acctShown(to) }) };
+    s.agyAccount = to || '';
+    chat.onMoved(s.id, acctShown(to));
+    fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} move ${name} ${from || 'main'} -> ${to || 'main'} (${why})\n`).catch(() => {});
+    broadcast({ k: 'sess', s: pub(s) });
+    fetchPlanUsage(true);
+    return { ok: true, name, to: acctShown(to), message: tr('server.move.done', { name, to: acctShown(to) }) };
+  }
   if (!s.pid || !s.sid || !SID_RE.test(s.sid) || s.parked) return { ok: false, message: tr('server.move.notOpen') };
   if (to && !dirOfSlug(to)) return { ok: false, message: tr('server.move.noAccount') };
   if (to === from) return { ok: false, message: tr('server.move.same', { to: acctShown(to) }) };
@@ -2536,13 +2723,17 @@ async function openWindow(s) {
   return new Promise((resolve) => execFile('open', args, { timeout: 8000 }, (err) => resolve(err ? { ok: false, message: tr('server.open.failed') } : { ok: true, app: path.basename(app, '.app') })));
 }
 
-function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], senderTag = '', byMember = null }) {
+function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model = '', senderTag = '', byMember = null }) {
   const s = sid && [...sessions.values()].find((x) => x.sid === String(sid) && x.cwd);
   const targetDir = s ? s.cwd : dir;
-  if (!targetDir || !fs.existsSync(targetDir)) return { ok: false, code: 'noDir' };
+  if (!targetDir || !fs.existsSync(resolveContainerDir(targetDir))) return { ok: false, code: 'noDir' };
   const cleanText = String(text || '').trim().slice(0, 4000);
   if (!cleanText) return { ok: false, code: 'empty' };
   const validImages = (Array.isArray(images) ? images : []).slice(0, 5);
+  const cleanModel = String(model || '').trim();
+  const modelMeta = cleanModel ? AGY_MODELS.find((m) => m.id === cleanModel) : null;
+  const modelLabel = modelMeta && modelMeta.id ? modelMeta.label : cleanModel;
+  const activeAcct = nowSlug() || '';
   const actor = byMember || { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true };
   recordTaskOwner(s?.id, targetDir, actor);
   if (isChat && s) {
@@ -2555,7 +2746,7 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], senderT
         chat.photo(savedUrl, { whoName: actor.name || 'Giám đốc', whoRole: actor.role || 'Giám đốc', whoId: actor.id || 'director', ownerId: actor.id || 'director' });
       }
     }
-    chat.say('me', `${senderTag ? `👔 [${senderTag}] ` : ''}@${name} ${cleanText}`, {
+    chat.say('me', `${senderTag ? `👔 [${senderTag}] ` : ''}${modelLabel ? `[${modelLabel}] ` : ''}@${name} ${cleanText}`, {
       now: true,
       whoId: actor.id || 'director',
       whoName: actor.name || 'Giám đốc',
@@ -2563,12 +2754,24 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], senderT
       ownerId: actor.id || 'director',
     });
     const mine = chat.state.msgs.at(-1);
-    const r = tasks.start({ dir: s.cwd, text: cleanText, images: validImages, from: { sid: on || s.sid, fork: !on, name, id: s.id, orig: s.sid, chat: true }, by: actor });
+    const r = tasks.start({ dir: s.cwd, text: cleanText, images: validImages, from: { sid: on || s.sid, fork: !on, name, id: s.id, orig: s.sid, chat: true }, by: actor, model: cleanModel || null, account: activeAcct || null });
     if (r.ok) {
       threads.set(s.sid, { sid: on || s.sid, at: Date.now(), running: true });
       chat.working(s.id, true);
+      s.status = 'work';
+      s.busy = true;
+      s.taskStart = Date.now();
+      s.lastEventAt = Date.now();
+      s.lastPrompt = clip(cleanText, 90);
+      s.act = 'Đang thực hiện công việc được giao...';
+      s.agyAccount = activeAcct;
+      if (modelLabel) {
+        s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: modelLabel };
+        s.usage.model = modelLabel;
+      }
+      broadcast({ k: 'sess', s: pub(s) });
       taskQuote.set(r.task.id, mine ? { id: mine.id, name: senderTag || tr('chat.boss'), text: clip(cleanText, 90) } : null);
-      broadcast({ k: 'taskDeliver', by: actor, sess: s.id, dir: s.cwd, text: clip(cleanText, 80) });
+      broadcast({ k: 'taskDeliver', by: actor, sess: s.id, dir: s.cwd, text: clip(cleanText, 80), model: modelLabel || null });
       fetchPlanUsage(true);
     } else {
       chat.system(tr('chat.task.notStarted', { why: tr(`chat.task.why.${r.code}`) }));
@@ -2583,7 +2786,7 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], senderT
       chat.photo(savedUrl, { whoName: actor.name || 'Giám đốc', whoRole: actor.role || 'Giám đốc', whoId: actor.id || 'director', ownerId: actor.id || 'director' });
     }
   }
-  chat.say('me', `📋 ${senderTag ? `[${senderTag}] ` : ''}${cleanText}`, {
+  chat.say('me', `📋 ${senderTag ? `[${senderTag}] ` : ''}${modelLabel ? `[${modelLabel}] ` : ''}${cleanText}`, {
     now: true,
     whoId: actor.id || 'director',
     whoName: actor.name || 'Giám đốc',
@@ -2591,12 +2794,26 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], senderT
     ownerId: actor.id || 'director',
   });
   const mine = chat.state.msgs.at(-1);
-  const r = tasks.start({ dir: targetDir, text: cleanText, images: validImages, from: s ? { sid: s.sid, name, id: s.id } : null, by: actor });
+  const r = tasks.start({ dir: targetDir, text: cleanText, images: validImages, from: s ? { sid: s.sid, name, id: s.id } : null, by: actor, model: cleanModel || null, account: activeAcct || null });
   if (r.ok) {
     taskQuote.set(r.task.id, mine ? { id: mine.id, name: senderTag || tr('chat.boss'), text: clip(cleanText, 90) } : null);
     const targetSess = s || [...sessions.values()].find((x) => x.cwd && (process.platform === 'win32' ? x.cwd.toLowerCase() === targetDir.toLowerCase() : x.cwd === targetDir));
-    if (targetSess?.id) recordTaskOwner(targetSess.id, targetDir, actor);
-    broadcast({ k: 'taskDeliver', by: actor, sess: targetSess?.id || null, dir: targetDir, text: clip(cleanText, 80) });
+    if (targetSess) {
+      recordTaskOwner(targetSess.id, targetDir, actor);
+      targetSess.status = 'work';
+      targetSess.busy = true;
+      targetSess.taskStart = Date.now();
+      targetSess.lastEventAt = Date.now();
+      targetSess.lastPrompt = clip(cleanText, 90);
+      targetSess.act = 'Đang thực hiện công việc được giao...';
+      targetSess.agyAccount = activeAcct;
+      if (modelLabel) {
+        targetSess.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: modelLabel };
+        targetSess.usage.model = modelLabel;
+      }
+      broadcast({ k: 'sess', s: pub(targetSess) });
+    }
+    broadcast({ k: 'taskDeliver', by: actor, sess: targetSess?.id || null, dir: targetDir, text: clip(cleanText, 80), model: modelLabel || null });
     fetchPlanUsage(true);
   } else {
     chat.system(tr('chat.task.notStarted', { why: tr(`chat.task.why.${r.code}`) }));
@@ -2662,7 +2879,11 @@ function resyncMemberClients(memberId) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
+  req.on('error', () => {});
+  res.on('error', () => {});
+  req.socket?.on('error', () => {});
+  let url;
+  try { url = new URL(req.url || '/', 'http://x'); } catch { res.writeHead(400).end(); return; }
   if (req.method === 'POST' && url.pathname === '/event') {
     if (!isLoopback(req)) { res.writeHead(403).end(); return; }
     const chunks = []; let size = 0;
@@ -2833,6 +3054,7 @@ const server = http.createServer((req, res) => {
             chat: item.chat,
             text: item.text,
             images: item.images,
+            model: item.model || '',
             senderTag: `${item.memberRole} · ${item.memberName}`,
             byMember: { id: item.memberId, name: item.memberName, role: item.memberRole },
           });
@@ -2914,6 +3136,7 @@ const server = http.createServer((req, res) => {
               chat: item.chat,
               text: item.text,
               images: item.images,
+              model: item.model || '',
               senderTag: `${item.memberRole} · ${item.memberName}`,
               byMember: { id: item.memberId, name: item.memberName, role: item.memberRole },
             });
@@ -3138,7 +3361,7 @@ const server = http.createServer((req, res) => {
         || (b?.id && sessions.get(String(b.id)));
       const want = String(b?.dir || '').replace(/^~(?=$|[\\/])/, os.homedir());
       const candidateDirs = [...new Set([...knownDirs, ...allKnownWorkspaces().map((w) => w.dir)])];
-      const sameDir = (a, c) => (process.platform === 'win32' ? String(a).toLowerCase() === String(c).toLowerCase() : a === c);
+      const sameDir = (a, c) => String(a).replace(/\//g, '\\').toLowerCase() === String(c).replace(/\//g, '\\').toLowerCase();
       const dir = s ? s.cwd : candidateDirs.find((d) => sameDir(d, want) || sameDir(tilde(d), String(b?.dir || '')));
       if (!dir) { json(res, 400, { ok: false, code: 'noDir', message: tr('chat.task.noDir') }); return; }
 
@@ -3150,6 +3373,7 @@ const server = http.createServer((req, res) => {
 
       const text = String(b?.text || '').trim().slice(0, 4000);
       const images = (Array.isArray(b?.images) ? b.images : []).slice(0, 5).map(String);
+      const model = String(b?.model || '').trim();
       if (!text) { json(res, 400, { ok: false, code: 'empty' }); return; }
 
       const viewerId = mac ? 'director' : (viewer?.id || 'remote');
@@ -3167,6 +3391,7 @@ const server = http.createServer((req, res) => {
         const queued = access.queueTask(viewer, {
           dir,
           sid: s ? s.sid : '',
+          model,
           targetName,
           chat: Boolean(b?.chat),
           text,
@@ -3189,6 +3414,7 @@ const server = http.createServer((req, res) => {
         chat: Boolean(b?.chat),
         text,
         images,
+        model,
         senderTag,
         byMember,
       });
@@ -3337,11 +3563,60 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.method === 'POST' && /^\/api\/accounts(\/(code|cancel|login|rename|use|auto|order|move))?$/.test(url.pathname)) {   // (this computer only, from this page)
+  if (req.method === 'POST' && url.pathname === '/api/session/delete') {
     const sameOrigin = sameOriginOf(req);
-    if (!isLoopback(req) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false, message: tr('server.account.onMac') }); return; }
+    const viewer = viewerOf(req);
+    if (!authorized(req, url) || (!isLoopback(req) && !viewer?.isDirectorDevice) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    readJson(req).then((b) => {
+      const s = (b?.id && byId(String(b.id))) || (b?.sid && byId(String(b.sid))) || null;
+      const targetSid = s?.sid || (b?.sid ? String(b.sid) : '');
+      if (!s && !targetSid) {
+        json(res, 404, { ok: false, message: 'Không tìm thấy phiên làm việc.' });
+        return;
+      }
+      if (targetSid && agyWatcher?.deleteSession) {
+        agyWatcher.deleteSession(targetSid);
+      }
+      if (s) {
+        for (const [pid, p] of pending) {
+          if (p.sess === s.id || (s.sid && p.sid === s.sid)) {
+            pending.delete(pid);
+            clearTimeout(p.timer);
+            broadcast({ k: 'permDone', type: 'perm_rm', id: pid });
+          }
+        }
+        dropSession(s.key, s);
+      }
+      fetchPlanUsage(true);
+      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} session-delete ${s?.name || targetSid}\n`).catch(() => {});
+      json(res, 200, { ok: true, id: s?.id || null, sid: targetSid || null });
+    });
+    return;
+  }
+  if (req.method === 'POST' && /^\/api\/accounts(\/(code|cancel|login|rename|use|auto|order|move|remove))?$/.test(url.pathname)) {   // (this computer or Director Device)
+    const sameOrigin = sameOriginOf(req);
+    const viewer = viewerOf(req);
+    if ((!isLoopback(req) && !viewer?.isDirectorDevice) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false, message: tr('server.account.onMac') }); return; }
     readJson(req).then(async (b) => {
       if (url.pathname === '/api/accounts') { json(res, 200, await prepareAccount(b?.name)); return; }
+      if (url.pathname === '/api/accounts/remove') {
+        const which = b?.name ? slugOf(b.name) : '';
+        if (!which) { json(res, 400, { ok: false }); return; }
+        agyAccounts = agyAccounts.filter((a) => a.slug !== which);
+        saveAgyAccounts();
+        const names = { ...(prefs.get('accountNames') || {}) };
+        delete names[which];
+        prefs.set('accountNames', Object.keys(names).length ? names : undefined);
+        const curOrder = prefs.get('accountOrder');
+        if (Array.isArray(curOrder)) prefs.set('accountOrder', curOrder.filter((s) => s !== which));
+        repick();
+        broadcast({ k: 'limits', limits: limitsOut(), note: noteText() });
+        json(res, 200, { ok: true, ...autoOut() });
+        return;
+      }
       if (url.pathname === '/api/accounts/auto') { json(res, 200, setSwitch({ ...(b?.on !== undefined && { auto: !!b.on }), ...(b?.move !== undefined && { move: !!b.move }) })); return; }
       if (url.pathname === '/api/accounts/move') {   // { id: the session, to: the account ('' = the main one) }
         const s = [...sessions.values()].find((x) => x.id === String(b?.id || '')), to = b?.to ? slugOf(b.to) : '';
@@ -3395,7 +3670,7 @@ const server = http.createServer((req, res) => {
   }
   // The page's own files (bundles, fonts, the QR library, the icons and share card in app/): public, no token needed.
   // In development also Next's overlay.
-  if (url.pathname.startsWith('/_next/') || url.pathname.startsWith('/assets/') || PAGE_FILES.has(url.pathname) || (DEV && url.pathname.startsWith('/__nextjs'))) { nextHandle(req, res); return; }
+  if (url.pathname.startsWith('/_next/') || url.pathname.startsWith('/assets/') || PAGE_FILES.has(url.pathname) || (DEV && url.pathname.startsWith('/__nextjs'))) { Promise.resolve(nextHandle(req, res)).catch(() => {}); return; }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return; }
   if (url.pathname === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok'); return; }
   if (url.pathname === '/api/weather' && req.method === 'GET') {
@@ -3538,11 +3813,13 @@ const server = http.createServer((req, res) => {
     }
     if (url.pathname === '/index.html') req.url = '/' + url.search;
     req.headers['x-office-lang'] = pickLang(url.searchParams.get('lang') || prefs.lang());   // ?lang=vi: one visit in another language
-    nextHandle(req, res);
+    Promise.resolve(nextHandle(req, res)).catch(() => {});
     return;
   }
   res.writeHead(404).end();
 });
+server.on('clientError', (err, socket) => { try { socket.destroy(); } catch { /* ignore */ } });
+server.on('error', (err) => { console.error('[work-office] server error:', err?.message || err); });
 
 // Next.js renders the page and bundles the office's code: `--dev` runs it with Turbopack and hot reload, otherwise it
 // serves the production build made by `npm run build`.
@@ -3556,6 +3833,8 @@ catch (err) {
   console.error(DEV ? err : `${tr('server.console.noBuild')}\n${err.message || err}`);
   process.exit(1);
 }
+process.removeAllListeners('uncaughtException');
+process.removeAllListeners('unhandledRejection');
 
 /* ---------- phones on the home network, switched on in the office (the phone window) ----------
    Besides 127.0.0.1 the office then listens on each of the Mac's own network addresses (Wi-Fi, Ethernet, a Tailscale
@@ -3573,6 +3852,7 @@ function syncLan(forceSync = false) {
   for (const addr of want) {
     if (lanServers.has(addr)) continue;
     const srv = http.createServer(server.listeners('request')[0]);
+    srv.on('clientError', (err, socket) => { try { socket.destroy(); } catch { /* ignore */ } });
     srv.on('error', () => { if (lanServers.get(addr) === srv) lanServers.delete(addr); });   // (the address went away, or the port is taken on it)
     srv.listen(PORT, addr); lanServers.set(addr, srv);
   }

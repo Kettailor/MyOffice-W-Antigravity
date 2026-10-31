@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveContainerDir } from './tasks.mjs';
 
 const run = (cmd, args, cwd, timeout = 5000) => new Promise((res) => {
   execFile(cmd, args, { cwd, timeout, maxBuffer: 4 << 20, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }, (err, out) => res(err ? null : String(out)));
@@ -39,8 +40,10 @@ export function createGit({ onRepo, onCommit, onPush, onPull, onInitRepo, onCi }
 
   async function rootOf(rawCwd) {
     if (!rawCwd) return '';
-    const cwd = path.resolve(String(rawCwd));
+    const localCwd = resolveContainerDir(String(rawCwd));
+    const cwd = path.resolve(localCwd || String(rawCwd));
     if (roots.has(cwd)) return roots.get(cwd);
+    if (roots.has(String(rawCwd))) return roots.get(String(rawCwd));
     const out = await run('git', ['rev-parse', '--show-toplevel'], cwd);
     if (out && out.trim()) {
       const normRoot = path.resolve(out.trim());
@@ -53,7 +56,8 @@ export function createGit({ onRepo, onCommit, onPush, onPull, onInitRepo, onCi }
 
   function repoOf(rawCwd) {
     if (!rawCwd) return null;
-    const norm = path.resolve(String(rawCwd));
+    const localCwd = resolveContainerDir(String(rawCwd));
+    const norm = path.resolve(localCwd || String(rawCwd));
     const mapped = roots.get(norm) || roots.get(String(rawCwd));
     if (mapped && repos.has(mapped)) return repos.get(mapped);
     const normLow = norm.toLowerCase();

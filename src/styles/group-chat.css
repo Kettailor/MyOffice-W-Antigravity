@@ -307,15 +307,22 @@
 .zc-role-badge { font-style: normal; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #DBEAFE; color: #1D4ED8; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
 .zc-bub.is-mention-me { border: 2px solid #F59E0B; background: linear-gradient(180deg, #FFFBEB 0%, #FFFFFF 100%); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2), 0 4px 12px rgba(0, 104, 255, 0.14); }
 .zc-at.is-me { padding: 1px 5px; border-radius: 6px; background: #FEF3C7; color: #B45309; font-weight: 700; }
-/* Pin buttons in task-sheet and message hover tools */
+/* Pin & Delete buttons in task-sheet and message hover tools, plus AI Model Selector */
+.zc-task-model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: 10px; background: #F0F6FF; border: 1px solid #BFDBFE; }
+.zc-task-model-label { font-size: 13px; font-weight: 600; color: #1E3A8A; white-space: nowrap; }
+.zc-task-model-select { flex: 1; min-width: 0; max-width: 68%; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid #93C5FD; background: #FFFFFF; color: #0F172A; font: 600 13px/1.2 inherit; cursor: pointer; outline: none; transition: border-color .15s, box-shadow .15s; }
+.zc-task-model-select:focus { border-color: var(--zc-blue); box-shadow: 0 0 0 2px rgba(0, 104, 255, .18); }
 .zc-task-row { display: flex; align-items: center; gap: 4px; border-radius: 8px; padding-right: 4px; transition: background .15s; }
 .zc-task-row:hover { background: var(--zc-hover); }
 .zc-task-row.is-on { background: #E5F1FF; box-shadow: inset 0 0 0 1.5px var(--zc-blue); }
 .zc-task-row .zc-task-o { flex: 1; background: none !important; box-shadow: none !important; }
-.zc-task-pin { all: unset; flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; font-size: 13px; cursor: pointer; opacity: .35; transition: opacity .15s, background .15s, transform .15s; }
-.zc-task-row:hover .zc-task-pin, .zc-task-pin.is-on { opacity: 1; }
+.zc-task-pin, .zc-task-del { all: unset; flex: none; min-width: 28px; height: 28px; padding: 0 4px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 13px; cursor: pointer; opacity: .35; transition: opacity .15s, background .15s, transform .15s, color .15s; }
+.zc-task-row:hover .zc-task-pin, .zc-task-pin.is-on, .zc-task-row:hover .zc-task-del, .zc-task-del.is-confirm { opacity: 1; }
 .zc-task-pin.is-on { background: #FEF3C7; box-shadow: inset 0 0 0 1px #F59E0B; }
 .zc-task-pin:hover { transform: scale(1.12); background: #FDE68A; }
+.zc-task-del:hover { transform: scale(1.08); background: #FEE2E2; color: #DC2626; }
+.zc-task-del.is-confirm { background: #DC2626; color: #FFFFFF; font-size: 11.5px; font-weight: 700; padding: 0 8px; transform: none; }
+@media (hover: none) { .zc-task-pin, .zc-task-del { opacity: .8; } }
 .zc-tool.is-pinned { color: var(--zc-blue); background: #E5F1FF; }
 .zc-pin-unpin { width: 26px; height: 26px; font-size: 12px; color: var(--zc-grey); }
 /* Pasted / attached images preview strip in group chat */

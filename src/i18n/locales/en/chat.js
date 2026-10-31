@@ -86,6 +86,8 @@ export default {
   },
   task: {
     title: 'Give work',
+    modelLabel: 'AI Model',
+    modelAuto: '⚡ Auto (IDE Default)',
     conversations: 'Carry on a conversation (with its context)',
     newIn: 'A new conversation in the folder',
     placeholder: 'What to do… (type, or 🎤 to speak)',

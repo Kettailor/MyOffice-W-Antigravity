@@ -1,0 +1,23 @@
+services:
+  work-office:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: work-office:latest
+    container_name: work-office
+    restart: unless-stopped
+    ports:
+      - "4310:4310"
+    environment:
+      - NODE_ENV=production
+      - OFFICE_HOST=0.0.0.0
+      - OFFICE_PORT=4310
+      - OFFICE_DOCKER=1
+      - OFFICE_HOST_BRIDGE=http://host.docker.internal:4311
+      - TZ=Asia/Ho_Chi_Minh
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - C:/Users/lekie/.gemini:/root/.gemini
+      - E:/:/mnt/e

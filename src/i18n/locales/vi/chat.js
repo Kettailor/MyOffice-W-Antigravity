@@ -86,6 +86,8 @@ export default {
   },
   task: {
     title: 'Giao việc',
+    modelLabel: 'Mô hình AI (Model)',
+    modelAuto: '⚡ Tự động (Mặc định của IDE)',
     conversations: 'Tiếp tục một cuộc trò chuyện (mang theo ngữ cảnh)',
     newIn: 'Cuộc trò chuyện mới trong thư mục',
     placeholder: 'Việc cần làm… (gõ hoặc bấm 🎤 để nói)',

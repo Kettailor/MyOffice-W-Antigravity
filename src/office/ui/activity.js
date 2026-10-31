@@ -6,7 +6,7 @@ import { TYPE_ICON, TYPE_TONE, icon } from './icons.js';
 import { hoverRing, selRing } from '../interact/rings.js';
 import { AGENT_NAME, agentMark, agentOf, colorOf, dn, dnOf, sessions, workers } from '../people/workers.js';
 import { renderLite } from './lite.js';
-import { openSession, renderActivity, renderSessionHead, renderSubs, tab, toggleSession } from './session-drawer.js';
+import { deleteSession, openSession, renderActivity, renderSessionHead, renderSubs, tab, toggleSession } from './session-drawer.js';
 import { macSnap } from './mac-drawer.js';
 import { queuePlace } from '../interact/place-cards.js';
 import { unseenDone } from '../life/your-turn.js';
@@ -147,14 +147,36 @@ function railRow(s) {
   top.append(name); main.append(top, doing);
   const meta = el('span', 'ri-meta'), time = el('span', 'ri-time'), ram = el('span', 'ri-ram'), spark = sparkEl();
   meta.append(time, spark, ram);
+  const del = el('button', 'ri-del', '×');
+  del.type = 'button';
+  del.title = tr('drawer.delete.title');
+  del.setAttribute('aria-label', tr('drawer.delete.title'));
+  let delTimer = 0;
+  del.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!del.classList.contains('is-confirm')) {
+      del.classList.add('is-confirm');
+      del.textContent = tr('drawer.delete.shortConfirm');
+      clearTimeout(delTimer);
+      delTimer = setTimeout(() => {
+        del.classList.remove('is-confirm');
+        del.textContent = '×';
+      }, 4000);
+      return;
+    }
+    clearTimeout(delTimer);
+    del.disabled = true;
+    await deleteSession(sessions.get(s.id) || s);
+  });
   const ctx = el('span', 'ri-ctx'), ctxB = el('b'); ctx.append(ctxB);
-  b.append(av, main, meta, ctx);
+  b.append(av, main, meta, del, ctx);
   const subList = el('ul', 'ri-subs'); subList.hidden = true;
   li.append(b, subList);
   const c = el('button', 'chip'); c.type = 'button'; c.dataset.sess = s.id;
   const cd = el('i'), cn = el('span'), cs = el('small');
   c.append(cd, cn, cs);
-  return { li, b, av, avTxt, top, name, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, subList, subSig: '', c, cd, cn, cs };
+  return { li, b, av, avTxt, top, name, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, del, subList, subSig: '', c, cd, cn, cs };
 }
 function subRow(s, x) {
   const li = el('li');
@@ -219,6 +241,7 @@ function renderRail() {
   for (const w of workers.values()) w.tagEl.classList.toggle('tag--on', w.id === state.selectedId);
 }
 function onListClick(ev) {
+  if (ev.target.closest('.ri-del')) return;
   const g = ev.target.closest('.grp-btn');
   if (g) { if (g.dataset.g === 'rest') { restCollapsed = !restCollapsed; try { localStorage.setItem('office-rest-folded', restCollapsed ? '1' : '0'); } catch { /* storage blocked */ } renderRail(); } return; }
   const b = ev.target.closest('[data-sess]'); if (!b) return; if (b.dataset.agent) openFromRow(b); else toggleSession(b.dataset.sess);

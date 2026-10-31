@@ -14,6 +14,54 @@ const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const subRoleByConvId = new Map(); // convId -> { role, typeName }
 
+const DATA_DIR = process.env.OFFICE_DATA_DIR
+  ? path.resolve(process.env.OFFICE_DATA_DIR)
+  : path.join(process.cwd(), 'data');
+const SUMMARY_CACHE_FILE = path.join(DATA_DIR, 'agy-summaries-cache.json');
+const DELETED_SESSIONS_FILE = path.join(DATA_DIR, 'deleted-sessions.json');
+const persistentMetaMap = new Map();
+const deletedConvIds = new Map(); // convId -> deletedAtMs
+let saveCacheTimer = null;
+
+try {
+  const saved = JSON.parse(fs.readFileSync(SUMMARY_CACHE_FILE, 'utf8'));
+  if (saved && typeof saved === 'object') {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v && typeof v === 'object') persistentMetaMap.set(k, v);
+    }
+  }
+} catch { /* first run or missing cache */ }
+
+try {
+  const delSaved = JSON.parse(fs.readFileSync(DELETED_SESSIONS_FILE, 'utf8'));
+  if (delSaved && typeof delSaved === 'object') {
+    for (const [k, v] of Object.entries(delSaved)) {
+      if (k) deletedConvIds.set(k, Number(v) || Date.now());
+    }
+  }
+} catch { /* first run or missing file */ }
+
+function scheduleSaveSummaryCache() {
+  if (saveCacheTimer) return;
+  saveCacheTimer = setTimeout(() => {
+    saveCacheTimer = null;
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const obj = Object.fromEntries(persistentMetaMap);
+      fsp.writeFile(SUMMARY_CACHE_FILE, JSON.stringify(obj)).catch(() => {});
+    } catch { /* ignore */ }
+  }, 2500);
+  saveCacheTimer.unref?.();
+}
+
+function saveDeletedSessions() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const obj = Object.fromEntries(deletedConvIds);
+    fsp.writeFile(DELETED_SESSIONS_FILE, JSON.stringify(obj)).catch(() => {});
+  } catch { /* ignore */ }
+}
+
 function formatSubagentRole(raw = '') {
   const s = String(raw || '').trim();
   if (!s) return '';
@@ -25,11 +73,26 @@ function formatSubagentRole(raw = '') {
   return s;
 }
 
+export function agyBrainDirs() {
+  if (process.env.OFFICE_AGY_BRAIN_DIR) return [path.resolve(process.env.OFFICE_AGY_BRAIN_DIR)];
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  return [
+    path.join(home, '.gemini', 'antigravity-cli', 'brain'),
+    path.join(home, '.gemini', 'antigravity', 'brain'),
+  ];
+}
+
 export function agyBrainDir() {
   if (process.env.OFFICE_AGY_BRAIN_DIR) return path.resolve(process.env.OFFICE_AGY_BRAIN_DIR);
-  const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
-  return path.join(home, '.gemini', 'antigravity', 'brain');
+  const dirs = agyBrainDirs();
+  for (const d of dirs) {
+    if (fs.existsSync(d)) return d;
+  }
+  return dirs[dirs.length - 1];
 }
+
+const baseNameOf = (p = '') => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
+const normProjKey = (p = '') => String(p || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase();
 
 // Decodes a file:// URI from conversation_summaries.db (e.g. "file:///e%3A/WorkOffice") into a clean OS path.
 export function decodeWorkspaceUri(uri = '') {
@@ -38,9 +101,9 @@ export function decodeWorkspaceUri(uri = '') {
   if (raw.startsWith('file://')) {
     raw = raw.replace(/^file:\/\/\/?/, '');
     try { raw = decodeURIComponent(raw); } catch { /* keep raw */ }
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' || /^\/?[A-Za-z]:[\\/]/.test(raw)) {
       raw = raw.replace(/^\/+([A-Za-z]:)/, '$1').replace(/\//g, '\\');
-      if (/^[a-z]:\\/.test(raw)) raw = raw[0].toLowerCase() + raw.slice(1);
+      if (/^[A-Za-z]:\\/.test(raw)) raw = raw[0].toLowerCase() + raw.slice(1);
     } else if (!raw.startsWith('/')) {
       raw = '/' + raw;
     }
@@ -48,81 +111,220 @@ export function decodeWorkspaceUri(uri = '') {
   return raw.replace(/[\\/]+$/, '');
 }
 
-// Normalizes any path inside a workspace to its canonical workspace root (case-insensitive on Windows).
+// Normalizes any path inside a workspace to its canonical workspace root (case-insensitive on Windows or Windows paths inside Docker).
 export function normalizeWorkspacePath(dir = '', knownRoots = []) {
   if (!dir || typeof dir !== 'string') return '';
   let clean = dir.trim().replace(/[\\/]+$/, '');
-  if (process.platform === 'win32') {
+  const isWin = process.platform === 'win32' || /^[A-Za-z]:[\\/]/.test(clean);
+  if (isWin) {
     clean = clean.replace(/\//g, '\\');
     if (/^[A-Za-z]:\\/.test(clean)) clean = clean[0].toLowerCase() + clean.slice(1);
   }
-  const lower = process.platform === 'win32' ? clean.toLowerCase() : clean;
+  const lower = isWin ? clean.toLowerCase() : clean;
+  const sep = isWin ? '\\' : path.sep;
   for (const root of knownRoots) {
     if (!root) continue;
-    const rClean = process.platform === 'win32' ? root.replace(/\//g, '\\').replace(/[\\/]+$/, '') : root.replace(/\/+$/, '');
-    const rLower = process.platform === 'win32' ? rClean.toLowerCase() : rClean;
-    if (lower === rLower || lower.startsWith(rLower + path.sep)) {
+    const rClean = isWin ? root.replace(/\//g, '\\').replace(/[\\/]+$/, '') : root.replace(/\/+$/, '');
+    const rLower = isWin ? rClean.toLowerCase() : rClean;
+    if (lower === rLower || lower.startsWith(rLower + sep)) {
       return rClean;
     }
   }
   return clean;
 }
 
-// Cached reader for ~/.gemini/antigravity/conversation_summaries.db
+// Reads ~/.gemini/config/projects/*.json to map project_id -> workspace root path (used by Antigravity CLI `agy`).
+function readConfigProjectWorkspaces() {
+  const out = new Map();
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+    const projDir = path.join(home, '.gemini', 'config', 'projects');
+    if (!fs.existsSync(projDir)) return out;
+    for (const f of fs.readdirSync(projDir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(projDir, f), 'utf8'));
+        const pid = String(j?.id || '').trim();
+        const resList = Array.isArray(j?.projectResources?.resources) ? j.projectResources.resources : [];
+        for (const r of resList) {
+          const uri = r?.folderUri || r?.gitFolder?.folderUri || '';
+          const dec = decodeWorkspaceUri(uri);
+          if (pid && dec) {
+            out.set(pid, dec);
+            break;
+          }
+        }
+      } catch { /* ignore malformed project file */ }
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
+function querySummaryRowsFromDb(db) {
+  try {
+    return db.prepare(`
+      SELECT conversation_id, title, workspace_uris, project_id, status, not_fully_idle,
+             parent_conversation_id, agent_name, step_count, last_modified_time, nesting_depth
+      FROM conversation_summaries
+    `).all();
+  } catch {
+    return db.prepare(`
+      SELECT conversation_id, title, workspace_uris, project_id, status, not_fully_idle,
+             parent_conversation_id, agent_name, step_count, last_modified_time
+      FROM conversation_summaries
+    `).all();
+  }
+}
+
+function readSummaryRowsSafe(dbPath) {
+  let db = null;
+  try {
+    db = new DatabaseSync(dbPath, { open: true, readOnly: true, timeout: 2000 });
+    return querySummaryRowsFromDb(db);
+  } catch {
+    try { db?.close(); } catch { /* ignore */ }
+    db = null;
+    // Fallback when Antigravity Desktop closed with uncheckpointed WAL (.db-wal exists without .db-shm):
+    // copy .db (+ .db-wal) to os.tmpdir() and open writable so SQLite replays WAL cleanly.
+    const tmpBase = path.join(os.tmpdir(), `wo-agy-sum-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.db`);
+    try {
+      fs.copyFileSync(dbPath, tmpBase);
+      if (fs.existsSync(`${dbPath}-wal`)) {
+        fs.copyFileSync(`${dbPath}-wal`, `${tmpBase}-wal`);
+      }
+      db = new DatabaseSync(tmpBase, { open: true, timeout: 2000 });
+      return querySummaryRowsFromDb(db);
+    } catch {
+      return [];
+    } finally {
+      try { db?.close(); } catch { /* ignore */ }
+      db = null;
+      for (const ext of ['', '-wal', '-shm']) {
+        try { fs.rmSync(`${tmpBase}${ext}`, { force: true }); } catch { /* ignore */ }
+      }
+    }
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+}
+
+// Cached reader for ~/.gemini/antigravity/conversation_summaries.db and ~/.gemini/antigravity-cli/conversation_summaries.db
 let summariesCache = { at: 0, sig: '', map: new Map(), roots: [] };
 export function readAgySummariesDb(brainDir = agyBrainDir()) {
   const now = Date.now();
   if (now - summariesCache.at < 2500 && summariesCache.map.size > 0) return summariesCache;
-  const dbPath = path.join(path.dirname(brainDir), 'conversation_summaries.db');
-  let dbStat = null;
-  try { dbStat = fs.statSync(dbPath); } catch { return summariesCache; }
-  let walStat = null;
-  try { walStat = fs.statSync(`${dbPath}-wal`); } catch { /* optional wal */ }
-  const sig = `${dbStat.mtimeMs}:${dbStat.size}:${walStat ? `${walStat.mtimeMs}:${walStat.size}` : '0'}`;
+  const customEnv = Boolean(process.env.OFFICE_AGY_BRAIN_DIR);
+  const brainDirs = customEnv ? [path.resolve(brainDir)] : agyBrainDirs();
+  const dbPaths = [...new Set(brainDirs.map((b) => path.join(path.dirname(b), 'conversation_summaries.db')))];
+  const sigParts = [];
+  const validDbs = [];
+  for (const dbPath of dbPaths) {
+    try {
+      const dbStat = fs.statSync(dbPath);
+      let walStat = null;
+      try { walStat = fs.statSync(`${dbPath}-wal`); } catch { /* optional wal */ }
+      sigParts.push(`${dbPath}:${dbStat.mtimeMs}:${dbStat.size}:${walStat ? `${walStat.mtimeMs}:${walStat.size}` : '0'}`);
+      validDbs.push(dbPath);
+    } catch { /* missing db */ }
+  }
+  const projectWsMap = readConfigProjectWorkspaces();
+  const map = new Map();
+  const rootSet = new Set(projectWsMap.values());
+  if (!customEnv) {
+    for (const [cid, cached] of persistentMetaMap) {
+      map.set(cid, { ...cached, status: '', notFullyIdle: false });
+      if (Array.isArray(cached.workspaces)) {
+        for (const w of cached.workspaces) if (w) rootSet.add(w);
+      } else if (cached.workspace) {
+        rootSet.add(cached.workspace);
+      }
+    }
+  }
+  if (!validDbs.length) {
+    if (!customEnv && map.size > 0) {
+      summariesCache = {
+        at: now,
+        sig: 'cached',
+        map,
+        roots: [...rootSet].sort((a, b) => a.length - b.length),
+      };
+    }
+    return summariesCache;
+  }
+  const sig = sigParts.join('|');
   if (sig === summariesCache.sig && summariesCache.map.size > 0) {
     summariesCache.at = now;
     return summariesCache;
   }
-  let db = null;
-  try {
-    db = new DatabaseSync(dbPath, { open: true, readOnly: true, timeout: 2000 });
-    const rows = db.prepare(`
-      SELECT conversation_id, title, workspace_uris, status, not_fully_idle,
-             parent_conversation_id, agent_name, step_count, last_modified_time
-      FROM conversation_summaries
-    `).all();
-    const map = new Map();
-    const rootSet = new Set();
+  let cacheUpdated = false;
+  for (const dbPath of validDbs) {
+    const rows = readSummaryRowsSafe(dbPath);
     for (const r of rows) {
       if (!r?.conversation_id) continue;
       let uris = [];
       try { uris = JSON.parse(r.workspace_uris || '[]'); } catch { uris = []; }
-      const workspaces = uris.map(decodeWorkspaceUri).filter(Boolean);
+      let workspaces = uris.map(decodeWorkspaceUri).filter(Boolean);
+      const pid = String(r.project_id || '').trim();
+      if (!workspaces.length && pid && projectWsMap.has(pid)) {
+        workspaces = [projectWsMap.get(pid)];
+      }
       for (const w of workspaces) rootSet.add(w);
-      map.set(r.conversation_id, {
+      const entry = {
         id: r.conversation_id,
         title: String(r.title || '').trim(),
         workspace: workspaces[0] || '',
         workspaces,
+        projectId: pid,
         status: String(r.status || ''),
         notFullyIdle: Boolean(r.not_fully_idle),
         parentId: String(r.parent_conversation_id || '').trim(),
         agentName: String(r.agent_name || '').trim(),
+        nestingDepth: Number(r.nesting_depth) || 0,
         stepCount: Number(r.step_count) || 0,
         lastModified: r.last_modified_time ? Date.parse(r.last_modified_time) || 0 : 0,
-      });
+      };
+      const prev = map.get(r.conversation_id);
+      let merged = entry;
+      if (prev) {
+        const newer = entry.lastModified >= (prev.lastModified || 0) ? entry : prev;
+        const older = newer === entry ? prev : entry;
+        merged = {
+          ...newer,
+          title: newer.title || older.title,
+          workspace: newer.workspace || older.workspace,
+          workspaces: newer.workspaces?.length ? newer.workspaces : (older.workspaces || []),
+          projectId: newer.projectId || older.projectId,
+          parentId: newer.parentId || older.parentId,
+          agentName: newer.agentName || older.agentName,
+          nestingDepth: Math.max(newer.nestingDepth || 0, older.nestingDepth || 0),
+          stepCount: Math.max(newer.stepCount || 0, older.stepCount || 0),
+        };
+      }
+      map.set(r.conversation_id, merged);
+      if (!customEnv && (merged.workspace || merged.parentId || merged.title || merged.agentName || merged.nestingDepth > 0)) {
+        persistentMetaMap.set(r.conversation_id, {
+          id: merged.id,
+          title: merged.title,
+          workspace: merged.workspace,
+          workspaces: merged.workspaces,
+          projectId: merged.projectId,
+          parentId: merged.parentId,
+          agentName: merged.agentName,
+          nestingDepth: merged.nestingDepth,
+          stepCount: merged.stepCount,
+          lastModified: merged.lastModified,
+        });
+        cacheUpdated = true;
+      }
     }
-    summariesCache = {
-      at: now,
-      sig,
-      map,
-      roots: [...rootSet].sort((a, b) => a.length - b.length),
-    };
-  } catch {
-    // Ignore SQLite lock or missing table errors gracefully
-  } finally {
-    try { db?.close(); } catch { /* ignore */ }
   }
+  if (cacheUpdated) scheduleSaveSummaryCache();
+  summariesCache = {
+    at: now,
+    sig,
+    map,
+    roots: [...rootSet].sort((a, b) => a.length - b.length),
+  };
   return summariesCache;
 }
 
@@ -350,7 +552,7 @@ function extractModelFromInfo(content = '') {
   if (!content || typeof content !== 'string') return '';
   const block = /<USER_SETTINGS_CHANGE>([\s\S]*?)<\/USER_SETTINGS_CHANGE>/i.exec(content)?.[1];
   if (!block) return '';
-  const m = /Selected model changed from [^\r\n]+? to ([A-Za-z0-9 ._-]{3,40}?)(?:\.|\r|\n|<|$)/i.exec(block);
+  const m = /(?:Selected model|setting `Model Selection`) changed from [^\r\n]+? to ([A-Za-z0-9 ()._-]{3,50}?)(?:\.|\r|\n|<|$)/i.exec(block);
   return m ? m[1].trim() : '';
 }
 
@@ -421,8 +623,7 @@ async function readAgyBgTasks(convDir) {
   return map;
 }
 
-// Formats conversation items from Antigravity's transcript.jsonl for GET /api/log (the Session Drawer's Chat tab).
-export async function readAgyLog(transcriptFile, classify, viCache = {}, n = 120) {
+async function readSingleAgyTranscript(transcriptFile, classify, viCache = {}) {
   let fh;
   try { fh = await fsp.open(transcriptFile, 'r'); } catch { return []; }
   try {
@@ -463,8 +664,48 @@ export async function readAgyLog(transcriptFile, classify, viCache = {}, n = 120
         }
       }
     }
-    return items.slice(-n);
+    return items;
   } finally { await fh.close(); }
+}
+
+// Formats conversation items from Antigravity's transcript.jsonl for GET /api/log (the Session Drawer's Chat tab).
+// Seamlessly merges Desktop brain and CLI brain transcripts when a conversation was resumed via `agy` CLI.
+export async function readAgyLog(transcriptFile, classify, viCache = {}, n = 120) {
+  if (!transcriptFile) return [];
+  const files = [transcriptFile];
+  if (!process.env.OFFICE_AGY_BRAIN_DIR && /[/\\]\.system_generated[/\\]logs[/\\]transcript\.jsonl$/i.test(transcriptFile)) {
+    const convId = path.basename(path.dirname(path.dirname(path.dirname(transcriptFile))));
+    if (convId) {
+      const seen = new Set([path.resolve(transcriptFile).toLowerCase()]);
+      for (const bDir of agyBrainDirs()) {
+        const alt = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+        const altKey = path.resolve(alt).toLowerCase();
+        if (!seen.has(altKey) && fs.existsSync(alt)) {
+          seen.add(altKey);
+          files.push(alt);
+        }
+      }
+    }
+  }
+  if (files.length === 1) {
+    const items = await readSingleAgyTranscript(transcriptFile, classify, viCache);
+    return items.slice(-n);
+  }
+  const allItems = [];
+  for (const f of files) {
+    const part = await readSingleAgyTranscript(f, classify, viCache);
+    allItems.push(...part);
+  }
+  allItems.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const deduped = [];
+  const seenKeys = new Set();
+  for (const it of allItems) {
+    const sig = `${it.role}|${it.ts || 0}|${String(it.text || it.label || '').slice(0, 80)}`;
+    if (seenKeys.has(sig)) continue;
+    seenKeys.add(sig);
+    deduped.push(it);
+  }
+  return deduped.slice(-n);
 }
 
 // Quota weight of a single prompt or planner response step in the 5-hour rolling window.
@@ -481,7 +722,7 @@ function stepQuotaUnits5h(step) {
 }
 
 // Computes real-time Antigravity 5-hour quota, 7-day weekly quota, and Per-Project quota breakdown!
-export function computeAgyQuota(sessions, allowedFilter = null) {
+export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = null) {
   const now = Date.now();
   const fiveHoursMs = 5 * 3600_000;
   const sevenDaysMs = 7 * 86400_000;
@@ -506,12 +747,12 @@ export function computeAgyQuota(sessions, allowedFilter = null) {
     if (!s.isAgy) continue;
     const dir = s.cwd || path.join(process.cwd(), 'antigravity');
     if (allowedFilter && !allowedFilter(dir)) continue;
-    const projKey = process.platform === 'win32' ? dir.toLowerCase() : dir;
+    const projKey = normProjKey(dir);
     let proj = byProject.get(projKey);
     if (!proj) {
       proj = {
         dir,
-        name: path.basename(dir) || dir,
+        name: baseNameOf(dir) || dir,
         units5h: 0,
         units7d: 0,
         prompts5h: 0,
@@ -551,6 +792,10 @@ export function computeAgyQuota(sessions, allowedFilter = null) {
 
     for (const st of stepList) {
       if (!st || !st.ts || st.ts < cutoff7d) continue;
+      if (accountSlug !== null) {
+        const stAcct = st.acct ?? s.agyAccount ?? '';
+        if (stAcct !== accountSlug) continue;
+      }
       const w = stepQuotaUnits5h(st);
       const tok = (Number(st.inp) || 0) + (Number(st.cr) || 0) + (Number(st.out) || 0);
       units7d += w;
@@ -582,7 +827,7 @@ export function computeAgyQuota(sessions, allowedFilter = null) {
       }
     }
 
-    if (s.usage) {
+    if (s.usage && accountSlug === null) {
       s.usage.quota5hPct = Math.min(100, Math.round(sessUnits5h * 10) / 10);
       s.usage.prompts5h = sessPrompts5h;
       s.usage.steps5h = sessSteps5h;
@@ -629,11 +874,13 @@ export function computeAgyQuota(sessions, allowedFilter = null) {
     .sort((a, b) => (b.busy - a.busy) || (b.pct - a.pct) || (b.updatedAt - a.updatedAt));
 
   // Attach projectQuotaPct back onto each session's usage for desk/drawer inspection
-  const projPctByDir = new Map(projects.map((p) => [process.platform === 'win32' ? p.dir.toLowerCase() : p.dir, p.pct]));
-  for (const s of sessions.values()) {
-    if (!s.isAgy || !s.usage || !s.cwd) continue;
-    const k = process.platform === 'win32' ? s.cwd.toLowerCase() : s.cwd;
-    s.usage.projectQuotaPct = projPctByDir.get(k) ?? s.usage.quota5hPct ?? 0;
+  if (accountSlug === null) {
+    const projPctByDir = new Map(projects.map((p) => [normProjKey(p.dir), p.pct]));
+    for (const s of sessions.values()) {
+      if (!s.isAgy || !s.usage || !s.cwd) continue;
+      const k = normProjKey(s.cwd);
+      s.usage.projectQuotaPct = projPctByDir.get(k) ?? s.usage.quota5hPct ?? 0;
+    }
   }
 
   return {
@@ -683,6 +930,7 @@ export function createAntigravityWatcher({
   nextSeq,
   onUsageChange,
   onGitCmd,
+  getActiveAccount,
   maxDesks = 44,
 }) {
   const states = new Map(); // convId -> { offset, mtimeMs, model, firstPrompt, lastStepType, lastStepHasTools, lastFeedbackAt, steps }
@@ -710,6 +958,7 @@ export function createAntigravityWatcher({
 
     let usageChanged = false;
     const cutoff8d = Date.now() - 8 * 86400_000;
+    const activeAcct = liveEvents && typeof getActiveAccount === 'function' ? (getActiveAccount() || '') : (s.agyAccount || '');
 
     if (j.type !== 'PLANNER_RESPONSE' && typeof j.content === 'string' && !extractUserRequest(j.content)) {
       const msgMatches = j.content.match(/\[Message\]\s+timestamp=[^\r\n]*?\bsender=/gi);
@@ -730,6 +979,9 @@ export function createAntigravityWatcher({
         if (!st.firstPrompt) st.firstPrompt = promptText;
         s.lastPrompt = promptText;
         s.taskStart = ts;
+        if (liveEvents && typeof getActiveAccount === 'function') {
+          s.agyAccount = getActiveAccount() || '';
+        }
         st.lastStepType = 'USER_INPUT';
         st.lastStepHasTools = false;
         st.lastFeedbackAt = 0;
@@ -741,7 +993,7 @@ export function createAntigravityWatcher({
         s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: st.model || 'Gemini 3.1 Pro' };
         s.usage.prompts = (s.usage.prompts || 0) + 1;
         if (ts >= cutoff8d) {
-          st.steps.push({ ts, kind: 'prompt', inp: 0, cr: 0, out: 0, cost: 0 });
+          st.steps.push({ ts, kind: 'prompt', inp: 0, cr: 0, out: 0, cost: 0, acct: s.agyAccount || activeAcct });
         }
         usageChanged = true;
         if (liveEvents) liveEvents.push({ kind: 'prompt', ts, label: clip(promptText, 64) });
@@ -761,11 +1013,11 @@ export function createAntigravityWatcher({
         s.usage.model = st.model || s.usage.model || 'Gemini 3.1 Pro';
         s.usage.cost += stepCost;
         if (ts >= cutoff8d) {
-          st.steps.push({ ts, kind: 'step', inp, cr, out, cost: stepCost });
+          st.steps.push({ ts, kind: 'step', inp, cr, out, cost: stepCost, acct: s.agyAccount || activeAcct });
         }
         usageChanged = true;
       } else if (ts >= cutoff8d) {
-        st.steps.push({ ts, kind: 'step', inp: 0, cr: 0, out: 0, cost: 0 });
+        st.steps.push({ ts, kind: 'step', inp: 0, cr: 0, out: 0, cost: 0, acct: s.agyAccount || activeAcct });
         usageChanged = true;
       }
       const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
@@ -902,8 +1154,14 @@ export function createAntigravityWatcher({
   async function syncSubagent(subCand, meta, parentSession) {
     let subSt = subStates.get(subCand.convId);
     if (!subSt) {
-      subSt = { offset: 0, mtimeMs: 0, steps: [], parentId: meta.parentId, lastLabel: '', lastTool: null, lastClassified: null, promptDesc: '' };
+      subSt = { offset: 0, mtimeMs: 0, transcriptFile: subCand.transcriptFile, steps: [], parentId: meta.parentId, lastLabel: '', lastTool: null, lastClassified: null, promptDesc: '' };
       subStates.set(subCand.convId, subSt);
+    } else if ((subSt.transcriptFile && subSt.transcriptFile !== subCand.transcriptFile) || subCand.st.size < subSt.offset) {
+      subSt.offset = 0;
+      subSt.mtimeMs = 0;
+      subSt.transcriptFile = subCand.transcriptFile;
+    } else {
+      subSt.transcriptFile = subCand.transcriptFile;
     }
     let changed = false;
     let newTool = null;
@@ -918,6 +1176,7 @@ export function createAntigravityWatcher({
         if (end >= 0) {
           subSt.offset += end + 1;
           const cutoff8d = Date.now() - 8 * 86400_000;
+          const subAcct = parentSession?.agyAccount || (typeof getActiveAccount === 'function' ? (getActiveAccount() || '') : '');
           for (const line of buf.subarray(0, end).toString('utf8').split(/\r?\n/)) {
             if (!line.trim()) continue;
             let j;
@@ -932,7 +1191,7 @@ export function createAntigravityWatcher({
               const out = Number(j.output_tokens) || 0;
               const stepCost = (inp * 1.25 + cr * 0.3 + out * 10) / 1e6;
               if (ts >= cutoff8d) {
-                const entry = { ts, kind: 'step', inp, cr, out, cost: stepCost, subId: subCand.convId };
+                const entry = { ts, kind: 'step', inp, cr, out, cost: stepCost, subId: subCand.convId, acct: subAcct };
                 subSt.steps.push(entry);
                 if (parentSession) {
                   parentSession.agySteps ||= [];
@@ -1090,6 +1349,8 @@ export function createAntigravityWatcher({
       s.agySteps = [];
       sessions.set(key, s);
       sidToKey.set(convId, key);
+    } else {
+      s.transcript = transcriptFile;
     }
 
     if (dbMeta?.workspace) {
@@ -1104,6 +1365,7 @@ export function createAntigravityWatcher({
       st = {
         offset: 0,
         mtimeMs: 0,
+        transcriptFile,
         model: 'Gemini 3.1 Pro',
         firstPrompt: '',
         lastStepType: '',
@@ -1120,6 +1382,12 @@ export function createAntigravityWatcher({
       };
       s.agySteps = st.steps;
       states.set(convId, st);
+    } else if ((st.transcriptFile && st.transcriptFile !== transcriptFile) || fileStat.size < st.offset) {
+      st.offset = 0;
+      st.mtimeMs = 0;
+      st.transcriptFile = transcriptFile;
+    } else {
+      st.transcriptFile = transcriptFile;
     }
 
     const liveEvents = [];
@@ -1195,8 +1463,12 @@ export function createAntigravityWatcher({
       s.bg = new Map();
     }
 
-    if (!s.cwd) s.cwd = path.join(process.cwd(), `agy-${convId.slice(0, 4)}`);
-    const baseName = path.basename(s.cwd) || 'antigravity';
+    if (!s.cwd || /[\\/]agy-[0-9a-f]{4}$/i.test(s.cwd)) {
+      sessions.delete(key);
+      if (s.sid && sidToKey.get(s.sid) === key) sidToKey.delete(s.sid);
+      return false;
+    }
+    const baseName = baseNameOf(s.cwd) || 'antigravity';
     s.name = workspaceIndex === 0 ? baseName : `${baseName} #${workspaceIndex + 1}`;
 
     // Expire stale provisional subagent entries before computing live status
@@ -1438,32 +1710,57 @@ export function createAntigravityWatcher({
   }
 
   async function scan() {
-    const brain = agyBrainDir();
-    let entries = [];
-    try { entries = await fsp.readdir(brain, { withFileTypes: true }); } catch { return; }
-    const candidates = [];
-    for (const ent of entries) {
-      if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
-      const convDir = path.join(brain, ent.name);
-      const transcriptFile = path.join(convDir, '.system_generated', 'logs', 'transcript.jsonl');
-      try {
-        const st = await fsp.stat(transcriptFile);
-        if (st.isFile() && st.size > 0) candidates.push({ convId: ent.name, convDir, transcriptFile, st });
-      } catch { /* no transcript */ }
+    const brainDirs = agyBrainDirs();
+    const byConvId = new Map();
+    for (const brain of brainDirs) {
+      let entries = [];
+      try { entries = await fsp.readdir(brain, { withFileTypes: true }); } catch { continue; }
+      for (const ent of entries) {
+        if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
+        const convDir = path.join(brain, ent.name);
+        const transcriptFile = path.join(convDir, '.system_generated', 'logs', 'transcript.jsonl');
+        try {
+          const st = await fsp.stat(transcriptFile);
+          if (st.isFile() && st.size > 0) {
+            const prev = byConvId.get(ent.name);
+            if (!prev || st.mtimeMs > prev.st.mtimeMs || (st.mtimeMs === prev.st.mtimeMs && st.size > prev.st.size)) {
+              byConvId.set(ent.name, { convId: ent.name, convDir, transcriptFile, st });
+            }
+          }
+        } catch { /* no transcript */ }
+      }
     }
+    const candidates = [...byConvId.values()];
     if (!candidates.length) return;
     candidates.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
 
-    const dbSummary = readAgySummariesDb(brain);
+    const dbSummary = readAgySummariesDb(brainDirs[0]);
     const knownRoots = dbSummary.roots || [];
 
     // Separate top-level conversations from subagent conversations (parent_conversation_id != '')
     const topCandidates = [];
     const subCandidates = [];
     for (const c of candidates) {
+      if (deletedConvIds.has(c.convId)) {
+        const delAt = deletedConvIds.get(c.convId) || 0;
+        if (c.st.mtimeMs > delAt + 10_000) {
+          deletedConvIds.delete(c.convId);
+          saveDeletedSessions();
+        } else {
+          continue;
+        }
+      }
       const meta = dbSummary.map.get(c.convId);
-      if (meta?.parentId) subCandidates.push({ ...c, meta });
-      else topCandidates.push({ ...c, meta });
+      const isSub = Boolean(meta?.parentId)
+        || (Number(meta?.nestingDepth) > 0)
+        || Boolean(meta?.agentName)
+        || subRoleByConvId.has(c.convId)
+        || /[/\\]subagents[/\\]/i.test(c.transcriptFile);
+      if (isSub) {
+        if (meta?.parentId) subCandidates.push({ ...c, meta });
+      } else {
+        topCandidates.push({ ...c, meta });
+      }
     }
 
     // Keep top-level conversations active within the last 14 days, or at least the 8 most recent, up to maxDesks.
@@ -1487,10 +1784,8 @@ export function createAntigravityWatcher({
     for (let i = 0; i < recent.length; i++) {
       const c = recent[i];
       const key = 'a' + c.convId;
-      liveKeys.add(key);
       const wsKey = (c.meta?.workspace || c.convId).toLowerCase();
       const wsIdx = countByWorkspace.get(wsKey) || 0;
-      countByWorkspace.set(wsKey, wsIdx + 1);
       const changed = await syncConversation(
         c.convId,
         c.convDir,
@@ -1505,6 +1800,10 @@ export function createAntigravityWatcher({
         console.error('agy sync', err);
         return false;
       });
+      if (sessions.has(key)) {
+        liveKeys.add(key);
+        countByWorkspace.set(wsKey, wsIdx + 1);
+      }
       if (changed) anyUsageChanged = true;
     }
 
@@ -1550,7 +1849,18 @@ export function createAntigravityWatcher({
     }
   }
 
-  return { scan, clearWait };
+  function deleteSession(convId) {
+    if (!convId) return false;
+    const cleanId = String(convId).replace(/^(?:agy:|a)/, '');
+    deletedConvIds.set(cleanId, Date.now());
+    saveDeletedSessions();
+    states.delete(cleanId);
+    subStates.delete(cleanId);
+    clearWait(cleanId);
+    return true;
+  }
+
+  return { scan, clearWait, deleteSession };
 }
 
 export { createAntigravityWatcher as startAntigravityWatcher };

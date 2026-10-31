@@ -3,10 +3,13 @@
 export default {
   add: {
     button: 'Add an Antigravity account',
+    buttonAgy: 'Add an Antigravity account',
     intro: 'Each account gets a folder of its own on this computer. The office makes it, connects it and opens the sign-in page for you.',
+    introAgy: 'Add a secondary Antigravity account profile to track usage limits and automatically rotate when your primary account runs out.',
     nameLabel: 'Name',
     namePh: 'e.g. work, personal',
     suggest: ['personal', 'work', 'second'],
+    suggestAgy: ['account-2', 'backup', 'pro-team', 'personal'],
     next: 'Next',
     cancel: 'Cancel',
     loginTitle: 'Sign in to {name}',
@@ -85,6 +88,10 @@ export default {
     terminalTip: 'Add this line to ~/.zshrc, then type claude as usual:',
     switched: '{from} is out of usage (back {when}). New Antigravity sessions now use {to}.',
     switchedBack: 'New Antigravity sessions are back on {to}.',
+    autoAgyHint: 'Add a 2nd account using the + button above to automatically rotate when the main account reaches 100%.',
+    removeAccount: 'Remove this secondary account',
+    removeConfirm: 'Remove?',
+    removedAccount: 'Removed account {name}.',
   },
   button: {
     title: '{text}. Click for details and to free up memory.',

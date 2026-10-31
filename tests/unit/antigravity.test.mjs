@@ -341,3 +341,56 @@ test('Antigravity: normalizes ask_question and implementation_plan.md feedback t
   assert.equal(plan.requestFeedback, true);
   assert.equal(plan.artifactSummary, 'Kế hoạch thiết kế Focus-to-Approve');
 });
+
+test('Antigravity: computes per-account quota for auto-switch and preserves AI model in queued tasks', async () => {
+  const now = Date.now();
+  const sessions = new Map([
+    ['a1', {
+      id: '1',
+      isAgy: true,
+      agyAccount: '',
+      cwd: 'e:\\WorkOffice',
+      status: 'work',
+      agySteps: [
+        { ts: now - 5 * 60_000, kind: 'prompt', inp: 1000, out: 0, cr: 0, cost: 0.02, tools: 0, acct: '' },
+        { ts: now - 4 * 60_000, kind: 'step', inp: 5000000, out: 1000000, cr: 0, cost: 2.0, tools: 5, acct: '' },
+      ],
+    }],
+    ['a2', {
+      id: '2',
+      isAgy: true,
+      agyAccount: 'du-phong-1',
+      cwd: 'e:\\WorkOffice',
+      status: 'rest',
+      agySteps: [
+        { ts: now - 2 * 60_000, kind: 'prompt', inp: 500, out: 0, cr: 0, cost: 0.01, tools: 0, account: 'du-phong-1' },
+        { ts: now - 1 * 60_000, kind: 'step', inp: 4000, out: 1500, cr: 0, cost: 0.3, tools: 1, account: 'du-phong-1' },
+      ],
+    }],
+  ]);
+
+  const qMain = computeAgyQuota(sessions, null, '');
+  const qBackup = computeAgyQuota(sessions, null, 'du-phong-1');
+  const qEmpty = computeAgyQuota(sessions, null, 'du-phong-2');
+  assert.equal(qMain.prompts5h, 1);
+  assert.equal(qMain.steps5h, 1);
+  assert.equal(qBackup.prompts5h, 1);
+  assert.equal(qBackup.steps5h, 1);
+  assert.ok(qMain.pct > qBackup.pct, 'Main account with higher token/tool usage should have higher 5h quota pct');
+  assert.equal(qEmpty.pct, 0);
+  assert.equal(qEmpty.prompts5h, 0);
+
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'work-office-model-'));
+  try {
+    const access = createAccessManager({ dataDir: tmpDir });
+    const item = access.queueTask({ id: 'm1', name: 'Trợ lý', role: 'Trợ lý Giám đốc' }, {
+      dir: 'e:\\WorkOffice',
+      sid: '9dd0dfb6-8843-4087-a66b-63f631132aba',
+      model: 'claude-sonnet-5-5-high',
+      text: 'Kiểm tra tính năng chọn model',
+    });
+    assert.equal(item.model, 'claude-sonnet-5-5-high');
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
+  }
+});

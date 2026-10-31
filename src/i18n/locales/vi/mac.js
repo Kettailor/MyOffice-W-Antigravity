@@ -1,10 +1,13 @@
 export default {
   add: {
     button: 'Thêm tài khoản khác',
+    buttonAgy: 'Thêm tài khoản Antigravity',
     intro: 'Mỗi tài khoản có một thư mục riêng trên máy này. Văn phòng tạo thư mục, nối sẵn vào văn phòng và mở trang đăng nhập cho bạn.',
+    introAgy: 'Thêm hồ sơ tài khoản Antigravity dự phòng để theo dõi hạn mức và tự động chuyển đổi khi tài khoản chính hết lượt.',
     nameLabel: 'Tên gọi',
     namePh: 'vd: cong-ty, ca-nhan',
     suggest: ['ca-nhan', 'cong-ty', 'phu'],
+    suggestAgy: ['tai-khoan-2', 'du-phong', 'pro-team', 'ca-nhan'],
     next: 'Tiếp',
     cancel: 'Huỷ',
     loginTitle: 'Đăng nhập tài khoản {name}',
@@ -83,6 +86,10 @@ export default {
     terminalTip: 'Thêm dòng này vào ~/.zshrc:',
     switched: 'Hết lượt ở {from} (mở lại {when}). Phiên mới giờ dùng {to}.',
     switchedBack: 'Phiên mới quay lại dùng {to}.',
+    autoAgyHint: 'Thêm tài khoản thứ 2 ở nút + phía trên để hệ thống tự động xoay vòng khi tài khoản chính chạm ngưỡng 100%.',
+    removeAccount: 'Xóa tài khoản phụ này',
+    removeConfirm: 'Xóa?',
+    removedAccount: 'Đã xóa tài khoản {name}.',
   },
   button: {
     title: '{text}. Bấm để xem chi tiết và giải phóng.',
