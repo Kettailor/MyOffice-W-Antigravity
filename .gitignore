@@ -1,0 +1,47 @@
+# Local runtime state: access tokens, phone PIN, replay logs, chat history, screenshots, process owners, server logs
+data/
+node_modules/
+
+# Environment & local credentials (never commit private keys or local overrides)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.p12
+
+# Machine-specific copies of login services & temporary backups
+com.my-office.plist
+com.claude-office.plist
+*.backup-*
+*.tmp
+*.tmp-*
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+.claude/
+.gemini/
+
+# Next.js & TypeScript build outputs
+.next/
+.next-e2e/
+.next-*/
+next-env.d.ts
+*.tsbuildinfo
+
+# Test artifacts
+test-results/
+test-results-*/
+playwright-report/
+
+# Online static demo build (scripts/build-demo.mjs)
+/.demo-build/
+/demo-site/
+/out/

@@ -1,0 +1,21 @@
+name: Đề xuất tính năng · Feature Request
+description: Đề xuất cải tiến không gian 3D, tích hợp Antigravity hoặc giao diện điều phối
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Ý tưởng / Tính năng đề xuất (What would you like to add?)
+      description: Mô tả chi tiết tính năng bạn muốn thêm vào văn phòng 3D hoặc bộ điều phối Agent.
+    validations:
+      required: true
+  - type: dropdown
+    id: domain
+    attributes:
+      label: Phân vùng liên quan (Subagent Domain)
+      options:
+        - "world-3d-specialist (3D World, Chibi, Furniture, Audio)"
+        - "ui-chat-specialist (UI, Group Chat, Modals, i18n vi/en)"
+        - "backend-agy-specialist (Server, Antigravity Brain Watcher, Access Control)"
+        - "qa-test-specialist (Unit Tests, Playwright E2E, CI/CD)"

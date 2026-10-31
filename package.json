@@ -1,0 +1,81 @@
+{
+  "name": "my-office-w-antigravity",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MyOffice-W-Antigravity — Văn phòng 3D trực quan theo dõi, điều phối Multi-Agent và kiểm duyệt các phiên Google Antigravity & Claude Code theo thời gian thực.",
+  "license": "MIT",
+  "author": {
+    "name": "Kettailor",
+    "url": "https://github.com/Kettailor"
+  },
+  "contributors": [
+    {
+      "name": "khanh020905",
+      "url": "https://github.com/khanh020905",
+      "role": "Original Author of My Office (https://github.com/khanh020905/my-office)"
+    },
+    {
+      "name": "Kettailor",
+      "url": "https://github.com/Kettailor",
+      "role": "Antigravity Brain Watcher, Multi-Agent Orchestration & Access Control"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kettailor/MyOffice-W-Antigravity.git"
+  },
+  "homepage": "https://kettailor.github.io/MyOffice-W-Antigravity/",
+  "bugs": {
+    "url": "https://github.com/Kettailor/MyOffice-W-Antigravity/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "claude-code",
+    "ai-agents",
+    "multi-agent",
+    "3d-office",
+    "threejs",
+    "nextjs",
+    "developer-tools",
+    "dashboard",
+    "visualization"
+  ],
+  "type": "module",
+  "bin": {
+    "work-office": "bin/cli.mjs",
+    "my-office": "bin/cli.mjs"
+  },
+  "scripts": {
+    "dev": "node server/index.mjs --dev",
+    "build": "next build",
+    "start": "node server/index.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test --grep @smoke",
+    "smoke": "node scripts/smoke.mjs",
+    "doctor": "node bin/cli.mjs doctor"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "dependencies": {
+    "next": "16.4.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "three": "0.160.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "22.18.12",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "eslint": "9.38.0",
+    "eslint-config-next": "16.4.3",
+    "gifenc": "1.0.3",
+    "pngjs": "7.0.0",
+    "typescript": "5.9.3"
+  }
+}
