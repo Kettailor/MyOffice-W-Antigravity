@@ -295,13 +295,13 @@ const sidToKey = new Map();
 let feed = [];
 let seq = 0;
 const today = () => new Date().toLocaleDateString('sv-SE');
-let stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, deploy: 0 };
+let stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, deploy: 0, commit: 0, push: 0, pull: 0 };
 let dirty = false;
 
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 try {
   const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  if (saved.stats?.day === stats.day) stats = saved.stats;
+  if (saved.stats?.day === stats.day) stats = { ...stats, ...saved.stats };
   if (Array.isArray(saved.feed)) feed = saved.feed.slice(-FEED_MAX);
   seq = saved.seq || 0;
 } catch { /* first run */ }
@@ -313,11 +313,22 @@ setInterval(() => {
 
 const trophies = createTrophies({ dataDir: DATA_DIR, claudeDir: CLAUDE_DIR, agyDir: agyBrainDir(), today, deployRe: DEPLOY_RE, tr, num, onChange: (t, earned) => broadcast({ k: 'trophies', t, earned }) });
 
-// Git: the session most recently active in a repository gets its commit / push / CI animation
-const sessionsIn = (root) => [...sessions.values()].filter((s) => s.cwd && git.repoOf(s.cwd)?.root === root).sort((a, b) => (b.lastEventAt || 0) - (a.lastEventAt || 0));
+// Git: the session most recently active in a repository gets its commit / push / pull / CI animation
+const sessionsIn = (root) => {
+  const normRoot = path.resolve(root).toLowerCase();
+  const matched = [...sessions.values()]
+    .filter((s) => s.cwd && (git.repoOf(s.cwd)?.root?.toLowerCase() === normRoot || path.resolve(s.cwd).toLowerCase().startsWith(normRoot)))
+    .sort((a, b) => (b.lastEventAt || 0) - (a.lastEventAt || 0));
+  if (matched.length) return matched;
+  return [...sessions.values()].sort((a, b) => (b.lastEventAt || 0) - (a.lastEventAt || 0));
+};
 function gitEvent(r, type, label) {
   const s = sessionsIn(r.root)[0]; if (!s) return;
-  if (type === 'commit') { rollDay(); stats.commit = (stats.commit || 0) + 1; dirty = true; }   // (today's letters in the lobby's post box)
+  rollDay();
+  if (type === 'commit') stats.commit = Math.max((stats.commit || 0) + 1, r.todayCommits || 0);
+  if (type === 'push') { stats.push = (stats.push || 0) + 1; stats.deploy = (stats.deploy || 0) + 1; }
+  if (type === 'pull') stats.pull = (stats.pull || 0) + 1;
+  dirty = true;
   const e = { id: ++seq, ts: Date.now(), sess: s.id, name: s.name, type, label, repo: r.name, branch: r.branch, url: r.ciUrl || undefined };
   pushFeed(e); broadcast({ k: 'ev', e, s: pub(s), stats }); chat.onEvent(e);
 }
@@ -325,13 +336,43 @@ const git = createGit({
   onRepo: (r) => { for (const s of sessionsIn(r.root)) broadcast({ k: 'sess', s: pub(s) }); },
   onCommit: (r, subject) => gitEvent(r, 'commit', clip(redact(oneLine(subject)), 64)),
   onPush: (r) => gitEvent(r, 'push', r.branch),
+  onPull: (r) => gitEvent(r, 'pull', r.branch),
+  onInitRepo: (r, events = []) => {
+    rollDay();
+    stats.commit = Math.max(stats.commit || 0, r.todayCommits || 0);
+    const pushCount = events.filter((ev) => ev.type === 'push').length;
+    const pullCount = events.filter((ev) => ev.type === 'pull').length;
+    stats.push = Math.max(stats.push || 0, pushCount);
+    stats.deploy = Math.max(stats.deploy || 0, pushCount);
+    stats.pull = Math.max(stats.pull || 0, pullCount);
+    dirty = true;
+    const s = sessionsIn(r.root)[0];
+    for (const ev of events.slice(-8)) {
+      const cleanLabel = ev.type === 'commit' ? clip(redact(oneLine(ev.label)), 64) : (ev.label || r.branch);
+      const dup = feed.some((f) => f.type === ev.type && f.label === cleanLabel && Math.abs((f.ts || 0) - (ev.ts || 0)) < 60_000);
+      if (!dup) {
+        pushFeed({
+          id: ++seq,
+          ts: ev.ts || Date.now(),
+          sess: s?.id || null,
+          name: s?.name || r.name,
+          type: ev.type,
+          label: cleanLabel,
+          repo: r.name,
+          branch: r.branch,
+        });
+      }
+    }
+    broadcast({ k: 'stats', stats, ...(s ? { s: pub(s) } : {}) });
+  },
   onCi: (r) => gitEvent(r, r.ci === 'red' ? 'cired' : 'cigreen', r.ciName),
 });
-const pollGit = () => git.poll([...sessions.values()].map((s) => s.cwd));
-setInterval(() => { if (watching()) pollGit(); }, 20_000).unref();
+const pollGit = () => git.poll([ROOT, ...(typeof knownDirs !== 'undefined' ? knownDirs.slice(0, 6) : []), ...[...sessions.values()].map((s) => s.cwd)].filter(Boolean));
+setInterval(() => { if (watching()) pollGit(); }, 3_000).unref();
 setInterval(() => { if (watching()) git.pollCi(); }, 120_000).unref();
+setTimeout(pollGit, 1000).unref();
 
-function rollDay() { if (stats.day !== today()) stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, deploy: 0, commit: 0 }; }
+function rollDay() { if (stats.day !== today()) stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, deploy: 0, commit: 0, push: 0, pull: 0 }; }
 
 function newSession(key) {
   return { id: crypto.randomUUID(), key, sid: null, pid: null, name: '', cwd: '', link: null, desk: freeDesk(), status: 'rest', busy: false,
@@ -441,7 +482,28 @@ function pubForViewer(s, viewer, maskedIdx = null) {
       : { type: 'rest', label: 'Đang nghỉ' },
   };
 }
-function gitOf(s) { const r = s.cwd && git.repoOf(s.cwd); return r ? { repo: r.name, branch: r.branch, dirty: r.dirty, ahead: r.ahead, ci: r.ci, ciName: r.ciName, ciUrl: r.ciUrl, born: r.born || null } : null; }
+function gitOf(s) {
+  const r = s.cwd && git.repoOf(s.cwd);
+  return r ? {
+    repo: r.name,
+    branch: r.branch,
+    dirty: r.dirty,
+    staged: r.staged ?? 0,
+    modified: r.modified ?? 0,
+    untracked: r.untracked ?? 0,
+    ahead: r.ahead ?? 0,
+    behind: r.behind ?? 0,
+    totalCommits: r.totalCommits ?? 0,
+    todayCommits: r.todayCommits ?? 0,
+    lastCommit: r.lastCommit || null,
+    head: r.head || '',
+    upstream: r.upstream || '',
+    ci: r.ci,
+    ciName: r.ciName,
+    ciUrl: r.ciUrl,
+    born: r.born || null,
+  } : null;
+}
 // context: exact from the status line while it reports (last 15 min), else estimated from the transcript
 const liveCtx = (s) => (s.live?.ctxMax && s.live.ctx != null && Date.now() - s.live.at < 15 * 60e3 ? { ctx: s.live.ctx, ctxMax: s.live.ctxMax, exact: true } : { ctx: s.usage.ctx, ctxMax: ctxMax(s.usage) });
 
@@ -1082,6 +1144,7 @@ const agyWatcher = createAntigravityWatcher({
   getStats: () => stats,
   nextSeq: () => ++seq,
   onUsageChange: () => { fetchPlanUsage(true); },
+  onGitCmd: () => { setTimeout(pollGit, 400); setTimeout(pollGit, 1800); },
   maxDesks: DESKS,
 });
 const agWatcher = agyWatcher;

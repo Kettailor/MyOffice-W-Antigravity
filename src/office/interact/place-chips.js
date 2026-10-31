@@ -29,7 +29,14 @@ function placeLive(id) {
     case 'library': { const n = doing(READ_T); return n ? tr('places.live.reading', { n }) : ''; }
     case 'window': { const n = doing(WEB_T); return n ? tr('places.live.searching', { n }) : ''; }
     case 'server': { const s = macSnap; return s?.mem ? `RAM ${Math.round((s.mem.used / s.mem.total) * 100)}%` : ''; }
-    case 'deploy': return state.stats.deploy ? tr('places.live.deployToday', { n: state.stats.deploy }) : '';
+    case 'deploy': {
+      const pushes = state.stats.push || state.stats.deploy || 0;
+      const commits = state.stats.commit || list.reduce((m, s) => Math.max(m, s.git?.todayCommits || 0), 0);
+      const dirty = list.reduce((m, s) => Math.max(m, s.git?.dirty || 0), 0);
+      if (pushes || commits) return tr('places.live.gitToday', { commits, pushes });
+      if (dirty) return tr('places.deploy.dirty', { n: dirty });
+      return '';
+    }
     case 'board': { const n = list.filter((s) => s.lastPrompt && s.status !== 'rest').length + state.todos.filter((t) => !t.done).length; return n ? tr('places.live.tasks', { n }) : ''; }
     case 'coffee': { const n = list.filter((s) => s.status === 'rest').length; return n ? tr('places.live.resting', { n }) : ''; }
     case 'desks': return list.length ? tr('places.live.desks', { used: list.filter((s) => s.desk >= 0).length, total: DESKS.length }) : '';

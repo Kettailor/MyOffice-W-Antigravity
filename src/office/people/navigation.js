@@ -251,6 +251,10 @@ export function setup() {
     wc: [spotAt(-7.3, 6.1, Math.PI / 2, 'ST1', false, { stall: 0 }), spotAt(-7.3, 7.4, Math.PI / 2, 'ST2', false, { stall: 1 })],
     sink: [spotAt(-7.25, 8.5, -Math.PI / 2, 'WCs')],
     dining: DINING,
+    rocket: [
+      spotAt(12.3, 1.65, faceTo(12.3, 1.65, LAY.rocket[0], LAY.rocket[1]), 'LG2'),
+      spotAt(12.35, 2.35, faceTo(12.35, 2.35, LAY.rocket[0], LAY.rocket[1]), 'LG2'),
+    ],
   } : {
     library: [{ x: -6.3, z: -4.45, face: Math.PI, node: 'A' }, { x: -4.1, z: -4.45, face: Math.PI, node: 'A' }, { x: -5.2, z: -4.35, face: Math.PI, node: 'A' }],
     board: [{ x: -6.95, z: -3.25, face: -Math.PI / 2, node: 'F' }, { x: -6.95, z: -1.95, face: -Math.PI / 2, node: 'F' }],
@@ -258,6 +262,10 @@ export function setup() {
     server: [{ x: 4.5, z: -4.25, face: Math.PI, node: 'E' }, { x: 6.6, z: -4.25, face: Math.PI, node: 'E' }, { x: 5.55, z: -4.15, face: Math.PI, node: 'E' }],
     coffee: [{ x: -6.5, z: 4.4, face: 0, node: 'J' }, { x: -4.5, z: 4.4, face: 0, node: 'J' }, { x: -5.5, z: 4.45, face: 0, node: 'J' }],
     meeting: [...MEET_SEATS, ...meetStanding()],
+    rocket: [
+      { x: 6.35, z: -3.4, face: faceTo(6.35, -3.4, LAY.rocket[0], LAY.rocket[1]), node: 'E' },
+      { x: 6.45, z: -2.75, face: faceTo(6.45, -2.75, LAY.rocket[0], LAY.rocket[1]), node: 'E' },
+    ],
   };
   for (const list of Object.values(STATIONS)) for (const s of list) s.by = null;
   // pro: DOOR_IN is the spot in front of the lift doors (facing them while waiting), DOOR_OUT the inside of the car

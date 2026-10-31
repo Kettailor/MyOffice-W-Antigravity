@@ -7,7 +7,7 @@ export default {
   // where people go for each kind of work
   station: {
     dining: 'dining room', board: 'whiteboard', library: 'library', desk: 'desk', server: 'server room', globe: 'window',
-    coffee: 'coffee corner', meeting: 'meeting room', director: "director's office", wc: 'restroom', tests: 'test board', post: 'post box',
+    coffee: 'coffee corner', meeting: 'meeting room', director: "director's office", wc: 'restroom', tests: 'test board', post: 'post box', rocket: 'launch pad',
   },
   // streamer mode: what a label becomes when it could show a path, command, prompt or URL
   generic: {
@@ -41,6 +41,7 @@ export default {
     commit: 'commit: “{label}” 🖨️',
     commitHidden: 'commit 🖨️',
     push: 'push code to {target} 🚀',
+    pull: 'pull code from {target} 📥',
     ciRed: 'CI is red: {label}',
     ciRedDefault: 'tests failing',
     ciGreen: 'CI is green again: {label}',
@@ -65,6 +66,9 @@ export default {
     compact: 'Compacting history',
     agent: 'Handing off to {label}',
     deploy: 'Deploying {label}',
+    push: 'Pushed to {label}! 🚀',
+    pull: 'Pulled latest {label} 📥',
+    commit: 'Committed: {label} 📦',
     plan: 'Updating the to-do list',
     testok: ['All green! ✅', 'Tests pass 🎉', 'Not a single failure!'],
     testfail: ['Red. Let me look…', 'One test broke, on it', 'Huh, why is that red 🤔'],

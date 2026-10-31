@@ -5,7 +5,8 @@ import { cyl, mat, put, rbox } from '../../scene/blocks.js';
 import { LAY } from '../layout.js';
 
 export let ROCKET_HOME;
-const padRing = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.03, 6, 32), new THREE.MeshBasicMaterial({ color: '#FFD166' }));
+export const padRing = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.03, 6, 32), new THREE.MeshBasicMaterial({ color: '#FFD166' }));
+padRing.userData.noMerge = true;
 export const rocket = new THREE.Group();
 
 export function setup() {

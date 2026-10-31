@@ -79,20 +79,35 @@ function placeContent(id) {
       return { icon: 'globe', title: tr('places.window.title'), sub: tr('places.window.sub'), body, foot: el('span', null, tr('places.window.today', { n: state.stats.web || 0 })) };
     }
     case 'deploy': {
-      const ev = recentEvents(['deploy', 'push', 'commit', 'cired', 'cigreen']), foot = el('div', 'pl-foot-row'), body = el('div');
-      // one row per repository the open sessions work in: branch, uncommitted files, unpushed commits, CI
+      const ev = recentEvents(['deploy', 'push', 'pull', 'commit', 'cired', 'cigreen'], 10), foot = el('div', 'pl-foot-row'), body = el('div');
+      // one row per repository the open sessions work in: branch, uncommitted files, commit counts, unpushed/unpulled commits, CI
       const repos = new Map(); for (const x of list) if (x.git && !repos.has(x.git.repo)) repos.set(x.git.repo, x.git);
       if (repos.size) {
         const box = el('div', 'pl-rows'), CI = { red: ['alert', 'red', tr('places.deploy.ciRed')], running: ['sparkle', 'amber', tr('places.deploy.ciRunning')], green: ['check', 'green', tr('places.deploy.ciGreen')] };
         for (const g of repos.values()) {
           const [ic, tone, ciText] = CI[g.ci] || ['file', null, ''];
-          const meta = [g.dirty ? tr('places.deploy.dirty', { n: g.dirty }) : tr('places.deploy.clean'), g.ahead ? tr('places.deploy.ahead', { n: g.ahead }) : '', ciText ? `${ciText}${g.ciName ? ` · ${g.ciName}` : ''}` : ''].filter(Boolean).join(' · ');
+          const meta = [
+            g.dirty ? tr('places.deploy.dirty', { n: g.dirty }) : tr('places.deploy.clean'),
+            g.totalCommits ? tr('places.deploy.commitsCount', { total: g.totalCommits, today: g.todayCommits || 0 }) : '',
+            g.ahead ? tr('places.deploy.ahead', { n: g.ahead }) : '',
+            g.behind ? tr('places.deploy.behind', { n: g.behind }) : '',
+            ciText ? `${ciText}${g.ciName ? ` · ${g.ciName}` : ''}` : '',
+          ].filter(Boolean).join(' · ');
           box.append(plRow({ ic, tone, title: state.streamer ? tr('places.deploy.aRepo') : `${g.repo} · ${g.branch}`, meta, onClick: g.ciUrl && !state.streamer ? () => window.open(g.ciUrl, '_blank', 'noopener') : null }));
+          if (g.lastCommit && g.lastCommit.subject && !state.streamer) {
+            box.append(plRow({ ic: 'check', tone: 'green', title: `#${g.lastCommit.hash} · ${short(g.lastCommit.subject, 48)}`, meta: g.lastCommit.ts ? agoText(g.lastCommit.ts) : '' }));
+          }
         }
         body.append(plGroup(tr('places.deploy.git')), box);
       }
       body.append(plGroup(tr('places.deploy.recent')), ev.length ? eventRows(ev) : plEmpty(tr('places.deploy.empty')));
-      foot.append(el('span', null, tr('places.deploy.today', { n: state.stats.deploy || 0 })), plButton(tr('places.deploy.test'), () => { launchRocket(); sfx.play('deploy'); }, 'btn--accent'));
+      const commitsToday = state.stats.commit || [...repos.values()].reduce((a, r) => a + (r.todayCommits || 0), 0);
+      const pushesToday = state.stats.push || state.stats.deploy || 0;
+      const pullsToday = state.stats.pull || 0;
+      foot.append(
+        el('span', null, tr('places.deploy.todaySummary', { commits: commitsToday, pushes: pushesToday, pulls: pullsToday })),
+        plButton(tr('places.deploy.test'), () => { launchRocket(); sfx.play('deploy'); }, 'btn--accent'),
+      );
       return { icon: 'rocket', title: tr('places.deploy.title'), sub: tr('places.deploy.sub'), body, foot };
     }
     case 'door': {

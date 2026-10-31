@@ -2,7 +2,7 @@ export default {
   status: { work: 'đang làm', wait: 'chờ duyệt', rest: 'đang nghỉ' },
   station: {
     dining: 'phòng ăn', board: 'bảng trắng', library: 'thư viện', desk: 'bàn làm việc', server: 'phòng máy', globe: 'cửa sổ',
-    coffee: 'góc cà phê', meeting: 'phòng họp', director: 'phòng giám đốc', wc: 'nhà vệ sinh', tests: 'bảng đèn test', post: 'hộp thư',
+    coffee: 'góc cà phê', meeting: 'phòng họp', director: 'phòng giám đốc', wc: 'nhà vệ sinh', tests: 'bảng đèn test', post: 'hộp thư', rocket: 'bệ phóng Git',
   },
   generic: {
     prompt: 'việc mới', read: 'một file', grep: 'trong code', glob: 'thư mục', skill: 'một kỹ năng', edit: 'một file', write: 'một file',
@@ -34,6 +34,7 @@ export default {
     commit: 'commit: “{label}” 🖨️',
     commitHidden: 'commit 🖨️',
     push: 'đẩy code lên {target} 🚀',
+    pull: 'kéo code từ {target} 📥',
     ciRed: 'CI đỏ: {label}',
     ciRedDefault: 'kiểm thử hỏng',
     ciGreen: 'CI xanh lại: {label}',
@@ -57,6 +58,9 @@ export default {
     compact: 'Nén lịch sử',
     agent: 'Giao việc cho {label}',
     deploy: 'Deploy {label}',
+    push: 'Đã push lên {label}! 🚀',
+    pull: 'Đã pull {label} mới nhất 📥',
+    commit: 'Đã commit: {label} 📦',
     plan: 'Cập nhật việc cần làm',
     testok: ['Xanh hết! ✅', 'Test qua rồi 🎉', 'Không lỗi nào, ngon!'],
     testfail: ['Đỏ rồi, xem lại chút…', 'Hỏng một test, sửa tiếp', 'Ơ, sao lại đỏ 🤔'],

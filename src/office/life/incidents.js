@@ -8,7 +8,7 @@ import { printPage } from '../world/props/printer.js';
 import { STATIONS } from '../people/navigation.js';
 import { dn, dropSub, sessions, spawnSub, subAct, subs, workers } from '../people/workers.js';
 import { director, wasDeliveredByTeam } from '../people/director.js';
-import { launchRocket } from '../world/room-update.js';
+import { launchRocket, pulseRocketPad } from '../world/room-update.js';
 import { addFeed, toast } from '../ui/activity.js';
 import { scheduleLog } from '../ui/session-drawer.js';
 import { notifyWait } from '../ui/topbar.js';
@@ -39,9 +39,11 @@ export function onEvent(e) {
   chatEvent(e);   // (the group chat: ui/group-chat.js)
   if (e.type === 'stop' || e.type === 'commit') printPage();   // every finished turn and every commit prints a page
   if (e.type === 'test' || e.type === 'testok' || e.type === 'testfail') onTest(e);   // the test board's lamps (tests.js)
-  if (e.type === 'commit') onCommit(e); if (e.type === 'push') onPush(e);   // a letter in the post box; the postman (post.js)
+  if (e.type === 'commit') { onCommit(e); pulseRocketPad('commit'); }
+  if (e.type === 'push') { onPush(e); pulseRocketPad('push'); }   // a letter in the post box; the postman (post.js)
   if (e.type === 'push' || e.type === 'deploy') applaud(e.sess);
   if (e.type === 'push') { launchRocket(); sfx.play('deploy'); toast(tr('incident.pushed', { name: dn(sessions.get(e.sess)) || e.repo, branch: state.streamer ? 'git' : e.branch || 'git' })); }
+  if (e.type === 'pull') { pulseRocketPad('pull'); sfx.play('ding'); toast(`📥 ${dn(sessions.get(e.sess)) || e.repo || 'Git'}: git pull (${e.branch || 'main'})`); }
   if (e.type === 'cired') { sfx.play('siren'); toast(tr('incident.ciRed', { label: e.label || tr('incident.ciRedDefault'), repo: e.repo }), 6500); }
   if (e.type === 'cigreen') { toast(tr('incident.ciGreen', { label: e.label || '', repo: e.repo })); treat(); }   // (green again: ice cream from the Mixue for everyone)
   const myId = state.isLocal ? 'director' : (state.viewer?.id || '');
@@ -83,11 +85,24 @@ export function onEvent(e) {
     a = { station: 'director', anim: 'think', type: 'stop', text: s.masked ? 'Đã xong việc!' : (!done ? tr('incident.reportNoTask') : state.streamer ? tr('incident.reportHidden') : tr('incident.report', { task: short(done, 40) })), e, dwell: 2.4,
       after: () => { if (!director.ack(w)) w.say('stop', tr('incident.reportLeft')); w.push(rest); } };
   }
-  if (e.type === 'deploy') { launchRocket(); toast(tr('incident.deployed', { name: dn(s), label: e.label })); }
+  if (e.type === 'deploy') { pulseRocketPad('deploy'); launchRocket(); toast(tr('incident.deployed', { name: dn(s), label: e.label })); a = { ...a, station: 'rocket', anim: 'celebrate', dwell: 2.4 }; }
+  if (e.type === 'push') { a = { ...a, station: 'rocket', anim: 'celebrate', dwell: 2.4 }; }
+  if (e.type === 'pull') { a = { ...a, station: 'rocket', anim: 'tidy', type: 'pull', text: s.masked ? 'Đang làm việc...' : (e.label || `git pull (${e.branch || 'main'})`), dwell: 2.2 }; }
   const ownerId = e?.ownerId || s?.taskOwnerId || '';
   const isMyTask = !ownerId || ownerId === myId;
   if ((e.type === 'wait' || e.type === 'ask') && isMyTask && !s.masked) notifyWait(s, e);
-  if (e.type === 'commit') a = postAction(w, a) || a;   // (the letter down to the post box, post.js)
+  if (e.type === 'commit') {
+    const pa = postAction(w, a);
+    if (pa) {
+      const prevAfter = pa.after;
+      a = { ...pa, after: () => { prevAfter?.(); pulseRocketPad('commit'); } };
+    } else {
+      a = { ...a, station: 'rocket', anim: 'tidy', dwell: 2.0 };
+    }
+  }
+  if ((e.type === 'commit' || e.type === 'push' || e.type === 'pull' || e.type === 'deploy') && s.status === 'rest' && !a.rest) {
+    a = { ...a, rest: 4 };
+  }
   w.push(e.type === 'compact' ? shredAction(w, a) : a);   // (compaction: the stack to the shredder, shredder.js)
 }
 

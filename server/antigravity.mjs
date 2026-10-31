@@ -682,6 +682,7 @@ export function createAntigravityWatcher({
   getStats,
   nextSeq,
   onUsageChange,
+  onGitCmd,
   maxDesks = 44,
 }) {
   const states = new Map(); // convId -> { offset, mtimeMs, model, firstPrompt, lastStepType, lastStepHasTools, lastFeedbackAt, steps }
@@ -959,6 +960,9 @@ export function createAntigravityWatcher({
       } finally { await fh.close(); }
     }
     if (newTool) {
+      if (newTool.tool_name === 'Bash' && /\bgit\s+(commit|push|pull|merge|rebase|checkout|switch|add|reset|stash|init)\b/i.test(String(newTool.tool_input?.command || ''))) {
+        onGitCmd?.();
+      }
       const c = await classifyVi(newTool.tool_name, newTool.tool_input);
       const runner = newTool.tool_name === 'Bash' && testRunner(newTool.tool_input?.command);
       if (runner) Object.assign(c, { type: 'test', runner });
@@ -1391,6 +1395,9 @@ export function createAntigravityWatcher({
           broadcast({ k: 'ev', e, s: pub(s), stats: getStats() });
           chat.onEvent(e);
         } else if (ev.kind === 'tool') {
+          if (ev.tool_name === 'Bash' && /\bgit\s+(commit|push|pull|merge|rebase|checkout|switch|add|reset|stash|init)\b/i.test(String(ev.tool_input?.command || ''))) {
+            onGitCmd?.();
+          }
           const c = await classifyVi(ev.tool_name, ev.tool_input);
           const runner = ev.tool_name === 'Bash' && testRunner(ev.tool_input?.command);
           if (runner) Object.assign(c, { type: 'test', runner });

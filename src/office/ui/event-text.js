@@ -27,9 +27,10 @@ export const ACT = {
   stop:    { station: 'coffee',  anim: 'coffee',  icon: '☕', rest: 9 },
   idle:    { station: 'coffee',  anim: 'coffee',  icon: '☕', rest: 5 },
   interrupt: { station: 'desk',  anim: 'think',   icon: '✋', rest: 6, dwell: 2 },
-  deploy:  { station: 'server',  anim: 'celebrate', icon: '🚀', dwell: 2.4 },
-  commit:  { station: 'desk',    anim: 'tidy',    icon: '🖨️', dwell: 2 },      // a commit: the desk gets tidied
-  push:    { station: null,      anim: 'celebrate', icon: '🚀', dwell: 2 },
+  deploy:  { station: 'rocket',  anim: 'celebrate', icon: '🚀', dwell: 2.8 },
+  commit:  { station: 'desk',    anim: 'tidy',    icon: '🖨️', dwell: 2.2 },      // a commit: the desk gets tidied
+  push:    { station: 'rocket',  anim: 'celebrate', icon: '🚀', dwell: 2.8 },
+  pull:    { station: 'rocket',  anim: 'celebrate', icon: '📥', dwell: 2.4 },
   cired:   { station: null,      anim: 'sweat',   icon: '🚨', kind: 'fail', priority: true, dwell: 2.4 },
   cigreen: { station: null,      anim: 'celebrate', icon: '✅', dwell: 2 },
   // a test run: watch it at the test board (life/tests.js), then a cheer or a puzzled look
@@ -38,7 +39,7 @@ export const ACT = {
   testfail: { station: 'tests',  anim: 'sweat',   icon: '❌', kind: 'fail', dwell: 2.6 },
   start:   { icon: '🚪' }, end: { icon: '👋' }, substart: { icon: '👥' }, substop: { icon: '📋' },
 };
-export const ANIM_AT = { dining: 'eat', desk: 'type', server: 'console', library: 'read', globe: 'globe', board: 'board', coffee: 'coffee', director: 'think', brief: 'board', wc: 'idle', tests: 'think', post: 'idle' };
+export const ANIM_AT = { dining: 'eat', desk: 'type', server: 'console', library: 'read', globe: 'globe', board: 'board', coffee: 'coffee', director: 'think', brief: 'board', wc: 'idle', tests: 'think', post: 'idle', rocket: 'celebrate' };
 // A session's state, translated when read: STATUS_LABEL[s.status] keeps working for every caller.
 const translated = (keys, prefix) => Object.defineProperties({}, Object.fromEntries(keys.map((k) => [k, { enumerable: true, get: () => tr(`${prefix}.${k}`) }])));
 // Where each station is, in words (the coffee corner is the dining room on the company floor).
@@ -74,6 +75,7 @@ export function verb(e) {
     case 'deploy': return V('deploy', { label });
     case 'commit': return state.streamer ? V('commitHidden') : V('commit', { label });
     case 'push': return V('push', { target: state.streamer ? 'git' : label });
+    case 'pull': return V('pull', { target: state.streamer ? 'git' : label });
     case 'cired': return V('ciRed', { label: label || V('ciRedDefault') });
     case 'cigreen': return V('ciGreen', { label: label || V('ciGreenDefault') });
     case 'test': return V('test', { label });
@@ -98,6 +100,9 @@ export function bubbleText(e) {
     case 'compact': return B('compact');
     case 'agent': return B('agent', { label });
     case 'deploy': return B('deploy', { label });
+    case 'push': return B('push', { label: state.streamer ? 'git' : label });
+    case 'pull': return B('pull', { label: state.streamer ? 'git' : label });
+    case 'commit': return B('commit', { label: state.streamer ? 'git' : label });
     case 'plan': return B('plan');
     case 'testok': return B('testok');
     case 'testfail': return B('testfail');
@@ -109,7 +114,7 @@ export function setup() {
   // On the company floor the director brings each new task to the desk (no trip to the board), and a boss briefs its
   // subagents at the meeting-room screen.
   if (PRO) { Object.assign(ACT.prompt, { station: 'desk', anim: 'think', dwell: 2.6 }); Object.assign(ACT.agent, { station: 'brief', anim: 'board' }); }
-  STATION_LABEL = translated(['dining', 'board', 'library', 'desk', 'server', 'globe', 'meeting', 'director', 'wc', 'tests', 'post'], 'events.station');
+  STATION_LABEL = translated(['dining', 'board', 'library', 'desk', 'server', 'globe', 'meeting', 'director', 'wc', 'tests', 'post', 'rocket'], 'events.station');
   Object.defineProperties(STATION_LABEL, {
     coffee: { enumerable: true, get: () => tr(PRO ? 'events.station.dining' : 'events.station.coffee') },
     brief: { enumerable: true, get: () => tr('events.station.meeting') },

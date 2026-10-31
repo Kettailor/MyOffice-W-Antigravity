@@ -19,46 +19,224 @@ const GH = [process.env.GH_PATH, path.join(os.homedir(), '.local/bin/gh'), '/opt
 const CI_ON = process.env.OFFICE_CI !== '0';
 
 /**
- * @param {{ onRepo: (r: object) => void, onCommit: (r: object, subject: string) => void, onPush: (r: object) => void, onCi: (r: object, was: string|null) => void }} o
+ * @param {{ onRepo: (r: object) => void, onCommit: (r: object, subject: string) => void, onPush: (r: object) => void, onPull?: (r: object, branch: string) => void, onInitRepo?: (r: object, events: Array<object>) => void, onCi: (r: object, was: string|null) => void }} o
  */
-export function createGit({ onRepo, onCommit, onPush, onCi }) {
-  const roots = new Map();   // folder -> its repository root, '' when it is not in one
-  const repos = new Map();   // root -> { root, name, branch, dirty, ahead, head, upstream, ci, ciName, ciUrl, born }
+export function createGit({ onRepo, onCommit, onPush, onPull, onInitRepo, onCi }) {
+  const roots = new Map();   // normalized folder -> normalized repository root
+  const repos = new Map();   // root -> { root, name, branch, dirty, staged, modified, untracked, ahead, behind, totalCommits, todayCommits, lastCommit, lastReflog, remoteReflog, head, upstream, ci, ciName, ciUrl, born }
   let polling = null, ciPolling = null;
 
-  async function rootOf(cwd) {
-    if (!cwd) return '';
-    if (!roots.has(cwd)) roots.set(cwd, ((await run('git', ['rev-parse', '--show-toplevel'], cwd)) || '').trim());
-    return roots.get(cwd);
+  function parseRefLine(line = '') {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) return null;
+    const parts = trimmed.split('|');
+    if (parts.length < 3) return null;
+    const ct = Number(parts.pop()) || 0;
+    const hash = parts.shift() || '';
+    const text = parts.join('|').trim();
+    return { hash, text, ts: ct ? ct * 1000 : Date.now() };
   }
+
+  async function rootOf(rawCwd) {
+    if (!rawCwd) return '';
+    const cwd = path.resolve(String(rawCwd));
+    if (roots.has(cwd)) return roots.get(cwd);
+    const out = await run('git', ['rev-parse', '--show-toplevel'], cwd);
+    if (out && out.trim()) {
+      const normRoot = path.resolve(out.trim());
+      roots.set(cwd, normRoot);
+      roots.set(String(rawCwd), normRoot);
+      return normRoot;
+    }
+    return '';
+  }
+
+  function repoOf(rawCwd) {
+    if (!rawCwd) return null;
+    const norm = path.resolve(String(rawCwd));
+    const mapped = roots.get(norm) || roots.get(String(rawCwd));
+    if (mapped && repos.has(mapped)) return repos.get(mapped);
+    const normLow = norm.toLowerCase();
+    for (const r of repos.values()) {
+      if (!r?.root) continue;
+      const rLow = r.root.toLowerCase();
+      if (normLow === rLow || normLow.startsWith(rLow + path.sep)) return r;
+    }
+    return null;
+  }
+
   async function read(root) {
-    // GIT_OPTIONAL_LOCKS=0: `git status` must not take the index lock while Claude is committing in the same repo
-    const [status, head, upstream, ahead] = await Promise.all([
-      run('git', ['status', '--porcelain=v1', '--branch', '--untracked-files=normal'], root, 8000),
+    // GIT_OPTIONAL_LOCKS=0: `git status` must not take the index lock while Claude/Antigravity is committing in the same repo
+    const [status, head, branchOut, totalCommitsOut, todayLogOut, lastCommitOut, reflogOut] = await Promise.all([
+      run('git', ['status', '--porcelain=v1', '--branch', '-uall'], root, 8000),
       run('git', ['rev-parse', 'HEAD'], root),
-      run('git', ['rev-parse', '@{u}'], root),
-      run('git', ['rev-list', '--count', '@{u}..HEAD'], root),
+      run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], root),
+      run('git', ['rev-list', '--count', 'HEAD'], root),
+      run('git', ['log', '--since=00:00:00', '--oneline'], root),
+      run('git', ['log', '-1', '--format=%h|%s|%ct'], root),
+      run('git', ['reflog', '-1', '--format=%H|%gs|%ct'], root),
     ]);
     if (status == null) return null;
-    const lines = status.split('\n').filter(Boolean);
-    const branch = (lines[0] || '').replace(/^## /, '').replace(/^No commits yet on /, '').split('...')[0].trim();
-    return { branch, dirty: Math.max(0, lines.length - 1), head: (head || '').trim(), upstream: (upstream || '').trim(), ahead: Number(ahead) || 0 };
+    const lines = status.split(/\r?\n/).filter(Boolean);
+    const rawHeaderBranch = (lines[0] || '')
+      .replace(/^## /, '')
+      .replace(/^No commits yet on /, '')
+      .replace(/^Initial commit on /, '')
+      .split('...')[0]
+      .trim();
+    const fallbackBranch = (branchOut || '').trim();
+    const branch = (rawHeaderBranch && !/^HEAD\b/i.test(rawHeaderBranch))
+      ? rawHeaderBranch
+      : (fallbackBranch && fallbackBranch !== 'HEAD' ? fallbackBranch : rawHeaderBranch || 'main');
+
+    const fileLines = lines.slice(1);
+    const dirty = fileLines.length;
+    const untracked = fileLines.filter((l) => l.startsWith('??')).length;
+    const staged = fileLines.filter((l) => !l.startsWith('??') && l[0] && l[0] !== ' ').length;
+    const modified = fileLines.filter((l) => !l.startsWith('??') && l[1] && l[1] !== ' ').length;
+
+    const todayCommits = todayLogOut ? todayLogOut.split(/\r?\n/).filter(Boolean).length : 0;
+    const totalCommits = Number((totalCommitsOut || '').trim()) || 0;
+
+    const parsedCommit = parseRefLine(lastCommitOut);
+    const lastCommit = parsedCommit ? { hash: parsedCommit.hash, subject: parsedCommit.text, ts: parsedCommit.ts } : null;
+
+    const parsedReflog = parseRefLine(reflogOut);
+    const lastReflog = parsedReflog ? { hash: parsedReflog.hash, action: parsedReflog.text, ts: parsedReflog.ts } : null;
+
+    let upstream = ((await run('git', ['rev-parse', '@{u}'], root)) || '').trim();
+    let refSpec = upstream ? '@{u}' : '';
+    if (!upstream && branch) {
+      const orig = ((await run('git', ['rev-parse', `origin/${branch}`], root)) || '').trim();
+      if (orig) {
+        upstream = orig;
+        refSpec = `origin/${branch}`;
+      }
+    }
+
+    let ahead = totalCommits;
+    let behind = 0;
+    if (refSpec) {
+      const lrOut = ((await run('git', ['rev-list', '--left-right', '--count', `${refSpec}...HEAD`], root)) || '').trim();
+      if (lrOut) {
+        const [bStr, aStr] = lrOut.split(/\s+/);
+        behind = Number(bStr) || 0;
+        ahead = Number(aStr) || 0;
+      } else {
+        ahead = 0;
+        behind = 0;
+      }
+    }
+
+    let remoteReflog = null;
+    if (branch) {
+      const remRef = ((await run('git', ['reflog', 'show', `origin/${branch}`, '-1', '--format=%H|%gs|%ct'], root)) || '').trim();
+      const parsedRem = parseRefLine(remRef);
+      if (parsedRem) remoteReflog = { hash: parsedRem.hash, action: parsedRem.text, ts: parsedRem.ts };
+    }
+
+    return {
+      branch,
+      dirty,
+      staged,
+      modified,
+      untracked,
+      head: (head || '').trim(),
+      upstream,
+      ahead,
+      behind,
+      totalCommits,
+      todayCommits,
+      lastCommit,
+      lastReflog,
+      remoteReflog,
+    };
   }
+
   async function pollNow(cwds) {
     const live = new Set();
-    for (const cwd of new Set(cwds)) { const r = await rootOf(cwd); if (r) live.add(r); }
+    for (const cwd of new Set(cwds)) {
+      if (!cwd) continue;
+      const r = await rootOf(cwd);
+      if (r) live.add(r);
+    }
     for (const root of live) {
-      const now = await read(root); if (!now) continue;
-      const was = repos.get(root), cur = { ...(was || { ci: null, ciName: '', ciUrl: '' }), ...now, root, name: path.basename(root) };
+      const now = await read(root);
+      if (!now) continue;
+      const was = repos.get(root);
+      const cur = { ...(was || { ci: null, ciName: '', ciUrl: '' }), ...now, root, name: path.basename(root) };
       // its birthday, once: the oldest root commit's date (the office's monthly party, people/hr.js)
-      if (cur.born === undefined) cur.born = (((await run('git', ['log', '--max-parents=0', '--reverse', '--format=%as'], root)) || '').trim().split('\n')[0]) || null;
-      repos.set(root, cur);
-      if (was?.head && now.head && now.head !== was.head) {
-        const subject = ((await run('git', ['log', '-1', '--pretty=%s'], root)) || '').trim();
-        onCommit(cur, subject);
+      if (cur.born === undefined) {
+        cur.born = (((await run('git', ['log', '--max-parents=0', '--reverse', '--format=%as'], root)) || '').trim().split(/\r?\n/)[0]) || null;
       }
-      if (was && now.upstream && now.upstream !== was.upstream && now.upstream === now.head) onPush(cur);
-      if (!was || was.dirty !== cur.dirty || was.branch !== cur.branch || was.ahead !== cur.ahead) onRepo(cur);
+      repos.set(root, cur);
+
+      if (!was) {
+        const [headReflogToday, remReflogToday] = await Promise.all([
+          run('git', ['reflog', '--since=00:00:00', '--format=%H|%gs|%ct'], root),
+          cur.branch ? run('git', ['reflog', 'show', `origin/${cur.branch}`, '--since=00:00:00', '--format=%H|%gs|%ct'], root) : Promise.resolve(null),
+        ]);
+        const recentEvents = [];
+        for (const line of String(headReflogToday || '').split(/\r?\n/).filter(Boolean)) {
+          const p = parseRefLine(line);
+          if (!p) continue;
+          const cm = /^commit(?:\s*\([^)]+\))?:\s*(.*)$/i.exec(p.text);
+          if (cm) {
+            recentEvents.push({ type: 'commit', label: cm[1].trim() || cur.lastCommit?.subject || 'commit', ts: p.ts });
+          } else if (/^pull\b/i.test(p.text)) {
+            recentEvents.push({ type: 'pull', label: cur.branch, ts: p.ts });
+          }
+        }
+        for (const line of String(remReflogToday || '').split(/\r?\n/).filter(Boolean)) {
+          const p = parseRefLine(line);
+          if (!p) continue;
+          if (/update by push/i.test(p.text)) {
+            recentEvents.push({ type: 'push', label: cur.branch, ts: p.ts });
+          }
+        }
+        recentEvents.sort((a, b) => a.ts - b.ts);
+        onInitRepo?.(cur, recentEvents);
+        onRepo?.(cur);
+        continue;
+      }
+
+      const refChanged = Boolean(cur.lastReflog?.ts && cur.lastReflog.ts !== was.lastReflog?.ts);
+      const headChanged = Boolean(cur.head && cur.head !== was.head);
+      const isPull = (refChanged || headChanged) && /^pull\b/i.test(cur.lastReflog?.action || '');
+      if (isPull) {
+        onPull?.(cur, cur.branch);
+      }
+
+      const isCommit = !isPull && (headChanged || (refChanged && /^commit\b/i.test(cur.lastReflog?.action || '')));
+      if (isCommit) {
+        const subject = cur.lastCommit?.subject
+          || ((await run('git', ['log', '-1', '--pretty=%s'], root)) || '').trim()
+          || 'commit';
+        onCommit?.(cur, subject);
+      }
+
+      const remChanged = Boolean(cur.remoteReflog?.ts && cur.remoteReflog.ts !== was.remoteReflog?.ts && /push/i.test(cur.remoteReflog?.action || ''));
+      const upChanged = Boolean(cur.upstream && cur.upstream !== was.upstream && cur.upstream === cur.head && !isPull);
+      const aheadCleared = Boolean(was.ahead > 0 && cur.ahead === 0 && cur.head === was.head);
+      if (remChanged || upChanged || aheadCleared) {
+        onPush?.(cur);
+      }
+
+      if (
+        was.dirty !== cur.dirty ||
+        was.staged !== cur.staged ||
+        was.modified !== cur.modified ||
+        was.untracked !== cur.untracked ||
+        was.branch !== cur.branch ||
+        was.ahead !== cur.ahead ||
+        was.behind !== cur.behind ||
+        was.totalCommits !== cur.totalCommits ||
+        was.todayCommits !== cur.todayCommits ||
+        was.head !== cur.head ||
+        was.upstream !== cur.upstream
+      ) {
+        onRepo?.(cur);
+      }
     }
     for (const root of [...repos.keys()]) if (!live.has(root)) repos.delete(root);
   }
@@ -82,7 +260,7 @@ export function createGit({ onRepo, onCommit, onPush, onCi }) {
     // one poll at a time; a second request while one runs is dropped
     poll: (cwds) => (polling ??= pollNow(cwds).finally(() => { polling = null; })),
     pollCi: () => (ciPolling ??= pollCiNow().finally(() => { ciPolling = null; })),
-    repoOf: (cwd) => repos.get(roots.get(cwd)) || null,
+    repoOf,
     rootOf,
     ghAvailable: !!GH && CI_ON,
   };

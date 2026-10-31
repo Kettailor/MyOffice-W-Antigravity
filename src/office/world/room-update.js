@@ -10,7 +10,7 @@ import { BULB_OFF, BULB_ON, bollards, skyDay, skyNight } from './terrace.js';
 import { glassM } from './windows.js';
 import { globe, hourHand, minHand, secHand } from './furniture/room-pieces.js';
 import { fans, leds, syncLeds } from './furniture/server-racks.js';
-import { ROCKET_HOME, rocket } from './furniture/rocket.js';
+import { ROCKET_HOME, padRing, rocket } from './furniture/rocket.js';
 import { DZ, doorPivot, lift, updateLift } from './entrance.js';
 import { blanketFor } from '../people/bedding.js';
 import { screenKind, updateScreen } from './screens.js';
@@ -37,6 +37,16 @@ function puff(p) { const m = new THREE.Mesh(puffGeo, new THREE.MeshBasicMaterial
 export function confetti(x, y, z) { for (let i = 0; i < 70; i++) { const m = new THREE.Mesh(confGeo, new THREE.MeshBasicMaterial({ color: CONF[i % CONF.length], side: THREE.DoubleSide, transparent: true })); m.position.set(x, y, z); scene.add(m); particles.push({ m, v: new THREE.Vector3(rand(-3, 3), rand(1, 4), rand(-3, 3)), spin: new THREE.Vector3(rand(-8, 8), rand(-8, 8), rand(-8, 8)), life: 3.2, max: 3.2, kind: 'conf' }); } }
 export const rocketState = { t: -1, confetti: false };
 export function launchRocket() { if (rocketState.t < 0) { rocketState.t = 0; rocketState.confetti = false; } }
+export const padPulse = { kind: null, until: 0 };
+export function pulseRocketPad(kind = 'commit') {
+  padPulse.kind = kind;
+  padPulse.until = state.sim + 3.5;
+  if (!ROCKET_HOME || reduceMotion) return;
+  for (let i = 0; i < 6; i++) {
+    const a = (i * Math.PI * 2) / 6;
+    puff({ x: ROCKET_HOME.x + Math.cos(a) * 0.35, y: ROCKET_HOME.y + 0.05, z: ROCKET_HOME.z + Math.sin(a) * 0.35 });
+  }
+}
 export let night = false;
 let ledMood = 'normal';
 let roomCheckAt = 0;
@@ -90,6 +100,19 @@ export function updateRoom(dt, t) {
     else { const u = tt - 0.6; rocket.position.set(ROCKET_HOME.x, ROCKET_HOME.y + u * u * 4.5, ROCKET_HOME.z); if (!reduceMotion && Math.random() < 0.7) puff(rocket.position); }
     if (tt > 0.9 && !rocketState.confetti) { rocketState.confetti = true; if (!reduceMotion) confetti(ROCKET_HOME.x - 1.6, 4.5, ROCKET_HOME.z + 1.0); }
     if (tt > 4.2) { rocketState.t = -1; rocket.position.copy(ROCKET_HOME); rocket.scale.setScalar(0.01); }
+  } else if (ROCKET_HOME && state.sim < padPulse.until && (padPulse.kind === 'pull' || padPulse.kind === 'commit')) {
+    rocket.position.set(ROCKET_HOME.x, ROCKET_HOME.y + Math.abs(Math.sin(t * 9)) * 0.08, ROCKET_HOME.z);
+  } else if (ROCKET_HOME) {
+    rocket.position.copy(ROCKET_HOME);
+  }
+  if (padRing) {
+    if (state.sim < padPulse.until) {
+      padRing.scale.setScalar(1 + 0.18 * Math.sin(t * 14));
+      padRing.material.color.set(padPulse.kind === 'pull' ? '#38BDF8' : padPulse.kind === 'commit' ? '#3DDC84' : '#FFD166');
+    } else {
+      padRing.scale.setScalar(1);
+      padRing.material.color.set('#FFD166');
+    }
   }
   if (rocket.scale.x < 1) rocket.scale.setScalar(Math.min(1, rocket.scale.x + dt * 1.2));
   for (let i = particles.length - 1; i >= 0; i--) {

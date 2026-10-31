@@ -18,7 +18,7 @@ import { t as tr } from '../../i18n/index.js';
 
 let box = null, plate = null, tips = [], door = null, spot = null, postman = null;
 let inBox = 0, today = 0, day = '', shownN = -1, due = 0, trip = false, doorOpen = 0, slowAt = 0;
-const WALK_EVERY = 120;   // (sim seconds) one walk to the box per session in this long
+const WALK_EVERY = 15;   // (sim seconds) one walk to the box per session in this long
 
 // the day's count: the server's (state.stats.commit, from the git watcher, all day), or ours since the page opened when
 // that is more (a demo, a replay, a commit the watcher has not seen yet)
@@ -48,7 +48,11 @@ export function postAction(w, a) {
     after: () => { w.carry = null; inBox++; showTips(); if (act.station === 'post') { sfx.play('pop'); w.say('commit', line('people.post.drop')); } } };
   return act;
 }
-export function onPush() { if (!due && !trip) due = state.sim + (reduceMotion ? 2 : rand(8, 16)); }
+export function onPush() {
+  inBox = Math.max(1, inBox);
+  showTips();
+  if (!due && !trip) due = state.sim + (reduceMotion ? 1.5 : rand(2.5, 5));
+}
 
 /* the postman's round */
 function collect() {
@@ -74,8 +78,7 @@ export function updatePost(dt) {
   drawPlate();
   if (!due || trip || replay.on || !postman?.offstage || state.sim < due) return;
   if (!inBox) { due = 0; return; }   // nothing to take
-  const h = officeNow().getHours();
-  if (h >= 7 && h < 21) collect();   // (otherwise in the morning)
+  collect();
 }
 
 export function setup() {
