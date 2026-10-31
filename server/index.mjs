@@ -386,6 +386,49 @@ function freeDesk() {
 }
 const taskOwners = new Map(); // sessId -> { id, name, at }
 const dirTaskOwners = new Map(); // dirLower -> { id, name, at }
+const SESSION_NAMES_FILE = path.join(DATA_DIR, 'session-names.json');
+let sessionNames = {};
+try {
+  const rawNames = JSON.parse(fs.readFileSync(SESSION_NAMES_FILE, 'utf8'));
+  if (rawNames && typeof rawNames === 'object') sessionNames = rawNames;
+} catch { /* none yet */ }
+function saveSessionNames() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fsp.writeFile(SESSION_NAMES_FILE, JSON.stringify(sessionNames, null, 2)).catch(() => {});
+  } catch { /* ignore */ }
+}
+function getCustomSessionName(s) {
+  if (!s) return '';
+  if (typeof s === 'string') return String(sessionNames[s] || '').trim();
+  const bySid = s.sid ? String(sessionNames[s.sid] || '').trim() : '';
+  if (bySid) return bySid;
+  const byIdKey = s.id ? String(sessionNames[s.id] || '').trim() : '';
+  return byIdKey;
+}
+function setCustomSessionName(s, rawTitle = '', fallbackSid = '') {
+  const cleanTitle = clip(oneLine(String(rawTitle ?? '')), 75);
+  const sidKey = String(s?.sid || fallbackSid || '').trim();
+  const idKey = String(s?.id || '').trim();
+  if (cleanTitle) {
+    if (sidKey) sessionNames[sidKey] = cleanTitle;
+    if (idKey) sessionNames[idKey] = cleanTitle;
+    if (s) {
+      if (!s.autoTitle && s.title && s.title !== s.customTitle) s.autoTitle = s.title;
+      s.customTitle = cleanTitle;
+      s.title = cleanTitle;
+    }
+  } else {
+    if (sidKey) delete sessionNames[sidKey];
+    if (idKey) delete sessionNames[idKey];
+    if (s) {
+      s.customTitle = '';
+      s.title = s.autoTitle || '';
+    }
+  }
+  saveSessionNames();
+  return s ? (s.title || s.name || '') : cleanTitle;
+}
 function ownerIdOf(s) {
   if (!s) return 'director';
   return taskOwners.get(s.id)?.id || (s.cwd && dirTaskOwners.get(s.cwd.toLowerCase())?.id) || 'director';
@@ -408,8 +451,14 @@ const pub = (s) => {
   for (const p of pending.values()) {
     if (p.sess === s.id) { livePerm = p; break; }
   }
+  const customTitle = getCustomSessionName(s);
+  if (customTitle && s.title !== customTitle) {
+    if (!s.autoTitle && s.title) s.autoTitle = s.title;
+    s.customTitle = customTitle;
+    s.title = customTitle;
+  }
   return {
-    id: s.id, pid: s.pid, sid: s.sid || null, name: s.name, title: s.title || '', dir: tilde(s.cwd), cwd: s.cwd || '', link: s.link, desk: s.desk, status: s.status, act: s.act || '',
+    id: s.id, pid: s.pid, sid: s.sid || null, name: s.name, title: customTitle || s.customTitle || s.title || '', customTitle: customTitle || s.customTitle || '', dir: tilde(s.cwd), cwd: s.cwd || '', link: s.link, desk: s.desk, status: s.status, act: s.act || '',
     waitCard: livePerm ? permPub(livePerm) : (s.waitCard || null),
     lastPrompt: s.lastPrompt && oneLine(unwrapPaste(s.lastPrompt)),
     taskStart: s.taskStart, counts: s.counts, subs: Object.values(s.subs || {}).map(pubSub), doneSubs: (s.doneSubs || []).map(pubSub), last: s.last, acct: acctOf(s),
@@ -1095,7 +1144,9 @@ const tasksOut = (local, viewer = null) => {
     sessions: sessList.map((s) => ({
       id: s.id,
       sid: s.sid,
-      name: s.title || s.name,
+      name: getCustomSessionName(s) || s.title || s.name,
+      rawName: s.name,
+      customTitle: getCustomSessionName(s) || s.customTitle || '',
       dir: tilde(s.cwd),
       rawDir: s.cwd,
       status: s.status,
@@ -3644,6 +3695,30 @@ const server = http.createServer((req, res) => {
       const r = await openWindow(s);
       fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} open ${s?.name || '?'} -> ${r.ok ? r.app : r.message}\n`).catch(() => {});
       json(res, 200, r);
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/session/rename') {
+    const sameOrigin = sameOriginOf(req);
+    const viewer = viewerOf(req);
+    if (!authorized(req, url) || (!isLoopback(req) && !viewer?.isDirectorDevice) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    readJson(req).then((b) => {
+      const s = (b?.id && byId(String(b.id))) || (b?.sid && byId(String(b.sid))) || null;
+      const targetSid = s?.sid || (b?.sid ? String(b.sid).trim() : '');
+      if (!s && !targetSid) {
+        json(res, 404, { ok: false, message: 'Không tìm thấy phiên làm việc.' });
+        return;
+      }
+      const rawTitle = b?.title ?? b?.name ?? '';
+      const finalName = setCustomSessionName(s, rawTitle, targetSid);
+      if (s) {
+        broadcast({ k: 'sess', s: pub(s) });
+      }
+      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} ${req.socket.remoteAddress} rename-session ${s?.id || targetSid} -> ${finalName}\n`).catch(() => {});
+      json(res, 200, { ok: true, id: s?.id || null, sid: targetSid || null, title: s?.title || finalName, customTitle: s?.customTitle || finalName, name: finalName });
     });
     return;
   }

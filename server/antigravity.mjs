@@ -1448,7 +1448,8 @@ export function createAntigravityWatcher({
         if (todos.length) s.todos = todos;
       }
       if (dbMeta?.title) {
-        s.title = clip(redact(oneLine(dbMeta.title)), 75);
+        s.autoTitle = clip(redact(oneLine(dbMeta.title)), 75);
+        s.title = s.customTitle || s.autoTitle;
       } else if (initial || !s.title || (taskStat && taskStat.mtimeMs !== st.titleMtime)) {
         st.titleMtime = taskStat?.mtimeMs || 0;
         const artTitle = await readArtifactTitle(convDir);
@@ -1456,7 +1457,10 @@ export function createAntigravityWatcher({
           ? st.firstPrompt.replace(/https?:\/\/\S+/g, '').trim() || st.firstPrompt
           : '';
         const title = artTitle || clip(fallbackTitle, 75);
-        if (title) s.title = title;
+        if (title) {
+          s.autoTitle = title;
+          s.title = s.customTitle || s.autoTitle;
+        }
       }
       s.bg = await readAgyBgTasks(convDir);
     } else if (!s.bg) {

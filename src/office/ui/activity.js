@@ -6,7 +6,7 @@ import { TYPE_ICON, TYPE_TONE, icon } from './icons.js';
 import { hoverRing, selRing } from '../interact/rings.js';
 import { AGENT_NAME, agentMark, agentOf, colorOf, dn, dnOf, sessions, workers } from '../people/workers.js';
 import { renderLite } from './lite.js';
-import { deleteSession, openSession, renderActivity, renderSessionHead, renderSubs, tab, toggleSession } from './session-drawer.js';
+import { deleteSession, openSession, renameSession, renderActivity, renderSessionHead, renderSubs, tab, toggleSession } from './session-drawer.js';
 import { macSnap } from './mac-drawer.js';
 import { queuePlace } from '../interact/place-cards.js';
 import { unseenDone } from '../life/your-turn.js';
@@ -147,6 +147,47 @@ function railRow(s) {
   top.append(name); main.append(top, doing);
   const meta = el('span', 'ri-meta'), time = el('span', 'ri-time'), ram = el('span', 'ri-ram'), spark = sparkEl();
   meta.append(time, spark, ram);
+  const edit = el('button', 'ri-edit', '✏️');
+  edit.type = 'button';
+  edit.title = tr('drawer.rename.title');
+  edit.setAttribute('aria-label', tr('drawer.rename.title'));
+  edit.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const curSess = sessions.get(s.id) || s;
+    const current = dn(curSess);
+    const f = el('form', 'ri-rename-form');
+    const inp = el('input', 'ri-rename-in');
+    inp.type = 'text';
+    inp.maxLength = 75;
+    inp.value = current;
+    inp.placeholder = curSess.name || tr('drawer.rename.placeholder');
+    inp.autocomplete = 'off';
+    f.append(inp);
+    name.replaceWith(f);
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const val = inp.value.trim();
+      f.replaceWith(name);
+      const rowRef = railRows.get(s.id);
+      if (rowRef) rowRef.nameKey = '';
+      if (save && val !== current) {
+        await renameSession(curSess, val);
+      }
+      renderRail();
+    };
+    f.addEventListener('submit', (e) => { e.preventDefault(); e.stopPropagation(); finish(true); });
+    inp.addEventListener('click', (e) => e.stopPropagation());
+    inp.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    inp.addEventListener('blur', () => finish(true));
+    inp.focus();
+    inp.select();
+  });
   const del = el('button', 'ri-del', '×');
   del.type = 'button';
   del.title = tr('drawer.delete.title');
@@ -170,13 +211,13 @@ function railRow(s) {
     await deleteSession(sessions.get(s.id) || s);
   });
   const ctx = el('span', 'ri-ctx'), ctxB = el('b'); ctx.append(ctxB);
-  b.append(av, main, meta, del, ctx);
+  b.append(av, main, meta, edit, del, ctx);
   const subList = el('ul', 'ri-subs'); subList.hidden = true;
   li.append(b, subList);
   const c = el('button', 'chip'); c.type = 'button'; c.dataset.sess = s.id;
   const cd = el('i'), cn = el('span'), cs = el('small');
   c.append(cd, cn, cs);
-  return { li, b, av, avTxt, top, name, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, del, subList, subSig: '', c, cd, cn, cs };
+  return { li, b, av, avTxt, top, name, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, edit, del, subList, subSig: '', c, cd, cn, cs };
 }
 function subRow(s, x) {
   const li = el('li');
@@ -241,7 +282,7 @@ function renderRail() {
   for (const w of workers.values()) w.tagEl.classList.toggle('tag--on', w.id === state.selectedId);
 }
 function onListClick(ev) {
-  if (ev.target.closest('.ri-del')) return;
+  if (ev.target.closest('.ri-del') || ev.target.closest('.ri-edit') || ev.target.closest('.ri-rename-form')) return;
   const g = ev.target.closest('.grp-btn');
   if (g) { if (g.dataset.g === 'rest') { restCollapsed = !restCollapsed; try { localStorage.setItem('office-rest-folded', restCollapsed ? '1' : '0'); } catch { /* storage blocked */ } renderRail(); } return; }
   const b = ev.target.closest('[data-sess]'); if (!b) return; if (b.dataset.agent) openFromRow(b); else toggleSession(b.dataset.sess);

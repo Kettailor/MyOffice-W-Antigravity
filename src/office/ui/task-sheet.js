@@ -9,7 +9,7 @@ import { avatar } from './chat-avatars.js';
 import { who } from './group-chat.js';
 import { sessions } from '../people/workers.js';
 import { TOKEN } from '../net/live.js';
-import { deleteSession } from './session-drawer.js';
+import { deleteSession, renameSession } from './session-drawer.js';
 import { sfx } from '../audio/sfx.js';
 import { t as tr, locale } from '../../i18n/index.js';
 
@@ -175,6 +175,42 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     });
     wrap.append(b, pinBtn);
     if (sessObj) {
+      const editBtn = el('button', 'zc-task-edit', '✏️');
+      editBtn.type = 'button';
+      editBtn.title = tr('drawer.rename.title');
+      editBtn.setAttribute('aria-label', tr('drawer.rename.title'));
+      editBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const current = sessObj.name || '';
+        const inp = el('input', 'zc-task-rename-in');
+        inp.type = 'text';
+        inp.maxLength = 75;
+        inp.value = current;
+        inp.placeholder = sessObj.rawName || tr('drawer.rename.placeholder');
+        titleEl.replaceWith(inp);
+        let done = false;
+        const finish = async (save) => {
+          if (done) return;
+          done = true;
+          const val = inp.value.trim();
+          if (save && val !== current) {
+            const newName = await renameSession(sessObj, val);
+            if (newName !== null) {
+              sessObj.name = newName;
+            }
+          }
+          drawList();
+        };
+        inp.addEventListener('click', (e) => e.stopPropagation());
+        inp.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        inp.addEventListener('blur', () => finish(true));
+        inp.focus();
+        inp.select();
+      });
       const delBtn = el('button', 'zc-task-del', '🗑️');
       delBtn.type = 'button';
       delBtn.title = tr('drawer.delete.title');
@@ -211,7 +247,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
         syncModelSelect();
         sync();
       });
-      wrap.append(delBtn);
+      wrap.append(editBtn, delBtn);
     }
     return wrap;
   };

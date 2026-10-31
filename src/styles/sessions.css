@@ -66,11 +66,19 @@
 .ri-time { font: 600 .7rem/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .ri[data-status="work"] .ri-time { color: var(--green-ink); }
 .ri-ram { font: 500 .64rem/1 var(--mono); color: var(--faint); }
+.ri-edit { all: unset; position: absolute; top: 5px; right: 27px; z-index: 2; min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; background: var(--card-3); border: 1px solid var(--line-2); color: var(--muted); font: 600 .64rem/1 var(--font); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .15s, background .15s, color .15s, border-color .15s; }
+.ri:hover .ri-edit, .ri-li:hover .ri-edit, .ri-edit:focus-visible { opacity: 1; pointer-events: auto; }
+.ri-edit:hover { background: var(--accent-soft); border-color: var(--accent-line); color: var(--ink); }
+.ri-rename-form { flex: 1; min-width: 0; display: flex; }
+.ri-rename-in { width: 100%; height: 22px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--accent); background: var(--card-3); color: var(--ink); font: 600 .8rem/1 var(--font); outline: none; }
+.ds-rename-form { display: grid; gap: 3px; width: 100%; }
+.ds-rename-in { width: 100%; height: 28px; padding: 0 8px; box-sizing: border-box; border-radius: 7px; border: 1px solid var(--accent); background: var(--card-3); color: var(--ink); font: 700 .92rem/1 var(--font); outline: none; }
+.ds-rename-hint { font-size: .64rem; font-weight: 500; color: var(--muted); }
 .ri-del { all: unset; position: absolute; top: 5px; right: 6px; z-index: 2; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; background: var(--card-3); border: 1px solid var(--line-2); color: var(--muted); font: 700 .72rem/1 var(--font); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .15s, background .15s, color .15s, border-color .15s; }
 .ri:hover .ri-del, .ri-li:hover .ri-del, .ri-del:focus-visible, .ri-del.is-confirm { opacity: 1; pointer-events: auto; }
 .ri-del:hover { background: var(--red-soft); border-color: rgba(255, 95, 95, .55); color: #FFB3B3; }
 .ri-del.is-confirm { background: var(--red); border-color: var(--red); color: #fff; font-size: .64rem; padding: 0 7px; }
-@media (hover: none) { .ri-del { opacity: .75; pointer-events: auto; } }
+@media (hover: none) { .ri-edit, .ri-del { opacity: .75; pointer-events: auto; } }
 .ri-ctx { grid-column: 1 / -1; height: 3px; margin: 2px 2px 0 44px; border-radius: 999px; background: var(--card-3); overflow: hidden; }
 .ri-ctx b { display: block; height: 100%; width: 0; background: #6AAEFF; border-radius: 999px; transition: width .6s; }
 .ri-ctx b.mid { background: var(--amber); } .ri-ctx b.hi { background: var(--red); }

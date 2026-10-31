@@ -53,11 +53,24 @@ export function updateSessionRow(s) {
   syncSessionWaitCards();
   if (s && state.selectedId === s.id) renderSessionHead();
 }
+let isRenamingDrawer = false;
 export function renderSessionHead() {
   syncSessionWaitCards();
   const s = sessions.get(state.selectedId); if (!s) return;
   $('ds-dot').style.background = colorOf(s);
-  $('ds-name').textContent = dn(s);
+  const nameEl = $('ds-name');
+  if (nameEl && !isRenamingDrawer) {
+    nameEl.textContent = dn(s);
+    nameEl.title = tr('drawer.rename.title');
+    if (!nameEl.dataset.renameBound) {
+      nameEl.dataset.renameBound = '1';
+      nameEl.style.cursor = 'pointer';
+      nameEl.addEventListener('click', () => {
+        const cur = sessions.get(state.selectedId);
+        if (cur) startRenameInDrawer(cur);
+      });
+    }
+  }
   $('ds-dir').textContent = s.origin ? `${s.dir} · ${s.origin}` : s.dir;
   const st = $('ds-status'); st.textContent = STATUS_LABEL[s.status]; st.dataset.status = s.status;
   $('ds-read').textContent = s.counts?.read ?? 0; $('ds-edit').textContent = s.counts?.edit ?? 0; $('ds-cmd').textContent = s.counts?.cmd ?? 0;
@@ -100,6 +113,7 @@ function renderActions() {
     b.title = tr('drawer.openWindowTitle'); b.addEventListener('click', () => openWindowOf(s)); box.append(b);
   }
   if (state.isLocal && s.pid && s.status === 'rest') box.append(closeSessionButton(s));
+  box.append(renameSessionButton(s));
   box.append(deleteSessionButton(s));
   box.append(...acctActions(s, renderActions));
   if (s.link) {
@@ -143,6 +157,89 @@ function closeSessionButton(s) {
 }
 let deleteArm = null, deleteArmTimer = 0;
 const deleting = new Set();
+export async function renameSession(s, newTitle) {
+  if (!s) return null;
+  const trimmed = String(newTitle ?? '').trim().slice(0, 75);
+  if (!DEMO) {
+    try {
+      const r = await (await fetch(`/api/session/rename${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: s.id, sid: s.sid, title: trimmed }),
+      })).json();
+      if (!r.ok) {
+        toast(r.message || tr('drawer.unreachable'));
+        return null;
+      }
+      const live = s.id ? sessions.get(s.id) : null;
+      const finalTitle = r.title ?? trimmed;
+      if (live) {
+        live.title = finalTitle;
+        live.customTitle = r.customTitle ?? trimmed;
+        const w = workers.get(live.id);
+        if (w) w.setName(short(dn(live), 26));
+      }
+      s.title = finalTitle;
+      s.customTitle = r.customTitle ?? trimmed;
+      if (state.selectedId === s.id) renderSessionHead();
+      queueUi();
+      toast(trimmed ? tr('drawer.rename.done', { name: finalTitle || s.name }) : tr('drawer.rename.reset'));
+      return r.name || finalTitle || s.name;
+    } catch {
+      toast(tr('drawer.unreachable'));
+      return null;
+    }
+  }
+  s.title = trimmed;
+  if (state.selectedId === s.id) renderSessionHead();
+  queueUi();
+  toast(trimmed ? tr('drawer.rename.done', { name: trimmed }) : tr('drawer.rename.reset'));
+  return trimmed || s.name;
+}
+function startRenameInDrawer(s) {
+  const nameEl = $('ds-name');
+  if (!nameEl || isRenamingDrawer) return;
+  isRenamingDrawer = true;
+  const current = dn(s);
+  const f = el('form', 'ds-rename-form');
+  const inp = el('input', 'ds-rename-in');
+  inp.type = 'text';
+  inp.maxLength = 75;
+  inp.value = current;
+  inp.placeholder = s.name || tr('drawer.rename.placeholder');
+  inp.autocomplete = 'off';
+  inp.setAttribute('aria-label', tr('drawer.rename.title'));
+  const hint = el('small', 'ds-rename-hint', tr('drawer.rename.hint'));
+  f.append(inp, hint);
+  nameEl.replaceChildren(f);
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    isRenamingDrawer = false;
+    const val = inp.value.trim();
+    if (save && val !== current) {
+      await renameSession(s, val);
+    } else {
+      renderSessionHead();
+    }
+  };
+  f.addEventListener('submit', (e) => { e.preventDefault(); finish(true); });
+  inp.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  inp.addEventListener('blur', () => finish(true));
+  inp.focus();
+  inp.select();
+}
+function renameSessionButton(s) {
+  const b = el('button', 'btn btn--sm act-rename-sess', `✏️ ${tr('drawer.rename.label')}`);
+  b.type = 'button';
+  b.title = tr('drawer.rename.title');
+  b.addEventListener('click', () => startRenameInDrawer(s));
+  return b;
+}
 export async function deleteSession(s) {
   if (!s) return false;
   const live = s.id ? sessions.get(s.id) : null;

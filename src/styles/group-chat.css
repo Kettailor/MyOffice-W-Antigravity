@@ -316,13 +316,15 @@
 .zc-task-row:hover { background: var(--zc-hover); }
 .zc-task-row.is-on { background: #E5F1FF; box-shadow: inset 0 0 0 1.5px var(--zc-blue); }
 .zc-task-row .zc-task-o { flex: 1; background: none !important; box-shadow: none !important; }
-.zc-task-pin, .zc-task-del { all: unset; flex: none; min-width: 28px; height: 28px; padding: 0 4px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 13px; cursor: pointer; opacity: .35; transition: opacity .15s, background .15s, transform .15s, color .15s; }
-.zc-task-row:hover .zc-task-pin, .zc-task-pin.is-on, .zc-task-row:hover .zc-task-del, .zc-task-del.is-confirm { opacity: 1; }
+.zc-task-pin, .zc-task-edit, .zc-task-del { all: unset; flex: none; min-width: 28px; height: 28px; padding: 0 4px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 13px; cursor: pointer; opacity: .35; transition: opacity .15s, background .15s, transform .15s, color .15s; }
+.zc-task-row:hover .zc-task-pin, .zc-task-pin.is-on, .zc-task-row:hover .zc-task-edit, .zc-task-row:hover .zc-task-del, .zc-task-del.is-confirm { opacity: 1; }
 .zc-task-pin.is-on { background: #FEF3C7; box-shadow: inset 0 0 0 1px #F59E0B; }
 .zc-task-pin:hover { transform: scale(1.12); background: #FDE68A; }
+.zc-task-edit:hover { transform: scale(1.08); background: #DBEAFE; color: #1D4ED8; }
+.zc-task-rename-in { width: 100%; height: 24px; padding: 0 6px; box-sizing: border-box; border-radius: 6px; border: 1.5px solid var(--zc-blue); background: #FFFFFF; color: #0F172A; font: 600 13.5px/1.2 inherit; outline: none; }
 .zc-task-del:hover { transform: scale(1.08); background: #FEE2E2; color: #DC2626; }
 .zc-task-del.is-confirm { background: #DC2626; color: #FFFFFF; font-size: 11.5px; font-weight: 700; padding: 0 8px; transform: none; }
-@media (hover: none) { .zc-task-pin, .zc-task-del { opacity: .8; } }
+@media (hover: none) { .zc-task-pin, .zc-task-edit, .zc-task-del { opacity: .8; } }
 .zc-tool.is-pinned { color: var(--zc-blue); background: #E5F1FF; }
 .zc-pin-unpin { width: 26px; height: 26px; font-size: 12px; color: var(--zc-grey); }
 /* Pasted / attached images preview strip in group chat */
