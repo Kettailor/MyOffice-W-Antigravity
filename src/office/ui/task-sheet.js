@@ -17,24 +17,37 @@ const q = () => (TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : '');
 export const MAX_TASK_IMAGES = 5;
 const PIN_KEY = 'office-pinned-tasks';
 const MODEL_KEY = 'office-task-model';
+const SESS_MODELS_KEY = 'office-session-models';
 let sheet = null;
 
 const defaultModels = () => [
   { id: '', label: tr('chat.task.modelAuto') },
-  { id: 'gemini-4-argon-high', label: '✨ Gemini 3.1 Pro (High)' },
-  { id: 'gemini-4-argon-medium', label: '✨ Gemini 3.1 Pro (Medium)' },
-  { id: 'gemini-4-argon-low', label: '✨ Gemini 3.1 Pro (Low)' },
-  { id: 'gemini-3.8-flash-high', label: '⚡ Gemini 3 Flash (High)' },
-  { id: 'gemini-3.8-flash-medium', label: '⚡ Gemini 3 Flash (Medium)' },
-  { id: 'gemini-3.8-flash-low', label: '⚡ Gemini 3 Flash (Low)' },
-  { id: 'claude-opus-5-5-high', label: '🧠 Claude Opus 4.6 (High)' },
-  { id: 'claude-opus-5-5-medium', label: '🧠 Claude Opus 4.6 (Medium)' },
-  { id: 'claude-opus-5-5-low', label: '🧠 Claude Opus 4.6 (Low)' },
-  { id: 'claude-sonnet-5-5-high', label: '🎯 Claude Sonnet 4.6 (High)' },
-  { id: 'claude-sonnet-5-5-medium', label: '🎯 Claude Sonnet 4.6 (Medium)' },
-  { id: 'claude-sonnet-5-5-low', label: '🎯 Claude Sonnet 4.6 (Low)' },
+  { id: 'gemini-4-argon-high', label: '✨ Gemini 4 Argon (High)' },
+  { id: 'gemini-4-argon-medium', label: '✨ Gemini 4 Argon (Medium)' },
+  { id: 'gemini-4-argon-low', label: '✨ Gemini 4 Argon (Low)' },
+  { id: 'gemini-3.8-flash-high', label: '⚡ Gemini 3.8 Flash (High)' },
+  { id: 'gemini-3.8-flash-medium', label: '⚡ Gemini 3.8 Flash (Medium)' },
+  { id: 'gemini-3.8-flash-low', label: '⚡ Gemini 3.8 Flash (Low)' },
+  { id: 'claude-opus-5-5-high', label: '🧠 Claude Opus 5.5 (High)' },
+  { id: 'claude-opus-5-5-medium', label: '🧠 Claude Opus 5.5 (Medium)' },
+  { id: 'claude-opus-5-5-low', label: '🧠 Claude Opus 5.5 (Low)' },
+  { id: 'claude-sonnet-5-5-high', label: '🎯 Claude Sonnet 5.5 (High)' },
+  { id: 'claude-sonnet-5-5-medium', label: '🎯 Claude Sonnet 5.5 (Medium)' },
+  { id: 'claude-sonnet-5-5-low', label: '🎯 Claude Sonnet 5.5 (Low)' },
   { id: 'gpt-oss-120b-medium', label: '🤖 GPT-OSS 120B (Medium)' },
 ];
+
+function loadSessionModels() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SESS_MODELS_KEY) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+function saveSessionModels(map) {
+  try { localStorage.setItem(SESS_MODELS_KEY, JSON.stringify(map || {})); } catch { /* storage blocked */ }
+}
 
 function loadPins() {
   try { return new Set(JSON.parse(localStorage.getItem(PIN_KEY) || '[]')); } catch { return new Set(); }
@@ -97,6 +110,30 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     sheet.append(roleBanner);
   }
   const pins = loadPins();
+  const models = Array.isArray(r.models) && r.models.length ? r.models : defaultModels();
+  const sessModels = { ...loadSessionModels(), ...(r.sessionModels && typeof r.sessionModels === 'object' ? r.sessionModels : {}) };
+  for (const s of r.sessions || []) {
+    if (s.sid && s.selectedModel && !sessModels[`s:${s.sid}`]) sessModels[`s:${s.sid}`] = s.selectedModel;
+  }
+  for (const p of r.projects || []) {
+    if (p.dir && p.selectedModel && !sessModels[`d:${p.dir}`]) sessModels[`d:${p.dir}`] = p.selectedModel;
+  }
+  saveSessionModels(sessModels);
+  const keyOfPick = (p) => (p?.sid ? `s:${p.sid}` : p?.dir ? `d:${p.dir}` : '');
+  const getModelForPick = (p) => {
+    const k = keyOfPick(p);
+    if (k && Object.prototype.hasOwnProperty.call(sessModels, k)) return sessModels[k] || '';
+    if (p?.sid) {
+      const sObj = (r.sessions || []).find((x) => x.sid === p.sid);
+      if (sObj?.selectedModel) return sObj.selectedModel;
+    }
+    try { return localStorage.getItem(MODEL_KEY) || ''; } catch { return ''; }
+  };
+  const labelOfModel = (modelId) => {
+    if (!modelId) return '';
+    const m = models.find((x) => x.id === modelId);
+    return m ? m.label : modelId;
+  };
   // who it goes to: the conversations (their folder), then "a new one in…" each folder (pinned items float to top)
   const visibleSessions = () => (r.sessions || []).filter((s) => !s.masked && !sessions.get(s.id)?.masked);
   const visibleProjects = () => (r.projects || []).filter((p) => !p.masked);
@@ -106,6 +143,11 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   const toSid = to?.id ? visibleSessions().find((s) => s.id === to.id)?.sid : to?.sid;
   let pick = toSid ? { sid: toSid } : to?.dir ? { dir: to.dir } : initS[0] ? { sid: initS[0].sid } : initP[0] ? { dir: initP[0].dir } : null;
   const list = el('div', 'zc-task-list');
+  const modelSelect = el('select', 'zc-task-model-select');
+  const syncModelSelect = () => {
+    const want = getModelForPick(pick);
+    modelSelect.value = models.some((m) => m.id === want) ? want : '';
+  };
   const option = (key, pinKey, label, sub, face, sel, sessObj = null) => {
     const isPinned = pins.has(pinKey);
     const wrap = el('div', `zc-task-row${sel ? ' is-on' : ''}${isPinned ? ' is-pinned' : ''}`);
@@ -118,6 +160,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
       pick = key;
       for (const x of list.querySelectorAll('.zc-task-o')) x.classList.toggle('is-on', x === b);
       for (const x of list.querySelectorAll('.zc-task-row')) x.classList.toggle('is-on', x === wrap);
+      syncModelSelect();
       sync();
     });
     const pinBtn = el('button', `zc-task-pin${isPinned ? ' is-on' : ''}`, '📌');
@@ -165,6 +208,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
           pick = nextS ? { sid: nextS.sid } : nextP ? { dir: nextP.dir } : null;
         }
         drawList();
+        syncModelSelect();
         sync();
       });
       wrap.append(delBtn);
@@ -177,35 +221,48 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     const projList = sortProjects();
     if (sessList.length) items.push(el('small', 'zc-task-h', tr('chat.task.conversations')));
     for (const s of sessList) {
-      items.push(option({ sid: s.sid }, `s:${s.sid}`, s.name, `📁 ${s.dir}`, avatar({ ...(who(s.id) || {}), key: s.id, name: s.name }, 30), pick?.sid === s.sid, s));
+      const mId = getModelForPick({ sid: s.sid });
+      const mText = labelOfModel(mId) || s.model || '';
+      const subText = mText ? `📁 ${s.dir} · ${mText}` : `📁 ${s.dir}`;
+      items.push(option({ sid: s.sid }, `s:${s.sid}`, s.name, subText, avatar({ ...(who(s.id) || {}), key: s.id, name: s.name }, 30), pick?.sid === s.sid, s));
     }
     if (projList.length) items.push(el('small', 'zc-task-h', tr('chat.task.newIn')));
     for (const p of projList) {
       const f = el('span', 'zc-task-folder', '📁');
-      items.push(option({ dir: p.dir }, `d:${p.dir}`, p.name, p.dir, f, pick?.dir === p.dir && !pick?.sid));
+      const mId = getModelForPick({ dir: p.dir });
+      const mText = labelOfModel(mId);
+      const subText = mText ? `${p.dir} · ${mText}` : p.dir;
+      items.push(option({ dir: p.dir }, `d:${p.dir}`, p.name, subText, f, pick?.dir === p.dir && !pick?.sid));
     }
     list.replaceChildren(...items);
   };
   drawList();
-  // AI Model selector row (persisted in localStorage)
-  const models = Array.isArray(r.models) && r.models.length ? r.models : defaultModels();
+  // AI Model selector row (persisted per session/folder in server & localStorage until changed)
   const modelRow = el('div', 'zc-task-model-row');
   const modelLabel = el('label', 'zc-task-model-label', `🤖 ${tr('chat.task.modelLabel')}`);
-  const modelSelect = el('select', 'zc-task-model-select');
   modelSelect.setAttribute('aria-label', tr('chat.task.modelLabel'));
   for (const m of models) {
     const opt = el('option', null, m.id === '' ? tr('chat.task.modelAuto') : m.label);
     opt.value = m.id;
     modelSelect.append(opt);
   }
-  let savedModel = r.selectedModel || '';
-  try {
-    const stored = localStorage.getItem(MODEL_KEY);
-    if (stored !== null) savedModel = stored;
-  } catch { /* storage blocked */ }
-  if (models.some((m) => m.id === savedModel)) modelSelect.value = savedModel;
+  syncModelSelect();
   modelSelect.addEventListener('change', () => {
-    try { localStorage.setItem(MODEL_KEY, modelSelect.value); } catch { /* storage blocked */ }
+    const val = modelSelect.value;
+    const k = keyOfPick(pick);
+    if (k) {
+      sessModels[k] = val;
+      saveSessionModels(sessModels);
+    }
+    try { localStorage.setItem(MODEL_KEY, val); } catch { /* storage blocked */ }
+    drawList();
+    if (pick) {
+      fetch(`/api/tasks/model${q()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...pick, model: val }),
+      }).catch(() => {});
+    }
   });
   modelRow.append(modelLabel, modelSelect);
   // what to do: typed or spoken, and photos (up to 5 images via button or Ctrl+V)
@@ -267,6 +324,11 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   field.addEventListener('input', sync);
   go.addEventListener('click', async () => {
     stopMic?.(); stopMic = null; go.disabled = true; go.textContent = tr('chat.task.sending');
+    const k = keyOfPick(pick);
+    if (k) {
+      sessModels[k] = modelSelect.value;
+      saveSessionModels(sessModels);
+    }
     const promptText = field.value.trim() || (photos.length ? 'Hãy phân tích hình ảnh đính kèm và xử lý yêu cầu.' : '');
     const res = await fetch(`/api/tasks${q()}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...pick, text: promptText, images: photos, model: modelSelect.value }) }).then((x) => x.json()).catch(() => null);
     if (res?.ok) {

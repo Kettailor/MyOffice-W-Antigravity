@@ -977,13 +977,66 @@ const chatOut = (local = true, viewer = null) => {
   return { ok: true, msgs, pinned: chat.state.pinned, typing: chat.state.typing };
 };
 
+const SESSION_MODELS_FILE = path.join(DATA_DIR, 'session-models.json');
+let sessionModels = {};
+try {
+  const rawModels = JSON.parse(fs.readFileSync(SESSION_MODELS_FILE, 'utf8'));
+  if (rawModels && typeof rawModels === 'object') sessionModels = rawModels;
+} catch { /* none yet */ }
+const normModelDirKey = (d = '') => String(d || '').replace(/^~(?=$|[\\/])/, os.homedir()).replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+function saveSessionModels() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fsp.writeFile(SESSION_MODELS_FILE, JSON.stringify(sessionModels, null, 2)).catch(() => {});
+  } catch { /* ignore */ }
+}
+function getSavedModel(sid = '', dir = '') {
+  const cleanSid = String(sid || '').trim();
+  if (cleanSid && Object.prototype.hasOwnProperty.call(sessionModels, `s:${cleanSid}`)) {
+    return String(sessionModels[`s:${cleanSid}`] || '');
+  }
+  const dk = normModelDirKey(dir);
+  if (dk && Object.prototype.hasOwnProperty.call(sessionModels, `d:${dk}`)) {
+    return String(sessionModels[`d:${dk}`] || '');
+  }
+  return '';
+}
+function setSavedModel(sid = '', dir = '', modelId = '') {
+  const cleanSid = String(sid || '').trim();
+  const cleanModel = String(modelId ?? '').trim();
+  if (cleanSid) {
+    sessionModels[`s:${cleanSid}`] = cleanModel;
+  } else {
+    const dk = normModelDirKey(dir);
+    if (dk) sessionModels[`d:${dk}`] = cleanModel;
+  }
+  saveSessionModels();
+  if (cleanSid) {
+    const s = [...sessions.values()].find((x) => x.sid === cleanSid);
+    if (s) {
+      s.preferredModel = cleanModel;
+      const meta = cleanModel ? AGY_MODELS.find((m) => m.id === cleanModel) : null;
+      if (meta && meta.id) {
+        s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: meta.label };
+        s.usage.model = meta.label;
+      }
+      broadcast({ k: 'sess', s: pub(s) });
+    }
+  }
+}
+
 /* ---------- "Giao việc" (server/tasks.mjs): Claude Code runs started from the office ---------- */
 const taskSids = new Set(), taskQuote = new Map();   // the sessions those runs became (their leaving isn't announced: their result is); your task, quoted in the answer
 const tasks = createTasks({
   dataDir: DATA_DIR, claude: () => findClaude(),
   env: () => { const e = { ...process.env }; if (nowDir) e.CLAUDE_CONFIG_DIR = nowDir; return e; },   // (the account new sessions start on)
   onDone: (t) => {
-    if (t.sid) taskSids.add(t.sid);
+    if (t.sid) {
+      taskSids.add(t.sid);
+      if (t.model !== undefined && t.model !== null && !Object.prototype.hasOwnProperty.call(sessionModels, `s:${t.sid}`)) {
+        setSavedModel(t.sid, t.dir, t.model);
+      }
+    }
     const dm = t.from?.chat, folder = path.basename(t.dir);
     // the answer from whoever you asked (the conversation's person; the run's own if that one has gone)
     const all = [...sessions.values()], who = (t.from?.id && all.some((x) => x.id === t.from.id) && t.from.id) || (t.sid && all.find((x) => x.sid === t.sid)?.id);
@@ -1003,18 +1056,18 @@ const tasks = createTasks({
    your editor left as it is); what you write next carries on that branch, so it remembers what you said (for 6 hours). */
 const AGY_MODELS = [
   { id: '', label: 'Tự động (Mặc định phiên)', desc: 'Giữ nguyên model hiện tại của phiên' },
-  { id: 'gemini-4-argon-high', label: '✨ Gemini 3.1 Pro (High)', desc: 'Suy luận chuyên sâu cho kiến trúc phức tạp' },
-  { id: 'gemini-4-argon-medium', label: '✨ Gemini 3.1 Pro (Medium)', desc: 'Cân bằng tốc độ và độ sâu suy luận (Mặc định)' },
-  { id: 'gemini-4-argon-low', label: '✨ Gemini 3.1 Pro (Low)', desc: 'Phản hồi nhanh, tiết kiệm token' },
-  { id: 'gemini-3.8-flash-high', label: '⚡ Gemini 3 Flash (High)', desc: 'Flash tốc độ cao kèm suy luận sâu' },
-  { id: 'gemini-3.8-flash-medium', label: '⚡ Gemini 3 Flash (Medium)', desc: 'Flash cân bằng tốc độ & chất lượng' },
-  { id: 'gemini-3.8-flash-low', label: '⚡ Gemini 3 Flash (Low)', desc: 'Flash phản hồi tức thì' },
-  { id: 'claude-opus-5-5-high', label: '🧠 Claude Opus 4.6 (High)', desc: 'Claude Opus suy luận tối đa' },
-  { id: 'claude-opus-5-5-medium', label: '🧠 Claude Opus 4.6 (Medium)', desc: 'Claude Opus cân bằng' },
-  { id: 'claude-opus-5-5-low', label: '🧠 Claude Opus 4.6 (Low)', desc: 'Claude Opus phản hồi nhanh' },
-  { id: 'claude-sonnet-5-5-high', label: '🎯 Claude Sonnet 4.6 (High)', desc: 'Claude Sonnet suy luận cao' },
-  { id: 'claude-sonnet-5-5-medium', label: '🎯 Claude Sonnet 4.6 (Medium)', desc: 'Claude Sonnet tốc độ & độ chính xác cao' },
-  { id: 'claude-sonnet-5-5-low', label: '🎯 Claude Sonnet 4.6 (Low)', desc: 'Claude Sonnet gọn nhẹ' },
+  { id: 'gemini-4-argon-high', label: '✨ Gemini 4 Argon (High)', desc: 'Suy luận chuyên sâu tối đa (High Thinking)' },
+  { id: 'gemini-4-argon-medium', label: '✨ Gemini 4 Argon (Medium)', desc: 'Cân bằng tốc độ và độ sâu suy luận (Mặc định)' },
+  { id: 'gemini-4-argon-low', label: '✨ Gemini 4 Argon (Low)', desc: 'Phản hồi nhanh, tiết kiệm token' },
+  { id: 'gemini-3.8-flash-high', label: '⚡ Gemini 3.8 Flash (High)', desc: 'Flash tốc độ cao kèm suy luận sâu' },
+  { id: 'gemini-3.8-flash-medium', label: '⚡ Gemini 3.8 Flash (Medium)', desc: 'Flash cân bằng tốc độ & chất lượng' },
+  { id: 'gemini-3.8-flash-low', label: '⚡ Gemini 3.8 Flash (Low)', desc: 'Flash phản hồi tức thì' },
+  { id: 'claude-opus-5-5-high', label: '🧠 Claude Opus 5.5 (High)', desc: 'Claude Opus suy luận tối đa' },
+  { id: 'claude-opus-5-5-medium', label: '🧠 Claude Opus 5.5 (Medium)', desc: 'Claude Opus cân bằng' },
+  { id: 'claude-opus-5-5-low', label: '🧠 Claude Opus 5.5 (Low)', desc: 'Claude Opus phản hồi nhanh' },
+  { id: 'claude-sonnet-5-5-high', label: '🎯 Claude Sonnet 5.5 (High)', desc: 'Claude Sonnet suy luận cao' },
+  { id: 'claude-sonnet-5-5-medium', label: '🎯 Claude Sonnet 5.5 (Medium)', desc: 'Claude Sonnet tốc độ & độ chính xác cao' },
+  { id: 'claude-sonnet-5-5-low', label: '🎯 Claude Sonnet 5.5 (Low)', desc: 'Claude Sonnet gọn nhẹ' },
   { id: 'gpt-oss-120b-medium', label: '🤖 GPT-OSS 120B (Medium)', desc: 'Mô hình mã nguồn mở 120B' },
 ];
 const baseNameWinOrPosix = (p = '') => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
@@ -1036,9 +1089,19 @@ const tasksOut = (local, viewer = null) => {
     scopedByMember: !isFullDirector && dirs.length < allWs.length,
     totalWorkspaces: allWs.length,
     models: AGY_MODELS,
+    sessionModels,
     running: tasks.list().filter((t) => canSee(t.dir)),
-    projects: dirs.map((d) => ({ dir: tilde(d), rawDir: d, name: baseNameWinOrPosix(d) })),
-    sessions: sessList.map((s) => ({ id: s.id, sid: s.sid, name: s.title || s.name, dir: tilde(s.cwd), rawDir: s.cwd, status: s.status, model: s.usage?.model || '' })),
+    projects: dirs.map((d) => ({ dir: tilde(d), rawDir: d, name: baseNameWinOrPosix(d), selectedModel: getSavedModel('', d) })),
+    sessions: sessList.map((s) => ({
+      id: s.id,
+      sid: s.sid,
+      name: s.title || s.name,
+      dir: tilde(s.cwd),
+      rawDir: s.cwd,
+      status: s.status,
+      model: s.usage?.model || '',
+      selectedModel: getSavedModel(s.sid, s.cwd),
+    })),
   };
 };
 
@@ -2723,14 +2786,20 @@ async function openWindow(s) {
   return new Promise((resolve) => execFile('open', args, { timeout: 8000 }, (err) => resolve(err ? { ok: false, message: tr('server.open.failed') } : { ok: true, app: path.basename(app, '.app') })));
 }
 
-function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model = '', senderTag = '', byMember = null }) {
+function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model = undefined, senderTag = '', byMember = null }) {
   const s = sid && [...sessions.values()].find((x) => x.sid === String(sid) && x.cwd);
   const targetDir = s ? s.cwd : dir;
   if (!targetDir || !fs.existsSync(resolveContainerDir(targetDir))) return { ok: false, code: 'noDir' };
   const cleanText = String(text || '').trim().slice(0, 4000);
   if (!cleanText) return { ok: false, code: 'empty' };
   const validImages = (Array.isArray(images) ? images : []).slice(0, 5);
-  const cleanModel = String(model || '').trim();
+  const targetSid = s ? s.sid : String(sid || '').trim();
+  if (model !== undefined && model !== null) {
+    setSavedModel(targetSid, targetDir, String(model).trim());
+  }
+  const cleanModel = model !== undefined && model !== null
+    ? String(model).trim()
+    : getSavedModel(targetSid, targetDir);
   const modelMeta = cleanModel ? AGY_MODELS.find((m) => m.id === cleanModel) : null;
   const modelLabel = modelMeta && modelMeta.id ? modelMeta.label : cleanModel;
   const activeAcct = nowSlug() || '';
@@ -3354,6 +3423,17 @@ const server = http.createServer((req, res) => {
         json(res, 200, tasksOut(true)); return;
       }
       if (url.pathname === '/api/tasks/stop') { json(res, 200, { ok: tasks.stop(String(b?.id || '')) }); return; }
+      if (url.pathname === '/api/tasks/model') {
+        const sTarget = (b?.sid && [...sessions.values()].find((x) => x.sid === String(b.sid)))
+          || (b?.id && sessions.get(String(b.id)));
+        const wantDir = String(b?.dir || '').replace(/^~(?=$|[\\/])/, os.homedir());
+        const targetSid = sTarget ? sTarget.sid : String(b?.sid || '').trim();
+        const targetDir = sTarget ? sTarget.cwd : wantDir;
+        const chosenModel = String(b?.model ?? '').trim();
+        setSavedModel(targetSid, targetDir, chosenModel);
+        json(res, 200, { ok: true, sid: targetSid, dir: targetDir, model: chosenModel, sessionModels });
+        return;
+      }
       if (url.pathname !== '/api/tasks' && url.pathname !== '/api/task') { json(res, 404, { ok: false }); return; }
       if (!mac && prefs.get('phoneTasks') === false) { json(res, 403, { ok: false, code: 'notAllowed', message: tr('chat.task.notAllowed') }); return; }
 
@@ -3373,7 +3453,11 @@ const server = http.createServer((req, res) => {
 
       const text = String(b?.text || '').trim().slice(0, 4000);
       const images = (Array.isArray(b?.images) ? b.images : []).slice(0, 5).map(String);
-      const model = String(b?.model || '').trim();
+      const hasExplicitModel = b && Object.prototype.hasOwnProperty.call(b, 'model');
+      const model = hasExplicitModel ? String(b.model ?? '').trim() : getSavedModel(s ? s.sid : '', dir);
+      if (hasExplicitModel) {
+        setSavedModel(s ? s.sid : '', dir, model);
+      }
       if (!text) { json(res, 400, { ok: false, code: 'empty' }); return; }
 
       const viewerId = mac ? 'director' : (viewer?.id || 'remote');

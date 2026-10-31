@@ -20,5 +20,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./server:/app/server
+      - ./src:/app/src
+      - ./.next:/app/.next
       - C:/Users/lekie/.gemini:/root/.gemini
       - E:/:/mnt/e
