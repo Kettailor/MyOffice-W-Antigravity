@@ -19,7 +19,7 @@ This project is built upon and extends the open-source project **[My Office (`kh
 
 - **Original Author**: **[@khanh020905](https://github.com/khanh020905)**
 - **Original Repository**: **[https://github.com/khanh020905/my-office](https://github.com/khanh020905/my-office)** (*"Văn phòng 3D cho các phiên Claude Code · A 3D office for your Claude Code sessions"*)
-- **Google Antigravity Adaptation & Multi-Agent Architecture (`MyOffice-W-Antigravity`)**: **[@Kettailor](https://github.com/Kettailor)** — added the real-time `Antigravity Brain Watcher` (`server/antigravity.mjs`), parallel **Main Agent + 4 Subagents** orchestration (`AGENTS.md`), **Focus-to-Approve** modal for `ask_question` and `implementation_plan.md` feedback, **Task Dispatch (`📋 Giao việc`) & Group Chat**, dynamic **5h/7d Quota estimation** with per-project breakdown, Windows NVIDIA GPU monitoring, and role-based remote access control (**Deputy Director 6-digit PIN** vs. **Assistant Director** workspace-scoped access in `server/access.mjs`).
+- **Google Antigravity Adaptation & Multi-Agent Architecture (`MyOffice-W-Antigravity`)**: **[@Kettailor](https://github.com/Kettailor)** — added the real-time `Antigravity Brain Watcher` (`server/antigravity.mjs`), the **Rust Native Engine** (`rust-native/`) & **Docker On-Demand Host Bridge** (`server/host-bridge.mjs`), parallel **Main Agent + 4 Subagents** orchestration (`AGENTS.md`), **Focus-to-Approve** modal for `ask_question` and `implementation_plan.md` feedback, **Task Dispatch (`📋 Give Work` with per-session AI Model selector, 20-photo drafts, inline session rename/pin) & 2-Channel Group Chat (`💼 Work` vs `💬 Watercooler`)**, dynamic **5h/7d Quota estimation** with per-project & multi-account breakdown, Windows NVIDIA GPU monitoring, and **SHA-256/HMAC** role-based remote access control (**Deputy Director 6-digit PIN** vs. **Assistant Director** workspace-scoped access in `server/access.mjs`).
 - **Additional Credits**:
   - Runaway CPU/RAM and forgotten dev-server heuristics in `server/system.mjs` adapted from [Kanevry/cc-reaper](https://github.com/Kanevry/cc-reaper) (Apache-2.0).
   - Street vehicles built from [Kenney Car Kit 3.1](https://kenney.nl/assets/car-kit) (CC0).
@@ -35,19 +35,23 @@ This project is built upon and extends the open-source project **[My Office (`kh
    - Maps every Antigravity tool (`read_file`, `write_file`, `edit_file`, `run_command`, `grep_search`, `search_web`, `invoke_subagent`, `ask_question`, etc.) to 3D character animations and stations.
    - Synchronizes `task.md` checklists (`- [ ]`, `- [/]`, `- [x]`) and background task logs in real time.
 
-2. **Visual Multi-Agent Subagent Orchestration**
-   - When a Main Agent invokes subagents (`invoke_subagent`), the 3D office spawns Chibi subagent characters connected via `team-lines.js` to the Main Agent's desk.
+2. **Visual Multi-Agent Subagent Orchestration & Adaptive Chibi Pace**
+   - When a Main Agent invokes subagents (`invoke_subagent`), the elevator immediately brings Chibi subagent characters into the office to brief with the Main Agent and connect via `team-lines.js`, with `deferMainAction` queuing to ensure the Main Agent never gets stuck when tasks finish rapidly.
+   - **Adaptive Movement Speed (`calcPace`)**: Chibis in an active working session (`work` / `fire` / briefing) walk at an elevated pace to keep up with real-time tool interactions, returning to a calm normal walk when idle (`rest`).
 
-3. **Focus-to-Approve Modal & Group Chat Task Dispatch**
+3. **Focus-to-Approve Modal, Multi-Model Task Dispatch & 2-Channel Group Chat**
    - Automatically brings up a centered decision modal when an agent calls `ask_question` or requests feedback on `implementation_plan.md`.
-   - Built-in `📋 Give Work` (`Giao việc`) dialog and multi-project Group Chat.
+   - Built-in `📋 Give Work` (`Giao việc`) dialog with per-session/folder **AI Model selector** (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), inline session rename/delete/pin, collapsible **New conversation** list, and auto-saved drafts with up to **20 pasted images** (`IndexedDB`).
+   - Dual-channel Group Chat separating **💼 Work Group** and **💬 Watercooler Chat** with 7-day rolling retention.
 
-4. **Role-Based Remote Access Control (`server/access.mjs`)**
-   - **Deputy Director (`Phó Giám đốc`)**: Sign in from a secondary device/phone using the 6-digit PIN to get full visibility across all workspaces.
+4. **Role-Based Remote Access Control (`server/access.mjs`) & SHA-256/HMAC Security**
+   - **Deputy Director (`Phó Giám đốc`)**: Sign in from a secondary device/phone using the 6-digit PIN (hashed with SHA-256 + salt and signed via HMAC-SHA256) to get full visibility across all workspaces and the Co-Directors Office.
    - **Assistant Director (`Trợ lý Giám đốc`)**: Register by name, wait for Director approval, and access only permitted workspaces with pre-execution task approval.
 
-5. **Machine Health, NVIDIA GPU & Dynamic 5h/7d Quota**
-   - Tracks CPU, RAM, disk, Windows NVIDIA GPU utilization, forgotten dev servers, and dynamic 5-hour / 7-day token quota across projects.
+5. **Docker + Rust Native Engine + On-Demand Host Bridge & Dynamic 5h/7d Quota**
+   - **Rust Native Engine (`rust-native/`)**: Accelerates Brain scanning, JSONL tailing, system telemetry (`sysinfo`), and SHA-256/HMAC security redaction.
+   - **Docker & On-Demand Host Bridge (`:4311`)**: Runs the production server in Docker (`:4310`) paired with a lightweight watcher that wakes the Host Bridge on demand and auto-stops after 45s of inactivity.
+   - Tracks CPU, RAM, disk, Windows NVIDIA GPU utilization, forgotten dev servers, and dynamic 5-hour / 7-day token quota across projects and accounts.
 
 ---
 
@@ -66,6 +70,15 @@ npm run dev
 ```
 
 Open **<http://localhost:4310>** to watch your live sessions, or **<http://localhost:4310/?demo>** to explore demo mode without any agents running.
+
+### Docker + On-Demand Host Bridge (Recommended on Windows)
+
+```bash
+npm run docker:up
+npm run docker:status
+npm run docker:restart
+npm run docker:down
+```
 
 ### Production Build & CLI
 

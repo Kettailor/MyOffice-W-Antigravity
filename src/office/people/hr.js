@@ -93,10 +93,13 @@ function clockIn(w, then) {
 }
 function clockOut(w, then) {
   roll();
-  const e = log.get(w.id);
-  if (!TERM || replay.on || w.sub || w.staff || !e || e.out) { then(); return; }
-  e.out = officeNow();
-  punch(w, e.name, 'out', then);
+  if (!TERM || replay.on || w.sub || w.staff) { then(); return; }
+  let e = log.get(w.id);
+  if (e?.out) { then(); return; }
+  const name = e?.name || nameOf(w);
+  if (!e) { e = { at: officeNow(), name, out: officeNow(), inferred: true }; log.set(w.id, e); }
+  else e.out = officeNow();
+  punch(w, name, 'out', then);
 }
 // those already at their desks when the page opens have clocked in: when their session first stirred today (on the
 // demo, a minute between 7:35 and 8:40 of their own)
@@ -132,7 +135,7 @@ function drawTabs(names) {
 }
 // a tab clipped on the top rail of the pod's felt screen over each desk in use, readable from both sides
 function buildTabs(names) {
-  if (tabsMesh) { scene.remove(tabsMesh); tabsMesh.geometry.dispose(); tabsMesh = null; }
+  if (tabsMesh) { scene.remove(tabsMesh); tabsMesh.geometry.dispose(); tabsMesh.material.dispose(); tabsMesh = null; }
   const list = [], W = tabsTex.image.width, H = tabsTex.image.height;
   names.forEach((name, d) => {
     if (!name) return;

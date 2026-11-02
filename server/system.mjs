@@ -11,6 +11,28 @@ import { redact } from './redact.mjs';
 import { createT } from '../src/i18n/index.js';
 import { OS } from './platform/index.mjs';
 import { sh } from './platform/shared.mjs';
+import { findNativeRustBin } from './antigravity.mjs';
+
+let lastDockerRunning = process.env.OFFICE_DOCKER === '1';
+let lastBridgeUp = false;
+let lastDockerProbeAt = 0;
+function probeDockerAndBridge() {
+  const now = Date.now();
+  if (now - lastDockerProbeAt < 8000) return;
+  lastDockerProbeAt = now;
+  const bridgeBase = (process.env.OFFICE_HOST_BRIDGE || 'http://127.0.0.1:4311').replace(/\/+$/, '');
+  fetch(`${bridgeBase}/health`, { signal: AbortSignal.timeout(1500) })
+    .then((r) => { lastBridgeUp = r.ok; })
+    .catch(() => { lastBridgeUp = false; });
+  if (process.env.OFFICE_DOCKER === '1') {
+    lastDockerRunning = true;
+  } else {
+    sh('docker', ['inspect', '-f', '{{.State.Running}}', 'work-office'], 2500)
+      .then((out) => { lastDockerRunning = String(out || '').trim() === 'true'; })
+      .catch(() => { lastDockerRunning = false; });
+  }
+}
+probeDockerAndBridge();
 
 const HOME = os.homedir();
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
@@ -160,6 +182,11 @@ function noteUsage(P, est, foot, fAt) {
   }
   for (const k of hist.keys()) if (!live.has(k)) hist.delete(k);
   for (const port of est.keys()) portSeen.set(port, now);
+  if (portSeen.size > 500) {
+    for (const [port, t] of portSeen) {
+      if (now - t > 24 * 3600e3) portSeen.delete(port);
+    }
+  }
 }
 // Growth of one process over the last 15 minutes, and how long it has kept a core busy.
 function usageOf(p) {
@@ -465,11 +492,30 @@ async function buildSnapshot(open = true) {
   const group = (t) => (t.disk ? 2 : t.action ? 0 : 1);
   tips.sort((a, b) => group(a) - group(b) || rank[a.level] - rank[b.level] || b.gain - a.gain);
 
+  probeDockerAndBridge();
+  const hasNativeRust = Boolean(findNativeRustBin());
+
   return {
     at: now,
     mem, disk: dsk, tight, diskTight,
     cpu: { cores, percent: cpuPct, load: cpuLoad },
     gpu: gpuInfo || null,
+    engine: {
+      kind: hasNativeRust ? 'rust-native' : 'node',
+      runtime: 'axum-tokio',
+      version: '1.3.0',
+    },
+    security: {
+      summary: 'Wi-Fi Ket & Tailscale · SHA-256 PIN · HMAC Bridge',
+      hmacBridge: true,
+      sha256Pin: true,
+      lanBlocked: true,
+    },
+    docker: {
+      inDocker: process.env.OFFICE_DOCKER === '1',
+      containerRunning: process.env.OFFICE_DOCKER === '1' || lastDockerRunning,
+      bridgeUp: lastBridgeUp,
+    },
     rules: { sessionIdle: SESSION_IDLE, devIdle: DEV_IDLE, pressure: mem.pressure },
     devServers, claude, apps: appList, orphans, tips, ide: editor, held, trend: trend.slice(),
     cleanups: cleanups.map(({ paths, cmd, words, ...c }) => ({ ...c, ...cleanupWords({ words }), count: paths ? paths.length : undefined })),

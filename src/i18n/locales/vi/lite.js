@@ -2,7 +2,8 @@
 export default {
   wait: 'Cần bạn',
   work: 'Đang làm',
-  rest: 'Đang nghỉ',
+  rest: 'Đang rảnh',
+  home: 'Nghỉ làm',
   empty: 'Chưa có phiên Antigravity nào đang mở.',
   subs: '{n} trợ lý',
   ctx: 'ngữ cảnh {pct}%',

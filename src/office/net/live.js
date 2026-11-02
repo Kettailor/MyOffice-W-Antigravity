@@ -8,7 +8,7 @@ import { CHAIR_IDLE, DESKS, PODS, UNITS, chairs, unitOfDesk } from '../world/des
 import { canvasTex } from '../scene/blocks.js';
 import { DEPTS } from '../world/layout.js';
 import { ACCENTS, DEPT_SIGNS, DEPT_TITLE_KEYS } from '../world/pro/wing.js';
-import { PALETTE, addWorker, classifyDept, dn, dropSub, hash, leaving, leavingIds, sessions, spawnSub, subs, workers } from '../people/workers.js';
+import { PALETTE, addWorker, classifyDept, deptWorkers, dn, dropSub, hash, leaving, leavingIds, rekeySub, sessions, spawnSub, subs, workers } from '../people/workers.js';
 import { queueUi } from '../ui/activity.js';
 import { closeSession } from '../ui/session-drawer.js';
 import { t as tr } from '../../i18n/index.js';
@@ -43,6 +43,7 @@ function proDesk(s) {
   }
   const used = new Set(deskOf.values()), proj = projOf(s);
   for (const sw of subs.values()) if (sw.subDesk >= 0) used.add(sw.subDesk);
+  for (const dw of deptWorkers) if (dw.subDesk >= 0) used.add(dw.subDesk);
   const order = (u) => (UNITS[u].desks.length > 4 ? SEAT_ORDER.slice(0, UNITS[u].desks.length) : UNITS[u].desks.map((_, k) => k));
   const free = (u) => order(u).map((k) => UNITS[u].desks[k]).filter((d) => !used.has(d));
   const empty = (u) => free(u).length === UNITS[u].desks.length;
@@ -83,12 +84,13 @@ export function updateTeamTags() {
   const showTeams = state.teamsOn !== false;
   const here = teamTags.map((_, u) => [...sessions.values()].filter((s) => s.desk >= 0 && unitOfDesk[s.desk] === u));
   const subHere = teamTags.map((_, u) => [...subs.values()].filter((sw) => sw.subDesk >= 0 && unitOfDesk[sw.subDesk] === u));
+  const deptIdleHere = teamTags.map((_, u) => deptWorkers.filter((dw) => !dw.busySub && dw.subDesk >= 0 && unitOfDesk[dw.subDesk] === u));
   const nameOf = (u) => rowTeam.get(u) || [...new Set(here[u].map(projOf))][0] || '';
   teamTags.forEach((tg, u) => {
     const dept = UNITS[u].dept;
     if (dept >= 0) {
       const deptTitle = tr(DEPT_TITLE_KEYS[dept]);
-      const count = here[u].length + subHere[u].length;
+      const count = here[u].length + subHere[u].length + deptIdleHere[u].length;
       const projs = [...new Set([...here[u].map(projOf), ...subHere[u].map((sw) => projOf(sessions.get(sw.parent?.id))).filter(Boolean)])];
       const chip = showTeams;
       const key = `dept|${dept}|${deptTitle}|${count}|${projs.join(',')}|${chip}`;
@@ -132,9 +134,14 @@ export function upsertSession(s, walkIn = true) {
   if (!w && !leavingIds.has(s.id)) w = addWorker(s, walkIn && had === false && state.connectedOnce);
   if (w) {
     w.setName(short(dn(s), 26));
+    for (const x of s.subs || []) {
+      if (x.prevId && subs.has(x.prevId)) rekeySub(x.prevId, x.id, x);
+      if (!subs.has(x.id)) spawnSub(w, x.id, x.type, !walkIn || document.hidden, x);
+      const sw = subs.get(x.id);
+      if (sw && x.desc) sw.desc = x.desc;
+    }
     const live = new Set((s.subs || []).map((x) => x.id));
     for (const [aid, sw] of subs) if (sw.parent === w && !live.has(aid)) dropSub(aid, walkIn && !document.hidden);
-    for (const x of s.subs || []) { if (!subs.has(x.id)) spawnSub(w, x.id, x.type, !walkIn || document.hidden, x); const sw = subs.get(x.id); if (sw && x.desc) sw.desc = x.desc; }
     w.setTeam([...subs.values()].filter((x) => x.parent === w).length);
     w.setAcct(s.acct);
   }

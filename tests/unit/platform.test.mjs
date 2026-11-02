@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { parseNetTcp, parseMeminfo, parseStat } from '../../server/platform/linux.mjs';
-import { parseReading } from '../../server/platform/win32.mjs';
+import { parseReading, parseNetstat } from '../../server/platform/win32.mjs';
 import { cpuFromDelta, parseEtime } from '../../server/platform/shared.mjs';
+import { findNativeRustBin } from '../../server/antigravity.mjs';
 
 test('Linux: a /proc/<pid>/stat line, a name with spaces and brackets included', () => {
   const line = '4242 (next-server (v16)) S 4200 4200 4200 0 -1 4194560 23 0 0 0 150 30 0 0 20 0 11 0 987654 1234567 25600 18446744073709551615';
@@ -65,3 +67,33 @@ test('shared: ps times, and CPU % from two readings', () => {
   cpuFromDelta(state, b);
   assert.equal(b.get(1).cpu, 50);
 });
+
+test('Windows: parseNetstat parses LISTENING and ESTABLISHED TCP rows', () => {
+  const sample = [
+    'Active Connections',
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    0.0.0.0:3333           0.0.0.0:0              LISTENING       12400',
+    '  TCP    127.0.0.1:3333         127.0.0.1:54120        ESTABLISHED     12400',
+    '  TCP    127.0.0.1:54120        127.0.0.1:3333         TIME_WAIT       0',
+    '  UDP    0.0.0.0:5353           *:*                                    1980',
+  ].join('\r\n');
+  const rows = parseNetstat(sample);
+  assert.deepEqual(rows, [
+    { port: 3333, state: 2, pid: 12400 },
+    { port: 3333, state: 5, pid: 12400 },
+  ]);
+});
+
+test('Native Rust binary: --health reports v1.3.0 and security capabilities when present', () => {
+  const bin = findNativeRustBin();
+  if (!bin) return;
+  const raw = execFileSync(bin, ['--health'], { encoding: 'utf8', timeout: 5000 }).trim();
+  const health = JSON.parse(raw);
+  assert.equal(health.ok, true);
+  assert.equal(health.engine, 'work-office-native-rust');
+  assert.equal(health.version, '1.3.0');
+  assert.equal(health.security?.hmacBridge, true);
+  assert.equal(health.security?.sha256Pin, true);
+  assert.equal(health.security?.secretRedaction, true);
+});
+

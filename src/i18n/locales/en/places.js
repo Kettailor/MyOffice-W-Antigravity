@@ -3,6 +3,7 @@ export default {
   // a chip's name
   chip: {
     director: "Director's office",
+    coDirectorOffice: 'Co-Director Office',
     meeting: 'Meeting room',
     libraryPro: 'Library · lookups',
     library: 'Library',

@@ -24,7 +24,7 @@ export function setScene(name, apply = true) {
   THEME = t;
   try { localStorage.setItem('office-scene', name); } catch { /* storage blocked */ }
   for (const b of document.querySelectorAll('[data-scene]')) b.setAttribute('aria-pressed', String(b.dataset.scene === name));
-  if (fp.grid) fp.grid = buildGrid();
+  if (fp?.grid) fp.grid = buildGrid();
   if (apply) setNight(night);
 }
 

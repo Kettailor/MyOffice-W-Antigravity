@@ -1,0 +1,24 @@
+[package]
+name = "work-office-native"
+version = "1.3.0"
+edition = "2021"
+description = "Native Rust acceleration engine & Axum/Tokio backend for Work Office 3D (Antigravity Brain scanner, JSONL tailer, Win32/Linux sysinfo telemetry & SHA-256/HMAC security shield)"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.30"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+regex = "1.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "signal"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

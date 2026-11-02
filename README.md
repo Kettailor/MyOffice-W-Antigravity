@@ -19,7 +19,7 @@ Dự án này được phát triển và mở rộng dựa trên nền tảng d�
 
 - **Tác giả dự án gốc (Original Author)**: **[@khanh020905](https://github.com/khanh020905)**
 - **Kho lưu trữ gốc (Original Repository)**: **[https://github.com/khanh020905/my-office](https://github.com/khanh020905/my-office)** (*"Văn phòng 3D cho các phiên Claude Code · A 3D office for your Claude Code sessions"*)
-- **Phát triển & Tích hợp hệ sinh thái Google Antigravity (`MyOffice-W-Antigravity`)**: **[@Kettailor](https://github.com/Kettailor)** — bổ sung bộ máy `Antigravity Brain Watcher` (`server/antigravity.mjs`), kiến trúc điều phối **Main Agent + 4 Subagents song song** (`AGENTS.md`), hộp thoại duyệt nổi **Focus-to-Approve** (`ask_question` & `implementation_plan.md`), bảng **Giao việc & Nhóm Chat đa dự án**, thống kê **Quota 5h/7d động** theo từng dự án, giám sát GPU NVIDIA trên Windows và hệ thống phân quyền **Phó Giám đốc (PIN 6 số) / Trợ lý Giám đốc** (`server/access.mjs`).
+- **Phát triển & Tích hợp hệ sinh thái Google Antigravity (`MyOffice-W-Antigravity`)**: **[@Kettailor](https://github.com/Kettailor)** — bổ sung bộ máy `Antigravity Brain Watcher` (`server/antigravity.mjs`), nhân tăng tốc **Rust Native Engine** (`rust-native/`) & **Docker On-Demand Host Bridge** (`server/host-bridge.mjs`), kiến trúc điều phối **Main Agent + 4 Subagents song song** (`AGENTS.md`), hộp thoại duyệt nổi **Focus-to-Approve** (`ask_question` & `implementation_plan.md`), bảng **Giao việc (chọn AI Model, lưu nháp 20 ảnh, đổi tên/ghim phiên) & Nhóm Chat 2 kênh tách biệt**, thống kê **Quota 5h/7d động** theo từng dự án/tài khoản, giám sát GPU NVIDIA trên Windows và hệ thống phân quyền bảo mật **HMAC-SHA256** cho **Phó Giám đốc (PIN 6 số) / Trợ lý Giám đốc** (`server/access.mjs`).
 - **Trích dẫn kỹ thuật khác**:
   - Luật phát hiện tiến trình ngốn CPU/RAM và dev server bỏ quên trong `server/system.mjs` được tham khảo từ [Kanevry/cc-reaper](https://github.com/Kanevry/cc-reaper) (Apache-2.0).
   - Mô hình xe cộ trên đường phố sử dụng bộ [Kenney Car Kit 3.1](https://kenney.nl/assets/car-kit) (CC0).
@@ -44,25 +44,27 @@ Dự án này được phát triển và mở rộng dựa trên nền tảng d�
   | `invoke_subagent`, `define_subagent`, `send_message` | Sinh nhân vật Chibi **Subagent** nối dây nhóm (`team-lines.js`) với Main Agent |
   | `ask_question`, `implementation_plan.md` (`RequestFeedback: true`) | Giơ tay xin ý kiến & bật hộp thoại duyệt nổi **Focus-to-Approve** |
 
-### 2. Kiến trúc Điều phối Multi-Agent (`Main Agent` + `4 Subagents`)
+### 2. Kiến trúc Điều phối Multi-Agent (`Main Agent` + `4 Subagents`) & Tốc độ Chibi Thích ứng
 - Hỗ trợ hiển thị trực quan mô hình **Orchestrator (Tech Lead)** gọi song song 4 Subagent chuyên biệt (`world-3d-specialist`, `ui-chat-specialist`, `backend-agy-specialist`, `qa-test-specialist`).
-- Khi Main Agent gọi `invoke_subagent`, văn phòng 3D lập tức sinh nhân vật Chibi Subagent bước vào cửa, nhận việc từ bàn Main Agent, di chuyển tới khu vực chuyên môn và báo cáo lại khi hoàn tất.
+- Khi Main Agent gọi `invoke_subagent`, thang máy được kích hoạt tức thì đưa nhân vật Chibi Subagent bước vào văn phòng, họp nhanh nhận việc từ Main Agent, di chuyển tới khu vực chuyên môn và báo cáo lại khi hoàn tất (kèm cơ chế hàng đợi hành động `deferMainAction` chống kẹt khi tác vụ hoàn thành nhanh).
+- **Tốc độ di chuyển tùy biến thông minh (`calcPace`)**: Nhân vật Chibi đang trong phiên làm việc (`work` / `fire` / họp nhóm) tự động di chuyển nhanh nhạy để theo kịp các bước công cụ thời gian thực, và trở lại dáng đi bộ thư thái bình thường khi nghỉ ngơi (`rest`).
 
 ### 3. Đồng bộ Artifacts (`task.md`, `implementation_plan.md` & `walkthrough.md`)
 - Tự động đọc checklist `- [ ]` / `- [/]` / `- [x]` từ file `task.md` trong thư mục brain của phiên và hiển thị trực tiếp trong ngăn kéo chi tiết của nhân vật.
 - Khi Agent tạo hoặc cập nhật `implementation_plan.md` có bật `RequestFeedback`, hoặc gọi `ask_question`, giao diện tự động mở hộp thoại nổi giữa màn hình (**Focus-to-Approve**) giúp Giám đốc xem tóm tắt kế hoạch và chọn phương án trả lời ngay lập tức.
 
-### 4. Hộp thoại `📋 Giao việc` & Nhóm Chat Điều hành
-- Giao việc trực tiếp cho dự án đang mở hoặc khởi tạo nhiệm vụ mới kèm hình ảnh minh họa.
-- Phòng họp & Nhóm Chat hiển thị luồng hội thoại giữa Giám đốc, Phó Giám đốc, Trợ lý Giám đốc và các Agent phụ trách từng dự án.
+### 4. Hộp thoại `📋 Giao việc` Đa Mô hình & Nhóm Chat 2 Kênh (`💼 Công việc` / `💬 Tán gẫu`)
+- **Giao việc nâng cao**: Hỗ trợ chọn **Mô hình AI (Model)** lưu riêng cho từng phiên/thư mục (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), ghim phiên/dự án (`📌`), đổi tên phiên (`✏️`), xóa phiên (`🗑️`), thu gọn/mở rộng mục **Cuộc trò chuyện mới**, và tự động lưu bản nháp kèm tối đa **20 ảnh** (`Ctrl+V` / `IndexedDB`).
+- **Nhóm Chat tách kênh**: Tách biệt hoàn toàn kênh **💼 Nhóm Công Việc** (giao việc, duyệt lệnh, báo cáo tiến độ Antigravity) và **💬 Nhóm Tán Gẫu** (trò chuyện giải trí, trà sữa, ăn trưa), tự động dọn dẹp theo chu kỳ 7 ngày.
 
-### 5. Phân quyền Truy cập Từ xa (`Phó Giám đốc` vs. `Trợ lý Giám đốc`)
-- **Chính chủ Giám đốc (Thiết bị phụ / Điện thoại)**: Đăng nhập bằng **mã PIN 6 số** tạo trên máy chính để nhận vai trò **Phó Giám đốc** (`isDirectorDevice: true`), có nhân vật Chibi riêng và toàn quyền quan sát/điều phối mọi dự án.
+### 5. Phân quyền Truy cập Từ xa (`Phó Giám đốc` vs. `Trợ lý Giám đốc`) & Bảo mật `SHA-256 / HMAC`
+- **Chính chủ Giám đốc (Thiết bị phụ / Điện thoại)**: Đăng nhập bằng **mã PIN 6 số** (băm `SHA-256` kèm salt, ký phiên bằng `HMAC-SHA256`) để nhận vai trò **Phó Giám đốc** (`isDirectorDevice: true`), có Phòng Đồng Giám đốc và toàn quyền quan sát/điều phối mọi dự án.
 - **Trợ lý Giám đốc (Cộng tác viên từ xa)**: Đăng ký tên và vai trò qua trang cổng truy cập; sau khi được Giám đốc phê duyệt sẽ chỉ nhìn thấy các `Workspace` được cấp phép, ẩn bảng điều khiển phần cứng máy chủ (`#btn-mac`) và mọi lệnh giao việc đều qua bước Giám đốc kiểm duyệt.
 
-### 6. Giám sát Tài nguyên Máy tính, GPU & Quota 5h/7d
-- Theo dõi thời gian thực CPU, RAM, ổ đĩa, GPU NVIDIA (`nvidia-smi` trên Windows), các dev server bị bỏ quên và dung lượng RAM của từng tiến trình Antigravity (`language_server`) / Claude.
-- Ước tính động hạn mức sử dụng **Quota 5 giờ & 7 ngày** cùng biểu đồ phân bổ theo từng dự án và Phòng Truyền Thống (Trophy Cabinet).
+### 6. Kiến trúc Docker + Rust Native Engine + On-Demand Host Bridge & Giám sát Quota 5h/7d
+- **Rust Native Engine (`rust-native/`)**: Tăng tốc quét thư mục Brain, đọc luồng `transcript.jsonl`, thu thập thông số hệ thống (`sysinfo`) và khiên bảo mật `SHA-256/HMAC` + `redact`.
+- **Docker & On-Demand Host Bridge (`:4311`)**: Chạy gọn nhẹ trong Docker container (`:4310`) kết hợp trình giám sát `work-office-native watch-bridge` chỉ đánh thức Host Bridge khi có tác vụ thực thi và tự nghỉ sau 45 giây nhàn rỗi.
+- Theo dõi thời gian thực CPU, RAM, ổ đĩa, GPU NVIDIA (`nvidia-smi`), tự động chuyển đổi đa tài khoản Antigravity và ước tính động hạn mức **Quota 5 giờ & 7 ngày** theo từng dự án.
 
 ---
 
@@ -89,7 +91,22 @@ npm run dev
 
 Mở trình duyệt tại **<http://localhost:4310>** để xem các phiên Antigravity thực tế trên máy của bạn, hoặc mở **<http://localhost:4310/?demo>** để trải nghiệm chế độ mô phỏng mà không cần cài đặt Agent.
 
-### Chạy bản Production & Cài đặt Dịch vụ nền
+### Chạy bằng Docker + On-Demand Host Bridge (Khuyên dùng trên Windows)
+
+```bash
+# Khởi chạy toàn bộ Docker container (:4310) + On-Demand Host Bridge (:4311)
+npm run docker:up
+# Hoặc nhấp đúp file Start-WorkOffice.bat trên Windows
+
+# Kiểm tra trạng thái Docker, Host Bridge và Rust Native Engine
+npm run docker:status
+
+# Khởi động lại hoặc dừng hoàn toàn (hoặc chạy Stop-WorkOffice.bat)
+npm run docker:restart
+npm run docker:down
+```
+
+### Chạy bản Production (Standalone Node) & Cài đặt Dịch vụ nền
 
 ```bash
 # Build bản production và khởi chạy server tại http://localhost:4310
@@ -179,14 +196,20 @@ MyOffice-W-Antigravity/
 ├── docs/                    # Tài liệu kiến trúc (ARCHITECTURE.md) & ảnh minh họa
 ├── hooks/                   # Hooks chuyển tiếp sự kiện & status-line
 ├── public/                  # Tài sản 3D, текстура, phương tiện giao thông, âm thanh
-├── scripts/                 # Công cụ build demo tĩnh, smoke test, cập nhật module map
-├── server/                  # Máy chủ HTTP/SSE, Brain Watcher (antigravity.mjs), Phân quyền (access.mjs)
+├── rust-native/             # Nhân tăng tốc Rust Native (Axum, Tokio, sysinfo, SHA-256/HMAC)
+├── scripts/                 # Điều phối Docker (docker-ctl.mjs), build demo, smoke test, module map
+├── server/                  # Máy chủ HTTP/SSE, Brain Watcher (antigravity.mjs), Host Bridge, Phân quyền
 ├── src/
 │   ├── components/          # Các thành phần giao diện React (TopBar, Stage, Drawers...)
 │   ├── i18n/                # Từ điển đa ngôn ngữ đồng bộ (Tiếng Việt & Tiếng Anh)
 │   ├── office/              # Engine văn phòng 3D (Three.js: world, people, scene, ui, life...)
+│   ├── shared/              # Bộ máy Nhóm Chat 2 kênh (chat-engine.js)
 │   └── styles/              # Hệ thống CSS theo từng phân vùng giao diện
 ├── tests/                   # Unit tests (node --test) & E2E tests (Playwright)
+├── Dockerfile               # Multi-stage build (Rust Alpine + Node 22 Alpine)
+├── docker-compose.yml       # Cấu hình chạy container work-office & kết nối Host Bridge
+├── Start-WorkOffice.bat     # Trình khởi chạy nhanh 1 chạm trên Windows
+├── Stop-WorkOffice.bat      # Trình dừng nhanh Docker & Host Bridge trên Windows
 ├── AGENTS.md                # Luật điều phối Main Agent & 4 Subagent chuyên biệt
 ├── CODE_OF_CONDUCT.md       # Quy tắc ứng xử cộng đồng
 ├── CONTRIBUTING.md          # Hướng dẫn đóng góp mã nguồn

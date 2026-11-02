@@ -8,11 +8,25 @@ import { fp } from '../interact/first-person.js';
 let teamGeo;
 let teamLines;
 export function updateTeam() {
+  if (fp.on) { teamLines.visible = false; return; }
   const boss = (state.selectedId && workers.get(state.selectedId)) || (state.hovered ? (state.hovered.sub ? state.hovered.parent : state.hovered) : null);
-  const team = boss ? [...subs.values(), ...leaving].filter((x) => x.sub && x.parent === boss && x.root.parent).slice(0, 32) : [];
-  if (!team.length || fp.on) { teamLines.visible = false; return; }
+  if (!boss) { teamLines.visible = false; return; }
   const a = teamGeo.attributes.position; let n = 0;
-  for (const m of team) { a.setXYZ(n++, boss.pos.x, 1.1, boss.pos.y); a.setXYZ(n++, m.pos.x, 0.8, m.pos.y); }
+  for (const m of subs.values()) {
+    if (m.sub && m.parent === boss && m.root.parent) {
+      a.setXYZ(n++, boss.pos.x, 1.1, boss.pos.y); a.setXYZ(n++, m.pos.x, 0.8, m.pos.y);
+      if (n >= 64) break;
+    }
+  }
+  if (n < 64) {
+    for (const m of leaving) {
+      if (m.sub && m.parent === boss && m.root.parent) {
+        a.setXYZ(n++, boss.pos.x, 1.1, boss.pos.y); a.setXYZ(n++, m.pos.x, 0.8, m.pos.y);
+        if (n >= 64) break;
+      }
+    }
+  }
+  if (!n) { teamLines.visible = false; return; }
   a.needsUpdate = true; teamGeo.setDrawRange(0, n); teamLines.computeLineDistances(); teamLines.visible = true;
 }
 

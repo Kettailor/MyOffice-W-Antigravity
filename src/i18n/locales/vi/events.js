@@ -1,8 +1,8 @@
 export default {
-  status: { work: 'đang làm', wait: 'chờ duyệt', rest: 'đang nghỉ' },
+  status: { work: 'đang làm', wait: 'chờ duyệt', rest: 'đang rảnh', home: 'nghỉ làm' },
   station: {
     dining: 'phòng ăn', board: 'bảng trắng', library: 'thư viện', desk: 'bàn làm việc', server: 'phòng máy', globe: 'cửa sổ',
-    coffee: 'góc cà phê', meeting: 'phòng họp', director: 'phòng giám đốc', wc: 'nhà vệ sinh', tests: 'bảng đèn test', post: 'hộp thư', rocket: 'bệ phóng Git',
+    coffee: 'góc cà phê', meeting: 'phòng họp', director: 'phòng giám đốc', wc: 'nhà vệ sinh', tests: 'bảng đèn test', post: 'hộp thư', rocket: 'bệ phóng Git', phone: 'điện thoại lễ tân',
   },
   generic: {
     prompt: 'việc mới', read: 'một file', grep: 'trong code', glob: 'thư mục', skill: 'một kỹ năng', edit: 'một file', write: 'một file',

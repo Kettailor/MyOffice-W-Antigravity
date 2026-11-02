@@ -262,6 +262,13 @@ export function setup() {
     const w = per.worker;
     if (w && w === director) { openPlace('director'); return; }
     if (w?.sub) { if (w.parent) openSession(w.parent.id, { tab: 'subs', agent: w.id }); return; }
+    if (w?.deptStaff && !w.sub) {
+      w.say('idle', tr('people.poke.boss'), 'rest');
+      w.waveUntil = state.sim + 1.3;
+      w.pokeHushAt = state.sim + 3.5;
+      sfx.play('pop');
+      return;
+    }
     if (w && w.anim === 'sleep' && w.phase !== 'walk') w.poke();
     else if (w && state.selectedId !== w.id) errands.lookUp(w);
     if (w) toggleSession(w.id);

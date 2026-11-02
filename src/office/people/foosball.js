@@ -12,6 +12,7 @@ import { napOn } from '../life/nap.js';
 import { standBy } from './navigation.js';
 import { sessions, workers } from './workers.js';
 import { asleep, free, quip } from './errands.js';
+import { toast } from '../ui/activity.js';
 import { sfx } from '../audio/sfx.js';
 import { t as tr } from '../../i18n/index.js';
 
@@ -54,11 +55,20 @@ function places() {
 }
 
 /* ---------- a game ---------- */
-const called = (w) => { const s = sessions.get(w.id); return !s || s.status !== 'rest' || !!s.bg?.length || !!w.want; };
+const called = (w) => {
+  if (w.deptStaff) return !!w.busySub || !!w.want;
+  const s = sessions.get(w.id);
+  return !s || s.status !== 'rest' || !!s.bg?.length || !!w.want;
+};
 // who could play: resting, nothing else on (not out, not on a break, not carrying anything, not at tea)
 function who() {
   return [...workers.values()].filter((w) => { const s = sessions.get(w.id);
     return !w.sub && s?.status === 'rest' && !s.bg?.length && (free(w) || asleep(w)) && !w.onBreak && !w.outing && !w.street && !w.carry && !w.doze && !w.mealBox && !w.shred; });
+}
+export function foosClick() {
+  sfx.play('click');
+  if (G) return;
+  if (!foosball(true)) toast(tr('props.foosball.hint'));
 }
 /** A game now (?debug: __office.pingpong(), or forced), else now and then on its own. Returns whether one started. */
 export function foosball(force = false) {

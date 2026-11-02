@@ -14,7 +14,7 @@ import { offTexture } from './screens.js';
    Pro: three team pods of four, two desks facing two across a fabric screen (the front pair turned round).
    Headquarters: the same three pods, then two pods in each department room of the wing. */
 const DESK_COLS = [-2.1, 0, 2.1], DESK_ROWS = [-1.6, 0.4, 2.4];
-export let PODS;
+export let PODS = [[0.0, 0.4], [5.2, 0.4], [2.6, 5.2], ...(HQ ? DEPTS.flatMap((d) => [[-2.6, 0], [2.6, 0]].map(([dx, dz]) => [d.cx + dx, d.cz + dz])) : [])];
 export let TEAM_SIZE;
 export let TEAMS;
 // teams sit by unit: on the company floor a unit is one pod (4 desks); in a department room it is the room's two pods
@@ -72,7 +72,7 @@ export function syncKit(i) {
 }
 
 export function setup() {
-  PODS = PRO ? [[-0.1, 1.5], [5.1, 1.5], [2.5, 6.6], ...(HQ ? DEPTS.flatMap((d) => d.pods) : [])] : []; TEAM_SIZE = PRO ? 4 : DESK_COLS.length;
+  PODS = PRO ? [[0.0, 0.4], [5.2, 0.4], [2.6, 5.2], ...(HQ ? DEPTS.flatMap((d) => [[-2.6, 0], [2.6, 0]].map(([dx, dz]) => [d.cx + dx, d.cz + dz])) : [])] : []; TEAM_SIZE = PRO ? 4 : DESK_COLS.length;
   const range = (a, n) => Array.from({ length: n }, (_, k) => a + k);
   // a team's area: half a pod on the open floor (the two desks face to face on its left or right side: a project with
   // more people takes the other half too), a whole department room on the headquarters' wing, a row in the small office

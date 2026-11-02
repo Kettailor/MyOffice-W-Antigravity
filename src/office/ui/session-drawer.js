@@ -5,7 +5,7 @@ import { STATUS_LABEL, verb } from './event-text.js';
 import { TYPE_ICON, icon } from './icons.js';
 import { BASE_ZOOM } from '../scene/renderer.js';
 import { colorOf, dn, sessions, workers } from '../people/workers.js';
-import { cap, feedRow, fmtTok, fmtUsd, openFromRow, queueUi, toast } from './activity.js';
+import { cap, feedRow, fmtTok, fmtUsd, openFromRow, queueUi, renderRail, toast, uiStatusOf } from './activity.js';
 import { goView, setView } from './camera-bar.js';
 import { closeMac, doAction, loadMac, macSnap } from './mac-drawer.js';
 import { TOKEN, removeSession } from '../net/live.js';
@@ -72,7 +72,8 @@ export function renderSessionHead() {
     }
   }
   $('ds-dir').textContent = s.origin ? `${s.dir} · ${s.origin}` : s.dir;
-  const st = $('ds-status'); st.textContent = STATUS_LABEL[s.status]; st.dataset.status = s.status;
+  const stKey = uiStatusOf(s);
+  const st = $('ds-status'); st.textContent = STATUS_LABEL[stKey]; st.dataset.status = stKey;
   $('ds-read').textContent = s.counts?.read ?? 0; $('ds-edit').textContent = s.counts?.edit ?? 0; $('ds-cmd').textContent = s.counts?.cmd ?? 0;
   $('ds-time').textContent = s.taskStart && s.status !== 'rest' ? fmtClock((nowMs() - s.taskStart) / 1000) : '–';
   const u = s.usage;
@@ -80,7 +81,7 @@ export function renderSessionHead() {
   const projPct = u?.projectQuotaPct ?? u?.quota5hPct;
   const projUsed = projPct != null ? Math.round(projPct) : null;
   const projLeft = projUsed != null ? Math.max(0, 100 - projUsed) : null;
-  $('ds-cost').textContent = u ? (projPct != null ? `Còn ${projLeft}% (${projUsed}%) · ${fmtUsd(u.cost)}` : fmtUsd(u.cost)) : '–';
+  $('ds-cost').textContent = u ? (projLeft != null ? `${projLeft}% · ${fmtUsd(u.cost)}` : fmtUsd(u.cost)) : '–';
   $('ds-cost').parentElement.title = u && projPct != null
     ? `Quota dự án (5g): Còn ${projLeft}% (${projUsed}% đã dùng) · ${u.prompts5h ?? u.prompts ?? 0} việc (${u.steps5h ?? u.steps ?? 0} bước) · ${tr('drawer.priceNote')}`
     : tr('drawer.priceNote');
@@ -97,7 +98,62 @@ export async function openWindowOf(s) {
 }
 // what the buttons below depend on
 let drawnSig = '', qrFor = null;   // (qrFor: the session whose Remote Control QR code is shown)
-const actionsSig = (s) => [s.id, s.status === 'rest', s.status === 'wait', getSessionWaitCard(s.id)?.id || '', s.pid, s.moved?.to, s.acct, state.limits?.others?.length].join('|');
+const actionsSig = (s) => [s.id, s.status === 'rest', s.status === 'wait', s.status === 'work', Boolean(s.busy), getSessionWaitCard(s.id)?.id || '', s.pid, s.moved?.to, s.acct, state.limits?.others?.length].join('|');
+function renderLogs() {
+  if (tab === 'chat') renderChat(false);
+  else if (tab === 'subs') renderSubs(false);
+  else renderActivity();
+}
+export async function stopSession(s, btn) {
+  if (!s) return false;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = tr('drawer.stop.stopping');
+  }
+  const res = DEMO
+    ? { ok: true }
+    : await fetch(`/api/session/stop${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: s.id, sid: s.sid }),
+    }).then((x) => x.json()).catch(() => null);
+  if (res?.ok) {
+    const live = s.id ? sessions.get(s.id) : null;
+    s.status = 'rest';
+    s.busy = false;
+    s.waitCard = null;
+    s.subs = [];
+    s.act = tr('drawer.stop.stopped');
+    if (live && live !== s) {
+      live.status = 'rest';
+      live.busy = false;
+      live.waitCard = null;
+      live.subs = [];
+      live.act = tr('drawer.stop.stopped');
+    }
+    renderSessionHead();
+    renderActions();
+    renderRail();
+    renderLogs();
+    queueUi();
+    toast(tr('drawer.stop.stopped'), 3500);
+    return true;
+  }
+  toast(res?.message || tr('drawer.unreachable'));
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = tr('drawer.stop.button');
+  }
+  if (state.selectedId === s.id) renderActions();
+  return false;
+}
+function stopSessionButton(s) {
+  const btn = el('button', `dr-act-btn dr-stop-btn${(s.status === 'work' || s.status === 'wait' || s.busy) ? ' is-active' : ''}`, tr('drawer.stop.button'));
+  btn.type = 'button';
+  btn.title = tr('drawer.stop.title');
+  btn.addEventListener('click', () => stopSession(s, btn));
+  return btn;
+}
 function renderActions() {
   const s = sessions.get(state.selectedId); if (!s) return;
   const box = $('ds-actions'); box.replaceChildren(); drawnSig = actionsSig(s);
@@ -113,8 +169,9 @@ function renderActions() {
     b.title = tr('drawer.openWindowTitle'); b.addEventListener('click', () => openWindowOf(s)); box.append(b);
   }
   if (state.isLocal && s.pid && s.status === 'rest') box.append(closeSessionButton(s));
-  box.append(renameSessionButton(s));
-  box.append(deleteSessionButton(s));
+  const topBtns = el('div', 'dr-top-btns');
+  topBtns.append(stopSessionButton(s), renameSessionButton(s), deleteSessionButton(s));
+  box.append(topBtns);
   box.append(...acctActions(s, renderActions));
   if (s.link) {
     const a = el('a', 'btn btn--primary btn--sm', tr('drawer.openOnClaude')); a.href = s.link; a.target = '_blank'; a.rel = 'noopener';
@@ -129,7 +186,8 @@ function renderActions() {
     if (qrFor !== s.id) box.append(el('p', 'dr-note', tr('drawer.openOnClaudeNote')));
   } else {
     const [before, after = ''] = tr('drawer.rcHint').split('{cmd}');
-    const p = el('p', 'dr-note'); p.append(before, el('code', null, '/rc'), after);
+    const p = el('p', 'dr-note dr-note--rc'); p.append(before, el('code', null, '/rc'), after);
+    if (s.origin === 'Antigravity') p.hidden = true;
     box.append(p);
   }
 }
@@ -326,17 +384,21 @@ export function scheduleLog() { clearTimeout(logTimer); logTimer = setTimeout(()
 /* conversation: a small markdown renderer that only builds DOM nodes (never innerHTML), so a transcript can't inject
    markup. Covers what Claude writes: headings, lists (nested, task boxes), code blocks, tables, quotes, rules, links. */
 const MD_INLINE = /(`[^`\n]+`|\*\*[^*\n]+?\*\*|__[^_\n]+?__|(?<![\w*])\*[^*\s][^*\n]*?\*(?!\w)|\[[^\]\n]+\]\([^)\s]+\)|https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?])/;
+const MD_BOLD_RE = /^(\*\*|__).+\1$/;
+const MD_EM_RE = /^\*[^*].*\*$/;
+const MD_LINK_RE = /^\[([^\]]+)\]\(([^)\s]+)\)$/;
+const MD_HTTP_RE = /^https?:\/\//;
 function mdInline(parent, text) {
-  for (const bit of String(text).split(new RegExp(MD_INLINE.source))) {
+  for (const bit of String(text).split(MD_INLINE)) {
     if (!bit) continue;
     let m;
     if (bit.length > 2 && bit[0] === '`' && bit.at(-1) === '`') parent.append(el('code', null, bit.slice(1, -1)));
-    else if (/^(\*\*|__).+\1$/.test(bit) && bit.length > 4) { const b = el('strong'); mdInline(b, bit.slice(2, -2)); parent.append(b); }
-    else if (/^\*[^*].*\*$/.test(bit)) { const i = el('em'); mdInline(i, bit.slice(1, -1)); parent.append(i); }
-    else if ((m = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(bit))) {
-      if (/^https?:\/\//.test(m[2])) { const a = el('a', null, m[1]); a.href = m[2]; a.target = '_blank'; a.rel = 'noopener noreferrer'; parent.append(a); }
+    else if (bit.length > 4 && MD_BOLD_RE.test(bit)) { const b = el('strong'); mdInline(b, bit.slice(2, -2)); parent.append(b); }
+    else if (MD_EM_RE.test(bit)) { const i = el('em'); mdInline(i, bit.slice(1, -1)); parent.append(i); }
+    else if ((m = MD_LINK_RE.exec(bit))) {
+      if (MD_HTTP_RE.test(m[2])) { const a = el('a', null, m[1]); a.href = m[2]; a.target = '_blank'; a.rel = 'noopener noreferrer'; parent.append(a); }
       else parent.append(el('span', 'md-file', m[1]));   // a path in the project: nothing to open from here
-    } else if (/^https?:\/\//.test(bit)) { const a = el('a', null, short(bit.replace(/^https?:\/\//, ''), 60)); a.href = bit; a.target = '_blank'; a.rel = 'noopener noreferrer'; parent.append(a); }
+    } else if (MD_HTTP_RE.test(bit)) { const a = el('a', null, short(bit.replace(MD_HTTP_RE, ''), 60)); a.href = bit; a.target = '_blank'; a.rel = 'noopener noreferrer'; parent.append(a); }
     else parent.append(bit);
   }
 }
@@ -419,7 +481,7 @@ function copyText(text, btn) {
 // Which long messages / step groups / summaries are open survives the re-render that follows every new event.
 const chatOpen = new Set();
 const chatKey = (it, k) => `${it.role}:${it.ts}:${k}`;
-const LONG_CHARS = 1100, LONG_LINES = 18;
+const LONG_CHARS = 2600, LONG_LINES = 40;
 // the tally word for each step type: a key under drawer.step
 const STEP_WORD = { read: 'read', grep: 'read', glob: 'read', skill: 'read', edit: 'edit', write: 'edit', bash: 'cmd', web: 'web', fetch: 'web', mcp: 'tool', agent: 'agent', plan: 'plan' };
 function chatDay(ts) {
@@ -430,7 +492,12 @@ function chatDay(ts) {
 }
 function foldable(details, key) {
   if (chatOpen.has(key)) details.open = true;
-  details.addEventListener('toggle', () => { if (details.open) chatOpen.add(key); else chatOpen.delete(key); });
+  details.addEventListener('toggle', () => {
+    if (details.open) {
+      if (chatOpen.size > 300) chatOpen.delete(chatOpen.values().next().value);
+      chatOpen.add(key);
+    } else chatOpen.delete(key);
+  });
   return details;
 }
 function buildChat(items, who = 'Antigravity') {
@@ -458,7 +525,11 @@ function buildChat(items, who = 'Antigravity') {
   items.forEach((it, k) => {
     if (it.ts && (!lastTs || it.ts - lastTs > 20 * 60e3 || new Date(it.ts).getDate() !== new Date(lastTs).getDate())) { flush(); chat.append(el('div', 'chat-day', chatDay(it.ts))); }
     if (it.ts) lastTs = it.ts;
-    if (it.role === 'tool') { (steps ||= []).push(it); return; }
+    if (it.role === 'tool') {
+      if (state.showWorkSteps === false) return;
+      (steps ||= []).push(it);
+      return;
+    }
     flush();
     // the server writes the note; one about a subagent gets a clipboard ("trợ lý" is the Vietnamese wording)
     if (it.role === 'note') { chat.append(el('div', 'msg-note', `${/trợ lý|subagent/i.test(it.text) ? '📋' : '✋'} ${it.text}${it.ts ? ' · ' + hhmm(it.ts) : ''}`)); return; }
@@ -506,19 +577,24 @@ export function renderChat(scrollEnd) {
 }
 let jumpBtn;
 function syncJump() { const b = $('ds-body'); jumpBtn.hidden = !(tab === 'chat' || (tab === 'subs' && state.subView)) || b.scrollHeight - b.scrollTop - b.clientHeight < 240; }
-const subInfo = (s, id) => [...(s?.subs || []), ...(s?.doneSubs || [])].find((y) => y.id === id);
+const subInfo = (s, id) => [...(s?.subs || []), ...(s?.doneSubs || [])].find((y) => y.id === id || y.prevId === id);
 export function renderSubs(scrollEnd = false) {
   if (tab !== 'subs') return;
   const s = sessions.get(state.selectedId), body = $('ds-body');
   if (state.subView) {
     const x = subInfo(s, state.subView);
+    if (x && x.id !== state.subView) state.subView = x.id;
     const nearEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
     const head = el('div', 'sub-head');
     const back = el('button', 'btn btn--sm', tr('drawer.allSubs')); back.type = 'button';
     back.addEventListener('click', () => { state.subView = null; renderSubs(); });
     const pill = el('span', 'pill', x && !x.endedAt ? tr('drawer.working') : tr('drawer.done')); pill.dataset.status = x && !x.endedAt ? 'work' : 'rest';
     head.append(back, el('b', null, x ? `${x.type}${x.desc ? ': ' + x.desc : ''}` : tr('drawer.subagent')), pill);
-    const wrap = el('div'); wrap.append(head, subItems.length ? buildChat(subItems, x?.type || tr('drawer.subagent')) : el('p', 'chat-empty', tr('drawer.loadingSub')));
+    const liveSubItems = subItems.length ? subItems : (x ? [
+      ...(x.desc ? [{ role: 'user', text: x.desc, imgs: 0, ts: x.startedAt || nowMs() }] : []),
+      ...(x.last?.label ? [{ role: 'tool', type: x.last.type || 'agent', label: x.last.label, desc: '', ts: nowMs() }] : []),
+    ] : []);
+    const wrap = el('div'); wrap.append(head, liveSubItems.length ? buildChat(liveSubItems, x?.type || tr('drawer.subagent')) : el('p', 'chat-empty', tr('drawer.loadingSub')));
     body.replaceChildren(wrap);
     if (scrollEnd || nearEnd) body.scrollTop = body.scrollHeight;
     syncJump();
@@ -554,6 +630,16 @@ export function renderActivity() {
 export function setup() {
   state.subView = null;
   drS = $('dr-session'); drM = $('dr-mac');
+  const wideBtn = $('ds-wide-btn');
+  const applyWide = (wide) => {
+    drS?.classList.toggle('drawer--expanded', wide);
+    wideBtn?.setAttribute('aria-pressed', String(wide));
+    try { localStorage.setItem('office-drawer-wide', wide ? '1' : '0'); } catch { /* storage blocked */ }
+  };
+  try {
+    if (localStorage.getItem('office-drawer-wide') === '1') applyWide(true);
+  } catch { /* storage blocked */ }
+  wideBtn?.addEventListener('click', () => applyWide(!drS?.classList.contains('drawer--expanded')));
   $('tab-chat').addEventListener('click', () => { setTab('chat'); loadLog(true); });
   $('tab-subs').addEventListener('click', () => { state.subView = null; setTab('subs'); });
   $('tab-act').addEventListener('click', () => setTab('act'));

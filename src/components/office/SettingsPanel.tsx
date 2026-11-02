@@ -6,7 +6,7 @@ import { LANGS } from '@/i18n/index.js';
 import { getT } from '@/i18n/server';
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH || '';
-const LAYOUTS = ['cozy', 'pro', 'hq'] as const;
+const LAYOUTS = ['hq'] as const;
 const SCENES = [['city', 'sc-city'], ['country', 'sc-country'], ['beach', 'sc-beach']] as const;
 const TIMES = ['auto', 'day', 'night'] as const;
 const LOOKS = ['toy', 'pixar'] as const;
@@ -16,8 +16,8 @@ const TIME_ICON = { auto: 'clock', day: 'sun', night: 'moon' } as const;
 
 export default async function SettingsPanel() {
   const t = await getT();
-  const toggle = (k: string, on: boolean) => (
-    <button key={k} type="button" className="tgl" data-tgl={k} role="switch" aria-checked={on ? 'true' : 'false'}><span>{t(`ui.topBar.toggles.${k}`)}</span><i></i></button>
+  const toggle = (k: string, on: boolean, labelKey?: string) => (
+    <button key={k} type="button" className="tgl" data-tgl={k} role="switch" aria-checked={on ? 'true' : 'false'}><span>{t(labelKey || `ui.topBar.toggles.${k}`)}</span><i></i></button>
   );
   return (
     <div className="pop pop-settings" id="pop-look" hidden role="dialog" aria-label={t('ui.topBar.settings')}>
@@ -34,9 +34,9 @@ export default async function SettingsPanel() {
       <div className="st-body">
         <section className="st-panel" id="st-panel-office" role="tabpanel" aria-labelledby="st-tab-office" data-st-panel="office">
           <h3>{t('ui.topBar.office')}</h3>
-          <div className="st-cards st-cards--3">
+          <div className="st-cards st-cards--1">
             {LAYOUTS.map((l) => (
-              <button key={l} type="button" className="scene st-layout" data-layout={l} aria-pressed="false">
+              <button key={l} type="button" className="scene st-layout" data-layout={l} aria-pressed="true">
                 {/* eslint-disable-next-line @next/next/no-img-element -- a small static picture, no optimisation needed */}
                 <img className="sc-art st-shot" src={`${BASE}/assets/thumbs/layout-${l}.jpg`} alt="" loading="lazy" decoding="async" />
                 <b>{t(`settings.layouts.${l}.name`)}</b><small>{t(`settings.layouts.${l}.sub`)}</small>
@@ -106,7 +106,7 @@ export default async function SettingsPanel() {
           </div>
 
           <h3>{t('ui.topBar.more')}</h3>
-          <div className="pop-toggles">{toggle('zones', false)}{toggle('teams', true)}{toggle('stream', false)}{toggle('autocam', true)}</div>
+          <div className="pop-toggles">{toggle('chibiNames', true, 'ui.settings.chibiNames')}{toggle('staffNames', true, 'ui.settings.staffNames')}{toggle('subNames', true, 'ui.settings.subNames')}{toggle('workSteps', true, 'ui.settings.workSteps')}{toggle('zones', false)}{toggle('teams', true)}{toggle('stream', false)}{toggle('autocam', true)}</div>
         </section>
 
         <section className="st-panel" id="st-panel-more" role="tabpanel" aria-labelledby="st-tab-more" data-st-panel="more" hidden>

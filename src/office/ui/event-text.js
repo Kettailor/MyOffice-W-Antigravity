@@ -39,12 +39,12 @@ export const ACT = {
   testfail: { station: 'tests',  anim: 'sweat',   icon: '❌', kind: 'fail', dwell: 2.6 },
   start:   { icon: '🚪' }, end: { icon: '👋' }, substart: { icon: '👥' }, substop: { icon: '📋' },
 };
-export const ANIM_AT = { dining: 'eat', desk: 'type', server: 'console', library: 'read', globe: 'globe', board: 'board', coffee: 'coffee', director: 'think', brief: 'board', wc: 'idle', tests: 'think', post: 'idle', rocket: 'celebrate' };
+export const ANIM_AT = { dining: 'eat', desk: 'type', server: 'console', library: 'read', globe: 'globe', board: 'board', coffee: 'coffee', director: 'think', brief: 'board', wc: 'idle', tests: 'think', post: 'idle', rocket: 'celebrate', phone: 'hand' };
 // A session's state, translated when read: STATUS_LABEL[s.status] keeps working for every caller.
 const translated = (keys, prefix) => Object.defineProperties({}, Object.fromEntries(keys.map((k) => [k, { enumerable: true, get: () => tr(`${prefix}.${k}`) }])));
 // Where each station is, in words (the coffee corner is the dining room on the company floor).
 let STATION_LABEL;
-export const STATUS_LABEL = translated(['work', 'wait', 'rest'], 'events.status');
+export const STATUS_LABEL = translated(['work', 'wait', 'rest', 'home'], 'events.status');
 // Streamer mode: the event types whose label is replaced by a generic phrase (events.generic.<type>).
 const GENERIC = new Set(['prompt', 'read', 'grep', 'glob', 'skill', 'edit', 'write', 'bash', 'web', 'fetch', 'mcp', 'wait', 'fail', 'deploy', 'test']);
 export const lbl = (e) => (state.streamer && GENERIC.has(e.type) ? tr(`events.generic.${e.type}`) : e.label || '');
@@ -114,7 +114,7 @@ export function setup() {
   // On the company floor the director brings each new task to the desk (no trip to the board), and a boss briefs its
   // subagents at the meeting-room screen.
   if (PRO) { Object.assign(ACT.prompt, { station: 'desk', anim: 'think', dwell: 2.6 }); Object.assign(ACT.agent, { station: 'brief', anim: 'board' }); }
-  STATION_LABEL = translated(['dining', 'board', 'library', 'desk', 'server', 'globe', 'meeting', 'director', 'wc', 'tests', 'post', 'rocket'], 'events.station');
+  STATION_LABEL = translated(['dining', 'board', 'library', 'desk', 'server', 'globe', 'meeting', 'director', 'wc', 'tests', 'post', 'rocket', 'phone'], 'events.station');
   Object.defineProperties(STATION_LABEL, {
     coffee: { enumerable: true, get: () => tr(PRO ? 'events.station.dining' : 'events.station.coffee') },
     brief: { enumerable: true, get: () => tr('events.station.meeting') },

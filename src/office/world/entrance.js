@@ -22,7 +22,9 @@ export function liftArrive(w) {
   if (!lift) return;
   w.pos.set(LIFT_X, DZ + rand(-0.3, 0.3)); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT;
   w.liftHold = true;
-  if (lift.open < 0.05 && lift.at === LIFT_HOME && lift.goal === LIFT_HOME) lift.at = LIFT_HOME - randInt(3, 9);
+  if (lift.open < 0.05 && lift.at === LIFT_HOME && lift.goal === LIFT_HOME) {
+    lift.at = w?.sub ? LIFT_HOME - 1 : LIFT_HOME - randInt(2, 4);
+  }
 }
 export function liftCall(hold = 2.5) { if (lift) lift.callUntil = state.sim + hold; }
 function drawLiftDisplay(text) {
@@ -44,13 +46,13 @@ export function updateLift(dt) {
   const need = holding || waiting || through || state.sim < lift.callUntil;
   if (need && lift.goal !== LIFT_HOME && lift.open < 0.02) lift.goal = LIFT_HOME;
   if (lift.at !== lift.goal && state.sim > lift.stepAt) {
-    lift.at += Math.sign(lift.goal - lift.at); lift.stepAt = state.sim + 0.34;
+    lift.at += Math.sign(lift.goal - lift.at); lift.stepAt = state.sim + 0.18;
     if (lift.at === LIFT_HOME) { sfx.play('ding'); lift.holdUntil = state.sim + 1.6; }
   }
   const here = lift.at === LIFT_HOME && lift.goal === LIFT_HOME;
   if (through) lift.holdUntil = Math.max(lift.holdUntil, state.sim + 1.1);
   const want = here && (holding || waiting || state.sim < lift.holdUntil || state.sim < lift.callUntil);
-  lift.open = THREE.MathUtils.clamp(lift.open + (want ? 1 : -1) * dt * 1.5, 0, 1);
+  lift.open = THREE.MathUtils.clamp(lift.open + (want ? dt * 2.5 : -dt * 1.5), 0, 1);
   if (lift.open > 0.8) for (const set of [workers.values(), subs.values(), leaving, npcs]) for (const w of set) {
     if (w.liftHold) w.liftHold = false;
     if (w.liftWait) { const f = w.liftWait; w.liftWait = null; f(); }

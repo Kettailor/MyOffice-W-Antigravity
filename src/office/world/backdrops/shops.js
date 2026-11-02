@@ -92,7 +92,7 @@ const cityKey = () => (SETS[wx.city] ? wx.city : 'hcm');
 const hourNow = () => { const d = officeNow(); return d.getHours() + d.getMinutes() / 60; };
 
 // the office's middle on the floor plan (street-life.js weighs the traffic by it too)
-export const officeMiddle = () => (HQ ? [3, 9] : PRO ? [3, 0.7] : [0, 0.2]);
+export const officeMiddle = () => (HQ ? [3, 4] : PRO ? [3, 0.7] : [0, 0.2]);
 
 /* ---------- the printing: one canvas, a 1024 × 512 cell per shop ---------- */
 const CELL = 1024, ROW = 512;

@@ -28,7 +28,7 @@ function buildProFloor() {
   floorZone(-3.6, 8.6, -1.6, 9, devWood);                                                   // dev floor: pale oak walkway
   floorZone(-3.6, 8.6, -3, -1.6, gridTex('#D7D2CA', 'rgba(120,110,100,.25)', 2), 1.2);     // corridor
   floorZone(-8, -2.6, -8, -3, speckTex('#4A5566', 3000, 0.06), 0.8);                        // director: carpet
-  floorZone(-2.6, 3.0, -8, -3, speckTex('#8D939C', 3000, 0.06), 0.8);                       // meeting: carpet
+  floorZone(-2.6, 3.0, -8, -3, speckTex('#4A5566', 3000, 0.06), 0.8);                       // 2nd director room: executive slate-navy carpet
   floorZone(3.0, 8.6, -8, -3, darkWood);                                                    // library
   floorZone(8.6, 14, -8, 0.6, gridTex('#EFE7D8', 'rgba(150,130,100,.35)', 4, '#D8C3A3'), 1.6); // pantry: checker
   floorZone(8.6, 14, 0.6, 9, warmWood);                                                     // lounge
@@ -38,13 +38,16 @@ function buildProFloor() {
   const carpet = gridTex('#9AA2AE', 'rgba(70,78,92,.35)', 4, '#929AA7', 2);                // carpet tiles under each pod
   for (const [cx, cz] of PODS) { const c = floorZone(cx - 2.0, cx + 2.0, cz - 1.75, cz + 1.75, carpet, 1.2); c.position.y = 0.006; }
   rug(-5.4, -5.3, 3.6, 2.9, '#B9A486');                                                     // director
+  { const r0 = rug(-5.4, -5.3, 3.3, 2.6, '#D8C7AE'); r0.position.y = 0.008; }
+  rug(0.2, -5.5, 4.2, 3.3, '#B9A486');                                                      // 2nd director room: layered wool border rug
+  { const r1 = rug(0.2, -5.5, 3.9, 3.0, '#D8C7AE'); r1.position.y = 0.008; }
   rug(5.75, -5.4, 3.4, 2.4, '#9E4A3F');                                                     // library
   rug(11.0, 2.55, 3.8, 3.1, '#D8C6A8');                                                     // lounge (TV to sofa)
 
   /* wall finishes, room by room */
   backPanel(-8, -2.6, '#6F5440', 0, 2.75); put(scene, rbox(5.4, 0.06, 0.06, '#4E3A2C', 0.02), -5.3, 2.78, -7.96);
   leftPanel(-8, -3, '#6F5440', 0, 2.75);
-  backPanel(-2.6, 3.0, '#DCE2E8');
+  backPanel(-2.6, 3.0, '#6F5440', 0, 2.75); put(scene, rbox(5.6, 0.06, 0.06, '#4E3A2C', 0.02), 0.2, 2.78, -7.96);
   backPanel(3.0, 8.6, '#C9D5B2', 0, 2.75);
   backPanel(8.6, 14, '#F4E6CF');
   { // backsplash: subway tiles on one plane a little in front of the paint (stacked panels flickered when zooming)
@@ -64,11 +67,11 @@ function buildProFloor() {
   wallWindow(12.55, 2.35, -7.98, 0.95, 1.0, 0, 2);
   wallWindow(-7.98, 2.6, 7.4, 1.4, 0.7, Math.PI / 2, 2);
 
-  /* partitions: glass round the director, the meeting room and the server room, half walls elsewhere */
+  /* partitions: glass round the director, the 2nd director room and the server room, half walls elsewhere */
   glassWall(-8, -3, -2.6, -3, [[4.5, 5.3]]);          // director | server + its door
-  glassWall(-2.6, -8, -2.6, -3);                      // director | meeting
-  glassWall(-2.6, -3, 3.0, -3, [[4.5, 5.4]]);         // meeting front + door
-  glassWall(3.0, -8, 3.0, -3);                        // meeting | library
+  glassWall(-2.6, -8, -2.6, -3);                      // director | 2nd director room
+  glassWall(-2.6, -3, 3.0, -3, [[2.35, 3.25]]);       // 2nd director room front + door (x = 0.2)
+  glassWall(3.0, -8, 3.0, -3);                        // 2nd director room | library
   lowWall(3.0, -3, 8.6, -3, [[0.3, 1.3]]);            // library front + door
   lowWall(8.6, -8, 8.6, -3);                          // library | pantry
   glassWall(-3.6, -3, -3.6, 0.55, [[1.0, 1.9]]);      // server | dev floor + its door (the IT way in, from the work floor)
@@ -92,16 +95,17 @@ function buildProFloor() {
   // door plaques on the glass, readable from the corridor
   const plaque = (x, y, z, text, sub) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.2), new THREE.MeshBasicMaterial({ map: plateTex(text, sub), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })); m.position.set(x, y, z); scene.add(m); PRO_FX.plaques.push(m); return m; };
   plaque(-3.88, 1.62, -2.96, tr('world.plaque.director'), tr('world.plaque.directorSub'));
-  plaque(-3.88, 1.36, -2.96, tr('world.plaque.assistant'), tr('world.plaque.assistantSub'));
-  plaque(1.55, 1.62, -2.96, tr('world.plaque.meeting'), tr('world.plaque.meetingSub'));
+  const coDirTitle = (tr('world.plaque.coDirector') && tr('world.plaque.coDirector') !== 'world.plaque.coDirector' ? tr('world.plaque.coDirector') : '') || '02 · PHÒNG ĐỒNG GIÁM ĐỐC';
+  const coDirSub = tr('world.plaque.coDirectorSub') && tr('world.plaque.coDirectorSub') !== 'world.plaque.coDirectorSub' ? tr('world.plaque.coDirectorSub') : tr('world.plaque.assistantSub');
+  plaque(-1.78, 1.62, -2.96, coDirTitle, coDirSub);
   plaque(4.66, 0.8, -2.912, tr('world.plaque.library'), tr('world.plaque.librarySub'));   // a little in front of the wall's face (-2.93), never on it
 
   /* director's office: credenza and window, the desk, a leather chair, two visitor chairs, a sofa corner */
-  put(scene, rbox(3.3, 0.74, 0.5, mat('#5A4232', { roughness: 0.6 }), 0.03), -5.3, 0.37, -7.7);
-  for (const x of [-6.4, -5.3, -4.2]) put(scene, rbox(1.0, 0.56, 0.02, mat('#6B4F3C', { roughness: 0.6 }), 0.02), x, 0.4, -7.44);
-  trinket('books', -6.4, 0.74, -7.7, 0.2); trinket('frame', -5.85, 0.74, -7.68, 0.1);
+  put(scene, rbox(3.3, 0.74, 0.5, mat('#5A4232', { roughness: 0.6 }), 0.03), -5.4, 0.37, -7.72);
+  for (const x of [-6.5, -5.4, -4.3]) put(scene, rbox(1.0, 0.56, 0.02, mat('#6B4F3C', { roughness: 0.6 }), 0.02), x, 0.4, -7.46);
+  trinket('books', -6.4, 0.74, -7.72, 0.2); trinket('frame', -5.85, 0.74, -7.7, 0.1);
   potPlant(-4.0, -7.7, 0.32, 'snake', 0.74);
-  const dk = new THREE.Group(); dk.position.set(-5.4, 0, -5.8); scene.add(dk); PRO_FX.execDesk = dk;
+  const dk = new THREE.Group(); dk.position.set(-5.4, 0, -6.2); scene.add(dk); PRO_FX.execDesk = dk;
   const walnut = mat('#4A3628', { roughness: 0.5 });
   put(dk, rbox(2.1, 0.06, 0.95, walnut, 0.02), 0, 0.76, 0);
   for (const sx of [-1, 1]) put(dk, rbox(0.46, 0.73, 0.86, walnut, 0.02), sx * 0.79, 0.365, 0);
@@ -119,56 +123,64 @@ function buildProFloor() {
   { const np = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.11), new THREE.MeshBasicMaterial({ map: plateTex(tr('world.nameplate'), null, { bg: '#2B2F36', fg: '#E2B04A', size: 64 }) }));
     np.position.set(0.5, 0.84, 0.46); np.rotation.x = -0.35; dk.add(np); put(dk, rbox(0.44, 0.1, 0.05, '#2B2F36', 0.01), 0.5, 0.83, 0.43).rotation.x = -0.35; }
   const leather = mat('#22262C', { roughness: 0.45 });
-  const exec = officeChair(scene, -5.4, -6.75, leather); exec.userData.back.scale.set(1.15, 1.45, 1.2); PRO_FX.execChair = exec;
+  const exec = officeChair(scene, -5.4, -7.0, leather); exec.userData.back.scale.set(1.15, 1.45, 1.2); PRO_FX.execChair = exec;
   chairUph(-5.95, -4.95, Math.PI, '#8C6A4E', 0.95); chairUph(-4.85, -4.95, Math.PI, '#8C6A4E', 0.95);
-  makeSofa(-7.45, -4.1, 1.7, Math.PI / 2, '#7A5C48', ['#E2B04A', '#C8553D']);
-  put(scene, rbox(0.62, 0.05, 1.0, walnut, 0.02), -6.55, 0.42, -4.1);
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(scene, cyl(0.02, 0.02, 0.4, metal, 6), -6.55 + sx * 0.25, 0.2, -4.1 + sz * 0.42);
+  makeSofa(-7.35, -4.25, 1.7, Math.PI / 2, '#7A5C48', ['#E2B04A', '#C8553D']);
+  put(scene, rbox(0.62, 0.05, 1.0, walnut, 0.02), -6.45, 0.42, -4.25);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(scene, cyl(0.02, 0.02, 0.4, metal, 6), -6.45 + sx * 0.25, 0.2, -4.25 + sz * 0.42);
 
-  /* Phó Giám đốc & Trợ lý Giám đốc department (east executive annex inside the Director's suite) */
-  rug(-3.38, -5.72, 1.25, 2.75, '#3E566E');
-  { const div = new THREE.Group(); div.position.set(-4.18, 0, -5.72); scene.add(div);
-    put(div, rbox(0.05, 1.18, 1.25, mat('#3E5062', { roughness: 0.85 }), 0.015), 0, 0.59, 0);
-    put(div, rbox(0.06, 0.04, 1.28, metal, 0.01), 0, 1.2, 0);
-    const signM = new THREE.MeshBasicMaterial({ map: plateTex(tr('world.plaque.assistant'), tr('world.plaque.assistantSub'), { bg: '#1E293B', fg: '#F8FAFC' }) });
-    for (const sx of [-1, 1]) {
-      const sm = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.2), signM);
-      sm.position.set(sx * 0.032, 1.02, 0); sm.rotation.y = sx > 0 ? Math.PI / 2 : -Math.PI / 2;
-      sm.userData.noMerge = true; div.add(sm);
-    }
+  /* 2nd Director Room for Connected Users (Phó Giám đốc & Trợ lý Giám đốc: x = -2.6 .. 3.0, z = -8 .. -3) */
+  put(scene, rbox(2.8, 0.74, 0.48, mat('#5A4232', { roughness: 0.6 }), 0.03), 0.2, 0.37, -7.72);
+  for (const x of [-0.7, 0.2, 1.1]) put(scene, rbox(0.84, 0.56, 0.02, mat('#6B4F3C', { roughness: 0.6 }), 0.02), x, 0.4, -7.47);
+  trinket('books', -0.55, 0.74, -7.72, 0.18); trinket('books', 0.15, 0.74, -7.72, -0.12); trinket('frame', 0.85, 0.74, -7.7, 0.1);
+  { const bl = new THREE.Group(); bl.position.set(-0.95, 0.74, -7.7); scene.add(bl);
+    put(bl, cyl(0.07, 0.08, 0.03, '#C9A227'), 0, 0.015, 0); put(bl, cyl(0.012, 0.012, 0.3, '#C9A227'), 0, 0.17, 0);
+    put(bl, new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.12, 0.09, 16, 1, true), mat('#2F6B45', { side: THREE.DoubleSide })), 0, 0.33, 0); }
+  for (const [dx, col] of [[-0.82, '#C87D55'], [0, '#3D5A80'], [0.82, '#D4A359']]) {
+    const fg = new THREE.Group(); fg.position.set(0.2 + dx, 1.82, -7.95); scene.add(fg);
+    put(fg, rbox(0.68, 0.88, 0.035, '#2B2F36', 0.01), 0, 0, 0);
+    put(fg, rbox(0.58, 0.78, 0.01, '#F6EFE4', 0.004), 0, 0, 0.016);
+    put(fg, rbox(0.42, 0.56, 0.012, col, 0.004), 0, 0, 0.02);
   }
-  const execSubDesks = [
-    { z: -6.42, label: 'PHÓ GIÁM ĐỐC', chairCol: '#2B4C7E', scrCol: '#60A5FA', fg: '#93C5FD' },
-    { z: -5.02, label: 'TRỢ LÝ GĐ', chairCol: '#2A6F62', scrCol: '#34D399', fg: '#6EE7B7' },
-  ];
-  for (const ed of execSubDesks) {
-    const g = new THREE.Group(); g.position.set(-3.12, 0, ed.z); g.rotation.y = -Math.PI / 2; scene.add(g);
-    put(g, rbox(1.12, 0.045, 0.56, walnut, 0.015), 0, 0.745, 0);
-    for (const sx of [-1, 1]) put(g, rbox(0.05, 0.72, 0.5, walnut, 0.01), sx * 0.51, 0.36, 0);
-    put(g, rbox(1.0, 0.42, 0.03, walnut, 0.01), 0, 0.48, 0.24);
-    put(g, rbox(0.05, 0.22, 0.05, metal, 0.01), 0, 0.86, 0.14);
-    put(g, rbox(0.54, 0.33, 0.035, mat('#1B1F26', { roughness: 0.4 }), 0.015), 0, 1.07, 0.15);
-    const escr = toonMat({ color: '#0F172A', emissive: ed.scrCol, emissiveIntensity: 0.55, roughness: 0.3 });
-    put(g, new THREE.Mesh(new THREE.PlaneGeometry(0.49, 0.28), escr), 0, 1.07, 0.128).rotation.y = Math.PI;
-    put(g, rbox(0.36, 0.016, 0.12, '#2B2F36', 0.004), 0, 0.78, -0.08);
-    put(g, rbox(0.22, 0.01, 0.16, '#FBFBF7', 0.003), -0.34, 0.776, -0.05).rotation.y = 0.22;
-    const np = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.095), new THREE.MeshBasicMaterial({ map: plateTex(ed.label, null, { bg: '#1E293B', fg: ed.fg, size: 54 }) }));
-    np.position.set(0.32, 0.82, 0.25); np.rotation.x = -0.35; g.add(np);
-    put(g, rbox(0.38, 0.09, 0.04, '#1E293B', 0.008), 0.32, 0.81, 0.225).rotation.x = -0.35;
-    const ch = officeChair(scene, -3.76, ed.z, mat(ed.chairCol, { roughness: 0.5 }));
-    ch.rotation.y = Math.PI / 2;
-  }
+  makeSofa(-1.95, -4.25, 1.45, Math.PI / 2, '#7A5C48', ['#E2B04A', '#3D5A80']);
+  put(scene, cyl(0.24, 0.24, 0.04, walnut, 20), -1.95, 0.48, -5.35);
+  put(scene, cyl(0.03, 0.03, 0.46, metal, 8), -1.95, 0.24, -5.35);
+  put(scene, cyl(0.16, 0.16, 0.02, metal, 16), -1.95, 0.01, -5.35);
 
-  /* meeting room: a screen with today's slide */
-  { const slide = canvasTex(640, 360, (g, w, h) => {
-      g.fillStyle = '#F7F5F0'; g.fillRect(0, 0, w, h); g.fillStyle = '#D97757'; g.fillRect(0, 0, 14, h);
-      g.fillStyle = '#1E232B'; g.font = '800 40px "Be Vietnam Pro", system-ui, sans-serif'; g.fillText('Sprint review', 44, 70);
-      g.fillStyle = '#7A8494'; g.font = '600 22px "Be Vietnam Pro", system-ui, sans-serif'; g.fillText(tr('world.slideSub'), 44, 104);
-      const bars = [0.42, 0.58, 0.51, 0.74, 0.66, 0.88]; bars.forEach((v, i) => { g.fillStyle = i === 5 ? '#D97757' : '#3F7CC4'; g.fillRect(60 + i * 88, 320 - v * 180, 52, v * 180); });
-      g.fillStyle = '#C9CED6'; g.fillRect(44, 322, w - 88, 3);
-    });
-    put(scene, rbox(2.7, 1.55, 0.07, '#15181E', 0.03), 0.2, 1.75, -7.95);
-    put(scene, new THREE.Mesh(new THREE.PlaneGeometry(2.56, 1.42), new THREE.MeshBasicMaterial({ map: slide })), 0.2, 1.75, -7.91); }
+  const buildExecDesk = (gx, gz, rotY, tagText, tagColor = '#F3D27A') => {
+    const g = new THREE.Group(); g.position.set(gx, 0, gz); g.rotation.y = rotY; scene.add(g);
+    put(g, rbox(1.5, 0.055, 0.78, walnut, 0.02), 0, 0.755, 0);
+    for (const sx of [-1, 1]) put(g, rbox(0.36, 0.72, 0.7, walnut, 0.02), sx * 0.54, 0.36, 0);
+    put(g, rbox(0.96, 0.48, 0.035, walnut, 0.01), 0, 0.48, 0.32);
+    put(g, rbox(0.88, 0.018, 0.04, '#C9A227', 0.005), 0, 0.48, 0.322);
+    put(g, rbox(0.56, 0.012, 0.36, leather, 0.005), 0, 0.786, -0.08);
+    put(g, rbox(0.05, 0.24, 0.05, metal, 0.01), -0.18, 0.9, 0.14);
+    put(g, rbox(0.58, 0.35, 0.035, mat('#1B1F26', { roughness: 0.4 }), 0.015), -0.18, 1.1, 0.15);
+    const escr = toonMat({ color: '#0E1A2B', emissive: '#8FD0FF', emissiveIntensity: 0.55, roughness: 0.3 });
+    put(g, new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), escr), -0.18, 1.1, 0.13).rotation.y = Math.PI;
+    put(g, rbox(0.36, 0.016, 0.12, '#2B2F36', 0.004), -0.18, 0.795, -0.1);
+    const lap = new THREE.Group(); lap.position.set(0.32, 0.785, -0.05); lap.rotation.y = -0.25; g.add(lap);
+    put(lap, rbox(0.28, 0.012, 0.2, '#9AA3AD', 0.004), 0, 0.006, 0);
+    put(lap, rbox(0.28, 0.18, 0.01, '#9AA3AD', 0.004), 0, 0.095, 0.095).rotation.x = -0.25;
+    const np = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.105), new THREE.MeshBasicMaterial({ map: plateTex(tagText, null, { bg: '#1E293B', fg: tagColor, size: 54 }) }));
+    np.position.set(0.38, 0.83, 0.34); np.rotation.x = -0.35; g.add(np);
+    put(g, rbox(0.44, 0.095, 0.045, '#1E293B', 0.008), 0.38, 0.82, 0.315).rotation.x = -0.35;
+    return g;
+  };
+  const chairExec = (gx, gz, rotY = 0) => {
+    const ch = officeChair(scene, gx, gz, leather);
+    ch.rotation.y = rotY;
+    ch.userData.back.scale.set(1.12, 1.4, 1.15);
+    return ch;
+  };
+  buildExecDesk(-0.65, -6.25, 0, 'PHÓ GIÁM ĐỐC 1');
+  chairExec(-0.65, -7.0, 0);
+  buildExecDesk(-0.65, -4.75, Math.PI, 'TRỢ LÝ GĐ 1');
+  chairExec(-0.65, -4.0, Math.PI);
+  buildExecDesk(1.45, -6.25, 0, 'PHÓ GIÁM ĐỐC 2');
+  chairExec(1.45, -7.0, 0);
+  buildExecDesk(1.45, -4.75, Math.PI, 'TRỢ LÝ GĐ 2');
+  chairExec(1.45, -4.0, Math.PI);
 
   /* library: reading chairs facing the room, a shelf and a ladder */
   armchair(5.6, -4.1, 0, '#7A4E3A'); armchair(6.9, -4.1, 0, '#3D5A80');
@@ -257,11 +269,31 @@ function buildProFloor() {
       const glow = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.26), new THREE.MeshBasicMaterial({ color: '#CFE3F4' })); glow.position.set(0, 0.3, 0.027); scr.add(glow); }
     put(rc, rbox(0.38, 0.016, 0.13, '#2B2F36', 0.004), 0.0, 0.787, -0.02);                           // keyboard
     put(rc, rbox(0.07, 0.014, 0.1, '#3A3F47', 0.01), 0.27, 0.786, -0.04);                            // mouse
-    { const ph = new THREE.Group(); ph.position.set(-0.5, 0.78, 0.0); ph.rotation.y = 0.3; rc.add(ph);   // desk phone
+    { const ph = new THREE.Group(); ph.position.set(-0.5, 0.78, 0.0); ph.rotation.y = 0.3; rc.add(ph);   // receptionist's internal desk phone
       put(ph, rbox(0.2, 0.05, 0.16, '#2B2F36', 0.02), 0, 0.025, 0); put(ph, rbox(0.2, 0.035, 0.05, '#1E2126', 0.015), 0, 0.065, -0.04); }
+    { // Prominent 3D Telephone on the Reception Counter ledge for Main Agent backup support calls
+      const rph = new THREE.Group(); rph.position.set(-0.82, 1.07, 0.40); rph.rotation.y = 0.08; rc.add(rph);
+      PRO_FX.receptionPhone = rph;
+      put(rph, rbox(0.25, 0.055, 0.21, mat('#1E2430', { roughness: 0.35, metalness: 0.25 }), 0.02), 0, 0.028, 0);
+      put(rph, rbox(0.13, 0.04, 0.08, mat('#0F172A', { roughness: 0.3 }), 0.01), 0.035, 0.058, -0.035).rotation.x = 0.35;
+      const lcd = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.042), new THREE.MeshBasicMaterial({ color: '#38BDF8' }));
+      lcd.position.set(0.035, 0.08, -0.033); lcd.rotation.x = -Math.PI / 2 + 0.35; rph.add(lcd);
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 3; c++) {
+          put(rph, rbox(0.024, 0.012, 0.018, '#CBD5E1', 0.003), 0.005 + c * 0.03, 0.058, 0.018 + r * 0.022);
+        }
+      }
+      put(rph, rbox(0.024, 0.014, 0.018, '#22C55E', 0.003), 0.095, 0.058, 0.025);
+      put(rph, rbox(0.024, 0.014, 0.018, '#EF4444', 0.003), 0.095, 0.058, 0.055);
+      const hs = new THREE.Group(); hs.position.set(-0.072, 0.072, 0.0); rph.add(hs);
+      PRO_FX.phoneHandset = hs;
+      put(hs, rbox(0.055, 0.03, 0.19, mat('#111827', { roughness: 0.3 }), 0.014), 0, 0.018, 0);
+      put(hs, rbox(0.062, 0.028, 0.052, '#0F172A', 0.012), 0, 0.005, -0.068);
+      put(hs, rbox(0.062, 0.028, 0.052, '#0F172A', 0.012), 0, 0.005, 0.068);
+    }
     trinket('frame', 0.62, 0.78, 0.25, Math.PI + 0.4, rc);
     // on the ledge: the service bell, the visitors' book, lilies in a glass vase, the desk sign
-    put(rc, cyl(0.05, 0.06, 0.02, '#2B2F36'), -0.62, 1.08, 0.42); put(rc, new THREE.Mesh(new THREE.SphereGeometry(0.04, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat('#C9A227', { metalness: 0.7, roughness: 0.3 })), -0.62, 1.09, 0.42);
+    put(rc, cyl(0.05, 0.06, 0.02, '#2B2F36'), -0.48, 1.08, 0.42); put(rc, new THREE.Mesh(new THREE.SphereGeometry(0.04, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat('#C9A227', { metalness: 0.7, roughness: 0.3 })), -0.48, 1.09, 0.42);
     { const bk = new THREE.Group(); bk.position.set(-0.1, 1.072, 0.42); bk.rotation.y = 0.15; rc.add(bk);
       for (const sx of [-1, 1]) { const p = put(bk, rbox(0.16, 0.012, 0.22, mat('#FBF8F0', { roughness: 0.9 }), 0.004), sx * 0.082, 0.006, 0); p.rotation.z = -sx * 0.06; }
       put(bk, rbox(0.006, 0.02, 0.15, '#1E2126', 0.002), 0.06, 0.016, 0).rotation.y = 0.4; }

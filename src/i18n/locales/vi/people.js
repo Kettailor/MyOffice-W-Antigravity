@@ -1,6 +1,17 @@
 export default {
   director: 'Giám đốc',
   subagent: 'trợ lý',
+  deptWorker: 'Nhân viên {n}',
+  phoneSupport: {
+    call: ['Alo lễ tân, cử thêm nhân sự hỗ trợ phòng ban nhé! 📞', 'Gọi điều phối thêm trợ lý lên hỗ trợ! ☎️'],
+    ok: 'Nhân sự hỗ trợ đang lên thang máy! 🏃',
+    arrive: ['Nhân sự hỗ trợ có mặt, vào việc ngay! 💪', 'Em lên hỗ trợ phòng mình đây ạ! 🚀', 'Có mặt! Để em phụ một tay nhé! ⚡'],
+    bye: ['Phòng mình đỡ việc rồi, em xin phép rút nhé! 👋', 'Em hỗ trợ xong rồi, hẹn gặp lại mọi người! ✨'],
+  },
+  arcade: {
+    play: ['Bắn tàu vũ trụ nào! 👾', 'Phá đảo điểm cao thôi! 🕹️', 'Thêm một xu nữa! 🪙'],
+    win: ['Điểm kỷ lục mới! 🏆👾', 'Qua màn rồi! 🎉'],
+  },
   team: '{n} trợ lý',
   needsApproval: 'Chờ duyệt',
   subOnIt: 'Nhận việc: {task}',
@@ -9,6 +20,7 @@ export default {
   subReportDone: 'xong việc',
   bossThanks: 'Nhận báo cáo, cảm ơn! 👍',
   bgWait: 'Đang chờ việc chạy nền: {desc}',
+  goingHome: 'Tan ca, mình về nghỉ nhé!',
   newTask: 'việc mới',
   handOver: 'Giao việc: “{what}”',
   leaveOnDesk: 'Để việc trên bàn {who}',

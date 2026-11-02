@@ -705,10 +705,12 @@ export function closeWaitModal(minimize = true) {
 }
 
 export function syncSessionWaitCards() {
+  for (const k of dismissedCardIds.keys()) if (!sessions.has(k)) dismissedCardIds.delete(k);
   for (const s of sessions.values()) {
     const card = getSessionWaitCard(s.id);
     if (card && s.status === 'wait') {
       if (!alertedCardIds.has(card.id)) {
+        if (alertedCardIds.size > 300) alertedCardIds.delete(alertedCardIds.values().next().value);
         alertedCardIds.add(card.id);
         sfx.play('perm');
       }
@@ -755,6 +757,7 @@ export function addPerm(p) {
     return;
   }
   if (!alertedCardIds.has(p.id)) {
+    if (alertedCardIds.size > 300) alertedCardIds.delete(alertedCardIds.values().next().value);
     alertedCardIds.add(p.id);
     sfx.play('perm');
   }
@@ -800,9 +803,13 @@ export function setup() {
   if (!STATIC) addEventListener('pagehide', () => { try { navigator.sendBeacon(`/api/presence${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, new Blob([JSON.stringify({ page: PAGE_ID, focused: false })], { type: 'application/json' })); } catch { /* ignore */ } });
   setInterval(() => { if (document.hasFocus()) reportPresence(); }, 10000);
   setInterval(() => {
-    for (const c of $('perm-stack').children) c._tick?.();
-    const modal = $('wait-focus-modal');
-    if (modal && !modal.hidden) modal.firstElementChild?._tick?.();
+    if (!perms.size && !activeModalCardId) return;
+    const stack = $('perm-stack');
+    if (stack && !stack.hidden) for (const c of stack.children) c._tick?.();
+    if (activeModalCardId) {
+      const modal = $('wait-focus-modal');
+      if (modal && !modal.hidden) modal.firstElementChild?._tick?.();
+    }
   }, 250);
   $('perm-stack').addEventListener('click', async (ev) => {
     const ab = ev.target.closest('[data-access]');

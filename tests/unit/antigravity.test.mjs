@@ -14,9 +14,13 @@ import {
   decodeWorkspaceUri,
   normalizeWorkspacePath,
   computeAgyQuota,
+  findNativeRustBin,
 } from '../../server/antigravity.mjs';
+import { resolveContainerDir } from '../../server/tasks.mjs';
 import { parseNvidiaSmi } from '../../server/platform/win32.mjs';
 import { createAccessManager } from '../../server/access.mjs';
+import { CHAT_RETENTION_MS, createChatEngine, inferChatChannel } from '../../src/shared/chat-engine.js';
+import { createT } from '../../src/i18n/index.js';
 
 test('Antigravity: unwraps double-encoded JSON arguments', () => {
   assert.equal(cleanVal('"e:\\\\WorkOffice\\\\server\\\\index.mjs"'), 'e:\\WorkOffice\\server\\index.mjs');
@@ -393,4 +397,95 @@ test('Antigravity: computes per-account quota for auto-switch and preserves AI m
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
   }
+});
+
+test('Rust + Docker Engine: findNativeRustBin and resolveContainerDir gracefully resolve paths', () => {
+  const bin = findNativeRustBin();
+  assert.ok(bin === null || typeof bin === 'string');
+  assert.equal(resolveContainerDir('e:\\WorkOffice'), 'e:\\WorkOffice');
+});
+
+test('Group Chat: strictly separates work vs casual channels and enforces 7-day retention', () => {
+  // 1. Historical misclassified casual messages (including accidental @Giám đốc prefix) move to 'casual'
+  const storeMsg = {
+    id: 'm1',
+    from: '1',
+    role: 'agent',
+    kind: 'text',
+    channel: 'work',
+    text: '@Giám đốc Xuống Circle K tí, ai gửi mua gì không?',
+    mentions: ['director'],
+  };
+  assert.equal(inferChatChannel(storeMsg), 'casual');
+  assert.equal(storeMsg.text, 'Xuống Circle K tí, ai gửi mua gì không?');
+  assert.deepEqual(storeMsg.mentions, []);
+
+  const byeMsg = {
+    id: 'm2',
+    from: '2',
+    role: 'agent',
+    kind: 'text',
+    channel: 'work',
+    text: '@Giám đốc Hôm nay tới đây nha mọi người, mình về trước 👋',
+    mentions: ['director'],
+  };
+  assert.equal(inferChatChannel(byeMsg), 'casual');
+
+  const workDoneMsg = {
+    id: 'm3',
+    from: '1',
+    role: 'agent',
+    kind: 'text',
+    channel: 'work',
+    text: '@Giám đốc Xong việc “Fix lỗi nhóm chat” rồi ạ ✅',
+    mentions: ['director'],
+  };
+  assert.equal(inferChatChannel(workDoneMsg), 'work');
+
+  // 2. 7-day retention pruning and independent channel caps
+  let fakeNow = 1_800_000_000_000;
+  const expiredWorkMsg = {
+    id: 'old-work',
+    from: 'me',
+    role: 'boss',
+    kind: 'text',
+    channel: 'work',
+    text: 'Tin nhắn công việc cách đây 8 ngày',
+    at: fakeNow - CHAT_RETENTION_MS - 60_000,
+  };
+  const recent6DayWorkMsg = {
+    id: 'recent-work',
+    from: 'me',
+    role: 'boss',
+    kind: 'text',
+    channel: 'work',
+    text: 'Tin nhắn công việc cách đây 6 ngày',
+    at: fakeNow - 6 * 86400_000,
+  };
+  let saved = { v: 1, msgs: [expiredWorkMsg, recent6DayWorkMsg, storeMsg] };
+  const engine = createChatEngine({
+    tr: createT('vi'),
+    now: () => fakeNow,
+    members: () => [
+      { id: '1', name: 'WorkOffice', status: 'work', task: 'Fix chat', ownerId: 'director', ownerName: 'Giám đốc' },
+      { id: '2', name: 'BioKit', status: 'rest', task: '', ownerId: 'director', ownerName: 'Giám đốc' },
+    ],
+    staffName: () => 'Nhân sự',
+    store: { load: () => saved, save: (d) => { saved = d; } },
+    emit: () => {},
+    timer: (fn) => fn(),
+  });
+
+  // Expired message (> 7 days) is pruned immediately; 6-day work message is preserved; Circle K message is in 'casual'
+  assert.ok(!engine.state.msgs.some((m) => m.id === 'old-work'), 'Messages older than 7 days must be pruned');
+  assert.ok(engine.state.msgs.some((m) => m.id === 'recent-work' && m.channel === 'work'), '6-day work message must be kept in work channel');
+  assert.ok(engine.state.msgs.some((m) => m.id === 'm1' && m.channel === 'casual'), 'Circle K message must be in casual channel');
+
+  // Flooding casual channel with 250 banter messages must NOT evict the 6-day work message
+  for (let i = 0; i < 250; i++) {
+    fakeNow += 1000;
+    engine.say('hr', `Tán gẫu vui vẻ số ${i}`, { now: true, channel: 'casual' });
+  }
+  assert.ok(engine.state.msgs.some((m) => m.id === 'recent-work' && m.channel === 'work'), 'Casual chatter flood must never evict work history within 7 days');
+  assert.ok(engine.state.msgs.filter((m) => m.channel === 'work').every((m) => m.role !== 'staff'), 'Staff must never appear in work channel');
 });

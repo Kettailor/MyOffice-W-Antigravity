@@ -81,16 +81,16 @@ export function setup() {
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { g.fillStyle = `hsl(216, 9%, ${25 + rand(-3, 3)}%)`; g.fillRect(i * sz + 2, j * sz + 2, sz - 4, sz - 4); }
   });
   tileTex.wrapS = tileTex.wrapT = THREE.RepeatWrapping;
-   tileTex.repeat.set(PRO ? 7 : 6, HQ ? 11 : PRO ? 6 : 5);
-  // headquarters: the terrace runs on round the wing (front edge at z 28.7 instead of 11.7)
-  terrace = new THREE.Mesh(HQ ? new THREE.BoxGeometry(24.6, 0.3, 37.2) : PRO ? new THREE.BoxGeometry(24.6, 0.3, 20.2) : new THREE.BoxGeometry(21, 0.3, 17.4), mat('#3A3F47', { map: tileTex, roughness: 0.85 }));
-  if (HQ) terrace.position.set(3.4, -0.42, 10.1); else if (PRO) terrace.position.set(3.4, -0.42, 1.6); else terrace.position.set(1.6, -0.42, 2.0);
+   tileTex.repeat.set(PRO ? 7 : 6, HQ ? 8 : PRO ? 6 : 5);
+  // headquarters: the terrace runs on round the meeting wing (front edge at z 18.2)
+  terrace = new THREE.Mesh(HQ ? new THREE.BoxGeometry(24.6, 0.3, 27.2) : PRO ? new THREE.BoxGeometry(24.6, 0.3, 20.2) : new THREE.BoxGeometry(21, 0.3, 17.4), mat('#3A3F47', { map: tileTex, roughness: 0.85 }));
+  if (HQ) terrace.position.set(3.4, -0.42, 5.1); else if (PRO) terrace.position.set(3.4, -0.42, 1.6); else terrace.position.set(1.6, -0.42, 2.0);
    terrace.receiveShadow = true;
    scene.add(terrace);
-  const FZ = HQ ? 28.5 : 11.5;   // the terrace's front railing
+  const FZ = HQ ? 18.2 : 11.5;   // the terrace's front railing
   if (PRO) { railing(15.5, -8.4, 15.5, FZ); railing(-8.8, FZ, 15.5, FZ); } else { railing(11.9, -6.8, 11.9, 10.5); railing(-8.8, 10.5, 11.9, 10.5); }
-  for (const [x, z] of PRO ? [[15.0, -5.5], [15.0, 0.5], [15.0, 6.5], ...(HQ ? [[15.0, 12.5], [15.0, 18.5], [15.0, 24.5]] : []), [-5, FZ - 0.5], [1, FZ - 0.5], [8.5, FZ - 0.5]] : [[11.3, -4.5], [11.3, 1.5], [11.3, 7.5], [-5, 9.9], [1, 9.9], [7, 9.9]]) bollard(x, z);
-  if (PRO) { planter(14.9, -7.7, 'tree'); planter(14.9, 3.4, 'bush'); if (HQ) { planter(14.9, 14.6, 'bush'); planter(14.9, 21.6, 'tree'); } planter(-7.9, FZ - 0.7, 'tree'); planter(4.6, FZ - 0.7, 'bush'); planter(14.9, FZ - 0.7, 'tree'); }
+  for (const [x, z] of PRO ? [[15.0, -5.5], [15.0, 0.5], [15.0, 6.5], ...(HQ ? [[15.0, 12.5], [15.0, 16.5]] : []), [-5, FZ - 0.5], [1, FZ - 0.5], [8.5, FZ - 0.5]] : [[11.3, -4.5], [11.3, 1.5], [11.3, 7.5], [-5, 9.9], [1, 9.9], [7, 9.9]]) bollard(x, z);
+  if (PRO) { planter(14.9, -7.7, 'tree'); planter(14.9, 3.4, 'bush'); if (HQ) { planter(14.9, 13.2, 'bush'); } planter(-7.9, FZ - 0.7, 'tree'); planter(4.6, FZ - 0.7, 'bush'); planter(14.9, FZ - 0.7, 'tree'); }
   else { planter(10.8, -5.6, 'tree'); planter(10.8, 4.6, 'tree'); planter(-7.2, 9.4, 'tree'); planter(4.2, 9.4, 'bush'); }
   /* outdoor seating on the terrace */
   function outdoorSet(x, z) {
@@ -105,9 +105,9 @@ export function setup() {
     }
   }
   if (HQ) {
-    outdoorSet(11.6, 27.3);
-    outdoorSet(4.7, 27.3);
-    outdoorSet(-2.2, 27.3);
+    outdoorSet(11.6, 17.0);
+    outdoorSet(4.7, 17.0);
+    outdoorSet(-2.2, 17.0);
   } else {
     outdoorSet(...(PRO ? [11.6, 10.3] : [9.9, 0.9]));
   }

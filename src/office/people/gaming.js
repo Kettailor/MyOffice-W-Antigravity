@@ -26,7 +26,11 @@ const pick = (key) => { const l = tr(key, null, 'list'); return Array.isArray(l)
 const nameOf = (w) => { const n = sessions.get(w.id)?.name || w.cfg.name || ''; return n.length > 11 ? `${n.slice(0, 10)}…` : n; };
 const seats = () => STATIONS?.coffee?.slice(0, 2) || [];
 const look = () => GTV && [GTV.center[0], GTV.center[2]];
-const called = (w) => { const s = sessions.get(w.id); return !s || s.status !== 'rest' || !!s.bg?.length || !!w.want; };
+const called = (w) => {
+  if (w.deptStaff) return !!w.busySub || !!w.want;
+  const s = sessions.get(w.id);
+  return !s || s.status !== 'rest' || !!s.bg?.length || !!w.want;
+};
 // who could play: resting, nothing else on (not out, not on a break, not carrying anything, not at tea)
 function who() {
   return [...workers.values()].filter((w) => { const s = sessions.get(w.id);

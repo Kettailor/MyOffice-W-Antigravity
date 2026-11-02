@@ -301,6 +301,7 @@ function addButton(text, cls, fn, type = 'button') { const b = el('button', `btn
 // a step of the sign-in, from the server
 const lastLogin = new Map();   // (the latest step per account: one can come before the card has heard back from POST /api/accounts)
 export function acctLogin(d) {
+  if (lastLogin.size > 50) lastLogin.delete(lastLogin.keys().next().value);
   lastLogin.set(d.name, d);
   if (adding.data?.name !== d.name || !['login', 'done'].includes(adding.step)) return;
   adding.login = { state: d.state, url: d.url, note: d.note };
@@ -478,27 +479,35 @@ export function renderLimits() {
     if (w.pct < 80) continue;
     const key = `${w.key}:${w.resetsAt}:${w.pct >= 95 ? 95 : 80}`;
     if (limitWarned.has(key)) continue;
+    if (limitWarned.size > 200) limitWarned.delete(limitWarned.values().next().value);
     limitWarned.add(key);
     if (!replay.on) toast(tr('mac.plan.warn', { pct: Math.round(w.pct), label: w.label, reset: w.resetsAt ? tr('mac.plan.warnReset', { when: resetText(w.resetsAt) }) : '' }), 6000);
   }
 }
+let lastMacMiniSig = '';
 function renderMacButton() {
   const s = macSnap; if (!s?.mem) return;
   const pct = Math.round((s.mem.used / s.mem.total) * 100);
   const lv = level(s);
-  $('btn-mac').dataset.level = lv;
+  const btnMac = $('btn-mac');
+  if (btnMac.dataset.level !== lv) btnMac.dataset.level = lv;
   const gpuPct = s.gpu ? s.gpu.percent : null;
-  $('mac-mini').replaceChildren(
-    `RAM ${pct}%`,
-    ...(gpuPct != null ? [el('span', 'mp-swap', ` · GPU ${gpuPct}%`)] : s.mem.swapUsed > GB ? [el('span', 'mp-swap', ` · ${fmtBytes(s.mem.swapUsed)}`)] : []),
-  );
-  $('ml-ram').style.width = `${pct}%`;
+  const swapStr = gpuPct == null && s.mem.swapUsed > GB ? fmtBytes(s.mem.swapUsed) : '';
+  const miniSig = `${pct}|${gpuPct ?? ''}|${swapStr}`;
+  if (miniSig !== lastMacMiniSig) {
+    lastMacMiniSig = miniSig;
+    $('mac-mini').replaceChildren(
+      `RAM ${pct}%`,
+      ...(gpuPct != null ? [el('span', 'mp-swap', ` · GPU ${gpuPct}%`)] : swapStr ? [el('span', 'mp-swap', ` · ${swapStr}`)] : []),
+    );
+    $('ml-ram').style.width = `${pct}%`;
+  }
   setLedMood(lv);
   // one place for the machine: the pill (level, RAM, GPU) and its panel; a dot when there is something worth cleaning
   const cpu = s.cpu?.percent ?? 0, tip = (s.tips || []).find((t) => t.action);
   const gpuText = s.gpu ? ` · GPU ${s.gpu.shortName || ''} ${s.gpu.percent}%${s.gpu.temp != null ? ` (${s.gpu.temp}°C)` : ''}` : '';
   $('mac-tip').hidden = !tip;
-  $('btn-mac').title = tr('mac.button.title', { text: `RAM ${pct}% · CPU ${cpu}%${gpuText}${tip ? ` · ${tr(tip.disk ? 'mac.button.tipDisk' : 'mac.button.tipRam', { title: tip.title, size: fmtBytes(tip.gain) })}` : ''}` });
+  btnMac.title = tr('mac.button.title', { text: `RAM ${pct}% · CPU ${cpu}%${gpuText}${tip ? ` · ${tr(tip.disk ? 'mac.button.tipDisk' : 'mac.button.tipRam', { title: tip.title, size: fmtBytes(tip.gain) })}` : ''}` });
   queueUi();
 }
 function meter(title, big, sub, ratio, lv) {
@@ -510,7 +519,7 @@ function meter(title, big, sub, ratio, lv) {
 }
 function actionButton(key, verbText, run, opts = {}) {
   const b = el('button', `btn btn--sm${opts.cls ? ` ${opts.cls}` : ''}`, verbText); b.type = 'button'; b.dataset.fk = key;
-  if (busyKeys.has(key)) { b.textContent = tr('mac.action.working'); b.disabled = true; return b; }
+  if (busyKeys.has(key)) { b.textContent = opts.working || (key.startsWith('docker:') ? tr('mac.rust.working') : tr('mac.action.working')); b.disabled = true; return b; }
   if (confirmKey === key) { b.textContent = opts.confirm || tr('mac.action.sure', { verb: verbText }); b.classList.add(opts.force ? 'btn--danger' : 'btn--confirm'); }
   if (opts.disabled) b.disabled = true;
   b.addEventListener('click', () => {
@@ -529,6 +538,59 @@ export async function doAction(key, body) {
     toast(d.message || (d.ok ? tr('mac.action.done') : tr('mac.action.failed')), d.closed ? 7000 : undefined);
     if (d.stubborn) stubborn.set(key, body); else stubborn.delete(key);
   } catch { toast(tr('mac.action.unreachable')); }
+}
+export async function doDockerAction(action) {
+  if (DEMO) { toast(tr('mac.action.demo')); return; }
+  try {
+    const r = await fetch(`/api/sys/docker${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+    const d = await r.json();
+    toast(d.message || (d.ok ? tr('mac.rust.done') : tr('mac.rust.failed')));
+  } catch { toast(tr('mac.action.unreachable')); }
+  loadMac();
+}
+function rustDockerSection(s) {
+  const sec = el('section', 'sec rust-sec');
+  const isRust = s.engine?.kind === 'rust-native';
+  const engineLabel = isRust ? `${tr('mac.rust.engineNative')} · v${s.engine?.version || '1.3.0'}` : tr('mac.rust.engineNode');
+  const h = el('h3', null, tr('mac.rust.title'));
+  h.append(el('span', `rust-pill ${isRust ? 'rust-pill--ok' : 'rust-pill--warn'}`, engineLabel));
+  sec.append(h);
+
+  const rows = el('ul', 'rows');
+  const secLi = el('li', 'row');
+  const secMain = el('div', 'row-main');
+  secMain.append(
+    el('div', 'row-name', tr('mac.rust.securityTitle')),
+    el('div', 'row-sub', s.security?.summary || tr('mac.rust.securitySub')),
+  );
+  secLi.append(secMain, el('span', 'rust-pill rust-pill--ok', 'SHA-256 · HMAC'));
+  rows.append(secLi);
+
+  const dockLi = el('li', 'row');
+  const dockMain = el('div', 'row-main');
+  const dockerStatus = s.docker?.inDocker || s.docker?.containerRunning ? tr('mac.rust.dockerUp') : tr('mac.rust.dockerStandalone');
+  const bridgeStatus = s.docker?.bridgeUp ? tr('mac.rust.bridgeUp') : tr('mac.rust.bridgeDown');
+  dockMain.append(
+    el('div', 'row-name', tr('mac.rust.dockerTitle')),
+    el('div', 'row-sub', `${dockerStatus} · ${bridgeStatus}`),
+  );
+  const badges = el('div', 'rust-badges');
+  badges.append(
+    el('span', `rust-pill ${s.docker?.inDocker || s.docker?.containerRunning ? 'rust-pill--ok' : 'rust-pill--warn'}`, dockerStatus),
+    el('span', `rust-pill ${s.docker?.bridgeUp ? 'rust-pill--ok' : 'rust-pill--warn'}`, bridgeStatus),
+  );
+  dockLi.append(dockMain, badges);
+  rows.append(dockLi);
+
+  const acts = el('div', 'rust-actions');
+  acts.append(
+    actionButton('docker:restart', tr('mac.rust.btnRestart'), () => doDockerAction('restart')),
+    actionButton('docker:up', tr('mac.rust.btnStart'), () => doDockerAction('up')),
+    actionButton('docker:down', tr('mac.rust.btnStop'), () => doDockerAction('down')),
+    actionButton('docker:bridge', tr('mac.rust.btnBridge'), () => doDockerAction('bridge')),
+  );
+  sec.append(rows, acts);
+  return sec;
 }
 function actFor(key, body, verbText, extra = {}) {
   if (stubborn.has(key)) return actionButton(key + ':force', tr(body.action === 'quit' ? 'mac.action.forceQuit' : 'mac.action.forceStop'), () => doAction(key, { ...body, force: true }), { force: true, confirm: tr('mac.action.sureForce') });
@@ -738,6 +800,7 @@ export function renderMac() {
     meters.append(meter(tr('mac.meter.plan', { label: w.label }), `Còn ${left}% (${u}%)`, w.resetsAt ? tr('mac.plan.resets', { when: resetText(w.resetsAt) }) : tr('mac.meter.planSub'), w.pct / 100, limitLevel(w.pct)));
   }
   frag.append(meters);
+  if (!isAssistantRestricted()) frag.append(rustDockerSection(s));
 
   // anything else worth doing: dev servers left behind, a process that keeps growing, test browsers (the sessions,
   // the apps and the disk have their own places below)

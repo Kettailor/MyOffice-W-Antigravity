@@ -24,10 +24,28 @@ export function setup() {
   /* room plants */
   roomPlants = PRO
     ? [potPlant(11.95, 8.55, 1.2, 'monstera'), potPlant(-3.15, -7.5, 1.0, 'monstera'), potPlant(-4.1, 4.95, 0.95, 'snake'), HQ ? potPlant(-1.25, 8.6, 0.9, 'bush') : potPlant(-2.0, 8.55, 0.95, 'bush'),
-      potPlant(8.2, -3.55, 0.9, 'snake'), potPlant(2.65, -7.55, 0.85, 'monstera'), potPlant(13.55, -2.9, 0.95, 'bush'), HQ ? potPlant(8.28, 8.72, 0.7, 'snake') : potPlant(7.95, 8.55, 1.0, 'snake')]   // headquarters: clear of the wing's doors
+      potPlant(8.2, -3.55, 0.9, 'snake'), potPlant(2.05, -7.55, 0.85, 'monstera'), potPlant(13.55, -2.9, 0.95, 'bush'), HQ ? potPlant(8.28, 8.72, 0.7, 'snake') : potPlant(7.95, 8.55, 1.0, 'snake')]   // headquarters: clear of the wing's doors
     : [potPlant(7.3, 5.3, 1.25, 'monstera'), potPlant(2.75, -5.4, 1.05, 'monstera'), potPlant(-7.45, 5.45, 0.95, 'snake'), potPlant(7.4, -1.4, 1.0, 'bush'),
       potPlant(-3.6, -5.5, 0.9, 'snake')];
-  floorLampGroups = PRO ? [floorLamp(-7.5, -5.45), floorLamp(6.25, -4.75, 1.7), floorLamp(13.6, 4.4), floorLamp(-7.6, 1.6)]
-    : [floorLamp(-0.75, -5.45), floorLamp(7.55, 3.9), floorLamp(-7.4, 3.3)];
-  for (const [x, y, z] of PRO ? [[-6.9, 2.2, -5.4], [6.25, 1.9, -4.4], [12.9, 2.2, 4.6], [-7.1, 2.2, 1.9], [3.4, 1.6, HQ ? 27.2 : 10.2]] : [[-1.5, 2.3, -4.6], [-6.2, 2.2, 4.6], [9.8, 1.6, 1.2]]) { const l = new THREE.PointLight('#FFB866', 0, 7, 1.3); l.position.set(x, y, z); scene.add(l); lamps.push(l); }
+  floorLampGroups = PRO ? [
+    floorLamp(-7.5, -5.45),
+    floorLamp(2.55, -7.45),
+    floorLamp(6.25, -4.75, 1.7),
+    floorLamp(13.6, 4.4),
+    floorLamp(-7.6, 1.6),
+    ...(HQ ? [
+      floorLamp(-7.4, 15.2), floorLamp(-0.1, 15.2), floorLamp(13.4, 15.2),
+    ] : []),
+  ] : [floorLamp(-0.75, -5.45), floorLamp(7.55, 3.9), floorLamp(-7.4, 3.3)];
+  for (const [x, y, z] of PRO ? [
+    [-6.9, 2.2, -5.4],
+    [2.3, 2.2, -7.2],
+    [6.25, 1.9, -4.4],
+    [12.9, 2.2, 4.6],
+    [-7.1, 2.2, 1.9],
+    ...(HQ ? [
+      [-7.1, 2.2, 15.0], [0.2, 2.2, 15.0], [13.1, 2.2, 15.0],
+    ] : []),
+    [3.4, 1.6, 10.2],
+  ] : [[-1.5, 2.3, -4.6], [-6.2, 2.2, 4.6], [9.8, 1.6, 1.2]]) { const l = new THREE.PointLight('#FFB866', 0, 7, 1.3); l.position.set(x, y, z); scene.add(l); lamps.push(l); }
 }

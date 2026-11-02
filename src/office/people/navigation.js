@@ -1,6 +1,6 @@
 // The walking graph, desk spots and stations people go to.
 import { HQ, PRO, V2, randInt } from '../core/env.js';
-import { DEPTS, LAY, inside, sofaAt } from '../world/layout.js';
+import { LAY, inside, sofaAt } from '../world/layout.js';
 import { DZ, LIFT_X } from '../world/entrance.js';
 import { DESKS, PODS, TEAM_SIZE, dLocal } from '../world/desks.js';
 import { MEET, MEET_SEATS } from '../world/furniture/meeting.js';
@@ -72,22 +72,34 @@ function meetStanding() {
 /* headquarters' wing: corridor A along the core (z 9.9), corridor B down the middle (x 3.3), and in each department
    room a door, a lane between its two pods and the aisles behind each row of chairs. Pod p's aisle nodes are P{p}b0…. */
 function wingGraph() {
-  const nodes = { HAL: [-2.4, 9.9], HB0: [3.3, 9.9], HAR: [7.4, 9.9], HB1: [3.3, 22.2] };
-  const edges = [['L4', 'HAL'], ['R4', 'HAR'], ['HAL', 'HB0'], ['HB0', 'HAR'], ['HB0', 'HB1']];
-  DEPTS.forEach((d, i) => {
-    const pl = 3 + i * 2, pr = pl + 1, zb = d.cz - 1.8, zf = d.cz + 1.8, lane = d.door.side === 'n' ? d.door.at : d.cx;
-    nodes[`D${i}b`] = [lane, zb]; nodes[`D${i}f`] = [lane, zf];
-    edges.push([`D${i}b`, `D${i}f`], [`D${i}b`, `P${pl}b1`], [`P${pl}b1`, `P${pl}b0`], [`D${i}b`, `P${pr}b0`], [`P${pr}b0`, `P${pr}b1`],
-      [`D${i}f`, `P${pl}f1`], [`P${pl}f1`, `P${pl}f0`], [`D${i}f`, `P${pr}f0`], [`P${pr}f0`, `P${pr}f1`]);
-    if (d.door.side === 'n') {   // through the room's back wall from corridor A, into the lane
-      nodes[`D${i}i`] = [lane, d.z0 + 1.0];
-      if (lane !== -2.4) { nodes[`HA${i}`] = [lane, 9.9]; edges.push(['HAR', `HA${i}`], [`HA${i}`, `D${i}i`]); } else edges.push(['HAL', `D${i}i`]);
-      edges.push([`D${i}i`, `D${i}b`]);
-    } else {                     // from corridor B through a side wall, then along that wall to both aisles
-      const x = d.door.side === 'e' ? d.x1 - 0.4 : d.x0 + 0.5, near = d.door.side === 'e' ? pr : pl, k = d.door.side === 'e' ? 1 : 0;
-      nodes[`D${i}i`] = [x, d.door.at]; nodes[`D${i}sb`] = [x, zb]; nodes[`D${i}sf`] = [x, zf];
-      edges.push(['HB1', `D${i}i`], [`D${i}i`, `D${i}sb`], [`D${i}i`, `D${i}sf`], [`D${i}sb`, `P${near}b${k}`], [`D${i}sf`, `P${near}f${k}`]);
-    }
+  const nodes = {
+    HAL: [-2.4, 9.9], HB0: [3.3, 9.9], HAR: [7.4, 9.9],
+    WM0o: [-4.35, 9.9], WM1o: [2.95, 9.9], WM2o: [10.3, 9.9],
+    MRd: [-4.35, 11.5], MR: [-4.35, 13.3],
+    MW0d: [2.95, 11.5], MW0: [2.95, 13.3],
+    MW1d: [10.3, 11.5], MW1: [10.3, 13.3],
+  };
+  const edges = [
+    ['L4', 'HAL'], ['R4', 'HAR'],
+    ['WM0o', 'HAL'], ['HAL', 'WM1o'], ['WM1o', 'HB0'], ['HB0', 'HAR'], ['HAR', 'WM2o'],
+    ['WM0o', 'MRd'], ['MRd', 'MR'],
+    ['WM1o', 'MW0d'], ['MW0d', 'MW0'],
+    ['WM2o', 'MW1d'], ['MW1d', 'MW1'],
+  ];
+  const roomDoorNodes = ['MRd', 'MW0d', 'MW1d'];
+  const roomCxs = [-4.35, 2.95, 10.3];
+  roomCxs.forEach((cx, idx) => {
+    const cz = 13.3, dn = roomDoorNodes[idx];
+    const chairCoords = [
+      [cx - 1.15, cz - 1.25], [cx, cz - 1.25], [cx + 1.15, cz - 1.25],
+      [cx - 1.15, cz + 1.25], [cx, cz + 1.25], [cx + 1.15, cz + 1.25],
+      [cx - 2.2, cz],
+    ];
+    chairCoords.forEach(([sx, sz], k) => {
+      const cn = `M${idx}_${k}`;
+      nodes[cn] = [sx, sz];
+      edges.push([cn, dn]);
+    });
   });
   return { nodes, edges };
 }
@@ -198,9 +210,9 @@ export function setup() {
   NODES = PRO ? {
     O: [-7.5, 3.3], I: [-6.3, 3.3], LB: [-5.0, 3.3], SVo: [-3.1, -1.55], SVi: [-4.2, -1.55], WCo: [-4.9, 4.7], WCi: [-4.9, 6.2],
     ST1: [-6.05, 6.1], ST2: [-6.05, 7.4], WCs: [-6.05, 8.5],
-    L0: [-3.1, -2.3], DRi: [-3.1, -3.9], DRc: [-5.4, -3.9], DRs: [-3.85, -6.7], DRw: [-4.05, -4.45],   // (DRw: round the accountant's desk, people/accountant.js)
-    MTd: [2.35, -2.3], MTi: [2.35, -3.75], MF2: [1.35, -3.75], MF1: [0.2, -3.75], MF0: [-0.95, -3.75], MTf: [-2.05, -3.75],
-    MTw: [-2.05, -7.45], MB0: [-0.95, -7.45], MB1: [0.2, -7.45], MB2: [1.35, -7.45], MTb: [2.5, -7.45],
+    L0: [-3.1, -2.3], DR0i: [-3.1, -3.9], DRc: [-5.4, -3.9], DRs: [-4.05, -6.12],
+    N1: [0.2, -2.2], DRi: [0.2, -2.2], DRd: [0.2, -3.55], DRw: [0.2, -5.5],
+    DRs0: [-0.65, -6.6], DRs1: [-0.65, -4.3], DRs2: [1.45, -6.6], DRs3: [1.45, -4.3],
     LBd: [3.8, -2.3], LBi: [3.8, -3.8], LBf: [6.25, -3.45], LBm: [4.6, -5.6], CE: [7.4, -2.3],
     L1: [-2.4, -0.3], L2: [-2.4, 3.3], L3: [-2.4, 4.8], L4: [-2.4, 8.4], R1: [7.4, -0.3], R2: [7.4, 3.3], R3: [7.4, 4.8], R4: [7.4, 8.4],
     M1: [2.5, -0.3], M2: [2.5, 3.3], ...podNodes, ...(HQ ? wingGraph().nodes : {}),
@@ -217,8 +229,9 @@ export function setup() {
     ['L1', 'P0b0'], ['P0b0', 'P0b1'], ['P0b1', 'M1'], ['M1', 'P1b0'], ['P1b0', 'P1b1'], ['P1b1', 'R1'],
     ['L2', 'P0f0'], ['P0f0', 'P0f1'], ['P0f1', 'M2'], ['M2', 'P1f0'], ['P1f0', 'P1f1'], ['P1f1', 'R2'],
     ['L3', 'P2b0'], ['P2b0', 'P2b1'], ['P2b1', 'R3'], ['L4', 'BK'], ['BK', 'P2f0'], ['P2f0', 'P2f1'], ['P2f1', 'R4'],
-    ['L0', 'DRi'], ['DRi', 'DRc'], ['DRi', 'DRw'], ['DRw', 'DRs'], ['L0', 'MTd'], ['MTd', 'MTi'], ['MTi', 'MF2'], ['MF2', 'MF1'], ['MF1', 'MF0'], ['MF0', 'MTf'], ['MTf', 'MTw'],
-    ['MTw', 'MB0'], ['MB0', 'MB1'], ['MB1', 'MB2'], ['MB2', 'MTb'], ['MTb', 'MTi'], ['MTd', 'LBd'], ['LBd', 'LBi'], ['LBi', 'LBf'], ['LBi', 'LBm'], ['LBd', 'CE'], ['CE', 'R1'],
+    ['L0', 'DR0i'], ['DR0i', 'DRc'], ['DRc', 'DRs'],
+    ['L0', 'N1'], ['N1', 'DRi'], ['DRi', 'DRd'], ['DRd', 'DRw'], ['DRw', 'DRs0'], ['DRw', 'DRs1'], ['DRw', 'DRs2'], ['DRw', 'DRs3'],
+    ['N1', 'LBd'], ['LBd', 'LBi'], ['LBi', 'LBf'], ['LBi', 'LBm'], ['LBd', 'CE'], ['CE', 'R1'],
     ['CE', 'PA1'], ['PA1', 'PA2'], ['PA1', 'PA3'], ['PA2', 'PA4'], ['PA3', 'PA4'], ['PA1', 'PA5'], ['PA3', 'PA6'], ['PA5', 'PA6'],
     ['PA5', 'LG1'], ['LG1', 'LG2'], ['LG1', 'LGs'], ['LGs', 'LG3'], ['LG3', 'R3'], ['LG2', 'LGr'], ...(HQ ? wingGraph().edges : [])]
     : [['A', 'BL'], ['BL', 'T0'], ['T0', 'T1'], ['T1', 'T2'], ['T2', 'D'], ['D', 'E'], ['A', 'F'], ['F', 'I'], ['F', 'GL1'], ['BL', 'GL1'],
@@ -244,10 +257,22 @@ export function setup() {
     globe: [spotAt(7.1, -6.2, faceTo(7.1, -6.2, 8.0, -6.55), 'LBm'), spotAt(7.6, -5.3, faceTo(7.6, -5.3, 8.0, -6.55), 'LBm')],
     server: [spotAt(-6.55, -2.52, -Math.PI / 2, 'SVi'), spotAt(-6.55, -1.47, -Math.PI / 2, 'SVi'), spotAt(-6.55, -0.42, -Math.PI / 2, 'SVi')],
     coffee: [...SOFA_SEATS(), ...DINING, spotAt(11.45, -6.75, Math.PI, 'PA4'), spotAt(10.35, -6.75, Math.PI, 'PA2')],
-    meeting: [...MEET_SEATS, spotAt(2.55, -4.7, -Math.PI / 2, 'MTi'), spotAt(2.6, -5.6, -Math.PI / 2, 'MTb'), spotAt(2.55, -6.5, -Math.PI / 2, 'MTb'), spotAt(-2.2, -6.6, Math.PI / 2, 'MTw'),
-      spotAt(-2.2, -4.5, Math.PI / 2, 'MTf')],
+    meeting: HQ ? [
+      ...MEET_SEATS,
+      spotAt(-1.85, 12.2, -Math.PI / 2, 'MRd'),
+      spotAt(5.45, 12.2, -Math.PI / 2, 'MW0d'),
+      spotAt(12.8, 12.2, -Math.PI / 2, 'MW1d'),
+    ] : [...MEET_SEATS, spotAt(2.55, -4.7, -Math.PI / 2, 'DRw'), spotAt(2.6, -5.6, -Math.PI / 2, 'DRw')],
     director: [spotAt(-5.95, -4.95, Math.PI, 'DRc', true), spotAt(-4.85, -4.95, Math.PI, 'DRc', true)],
-    brief: [spotAt(-1.75, -7.2, faceTo(-1.75, -7.2, 0.2, -5.6), 'MTw'), spotAt(2.35, -6.9, faceTo(2.35, -6.9, 0.2, -5.6), 'MTb')],
+    brief: HQ ? [
+      spotAt(-6.8, 11.8, faceTo(-6.8, 11.8, -4.35, 13.3), 'MRd', false, { roomIdx: 0 }),
+      spotAt(0.5, 11.8, faceTo(0.5, 11.8, 2.95, 13.3), 'MW0d', false, { roomIdx: 1 }),
+      spotAt(7.85, 11.8, faceTo(7.85, 11.8, 10.3, 13.3), 'MW1d', false, { roomIdx: 2 }),
+    ] : [
+      spotAt(-1.75, -7.2, faceTo(-1.75, -7.2, 0.2, -5.6), 'DRw', false, { roomIdx: 0 }),
+      spotAt(2.35, -6.9, faceTo(2.35, -6.9, 0.2, -5.6), 'DRw', false, { roomIdx: 0 }),
+    ],
+    phone: [spotAt(-5.72, 2.42, Math.PI, 'LB'), spotAt(-5.2, 2.42, Math.PI, 'LB')],
     wc: [spotAt(-7.3, 6.1, Math.PI / 2, 'ST1', false, { stall: 0 }), spotAt(-7.3, 7.4, Math.PI / 2, 'ST2', false, { stall: 1 })],
     sink: [spotAt(-7.25, 8.5, -Math.PI / 2, 'WCs')],
     dining: DINING,
@@ -266,6 +291,7 @@ export function setup() {
       { x: 6.35, z: -3.4, face: faceTo(6.35, -3.4, LAY.rocket[0], LAY.rocket[1]), node: 'E' },
       { x: 6.45, z: -2.75, face: faceTo(6.45, -2.75, LAY.rocket[0], LAY.rocket[1]), node: 'E' },
     ],
+    phone: [{ x: -5.5, z: 2.2, face: Math.PI, node: 'I' }],
   };
   for (const list of Object.values(STATIONS)) for (const s of list) s.by = null;
   // pro: DOOR_IN is the spot in front of the lift doors (facing them while waiting), DOOR_OUT the inside of the car

@@ -13,12 +13,12 @@ import { t as tr } from '../../i18n/index.js';
 /* ---------- the director (pro plan) ----------
    You, in the corner office. Each prompt you send, the director carries to that session's person, wherever they are,
    and hands it over; when a session finishes its turn, its person comes to the director's desk to report. */
-const DIR_HOME = { x: -5.4, z: -6.75, face: 0, node: 'DRs', sit: true };
+const DIR_HOME = { x: -5.4, z: -7.0, face: 0, node: 'DRs', sit: true };
 const EXEC_SPOTS = [
-  { x: -3.76, z: -6.42, face: Math.PI / 2, node: 'DRs', sit: true }, // Phó Giám đốc desk
-  { x: -3.76, z: -5.02, face: Math.PI / 2, node: 'DRw', sit: true }, // Trợ lý Giám đốc desk
-  { x: -4.85, z: -4.95, face: Math.PI, node: 'DRc', sit: true },
-  { x: -5.95, z: -4.95, face: Math.PI, node: 'DRc', sit: true },
+  { deskX: -0.65, deskZ: -6.25, seatX: -0.65, seatZ: -7.0, standX: -0.65, standZ: -6.82, x: -0.65, z: -7.0, face: 0, node: 'DRs0', sit: true },
+  { deskX: -0.65, deskZ: -4.75, seatX: -0.65, seatZ: -4.0, standX: -0.65, standZ: -4.18, x: -0.65, z: -4.0, face: Math.PI, node: 'DRs1', sit: true },
+  { deskX: 1.45, deskZ: -6.25, seatX: 1.45, seatZ: -7.0, standX: 1.45, standZ: -6.82, x: 1.45, z: -7.0, face: 0, node: 'DRs2', sit: true },
+  { deskX: 1.45, deskZ: -4.75, seatX: 1.45, seatZ: -4.0, standX: 1.45, standZ: -4.18, x: 1.45, z: -4.0, face: Math.PI, node: 'DRs3', sit: true },
 ];
 const EXEC_STYLES = [
   { shirt: '#1E3A8A', hair: '#27272A', style: 'parted', acc: 'glasses', outfit: 'suit', pants: '#1E293B', shoes: '#0F172A' },
@@ -32,9 +32,21 @@ export const flights = [];   // papers in the air, director -> person
 let Director;
 export const teamChibis = new Map(); // memberId -> Director instance
 const lastTeamDeliver = new Map(); // sess -> timestamp ms
-export function wasDeliveredByTeam(sess) {
-  const t = lastTeamDeliver.get(sess);
-  return !!t && Date.now() - t < 4000;
+const lastDirDeliver = new Map();  // normDir -> timestamp ms
+const lastTextDeliver = new Map(); // normText -> timestamp ms
+const normDeliverDir = (dir) => String(dir || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const normDeliverText = (text) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80).toLowerCase();
+export function wasDeliveredByTeam(sess, text = '', dir = '') {
+  const now = Date.now();
+  const tSess = sess ? lastTeamDeliver.get(sess) : 0;
+  if (tSess && now - tSess < 60_000) return true;
+  const nd = normDeliverDir(dir || (sess ? sessions.get(sess)?.dir : ''));
+  const tDir = nd ? lastDirDeliver.get(nd) : 0;
+  if (tDir && now - tDir < 60_000) return true;
+  const nt = normDeliverText(text);
+  const tTxt = nt && nt !== 'công việc nội bộ' ? lastTextDeliver.get(nt) : 0;
+  if (tTxt && now - tTxt < 60_000) return true;
+  return false;
 }
 function flyPaper(from, to) {
   if (reduceMotion) return;
@@ -109,10 +121,25 @@ export function syncTeamMembers(members = []) {
   });
 }
 
-export function deliverTaskBy(by, sess, text) {
+export function deliverTaskBy(by, sess, text, dir = '') {
   if (!PRO) return;
+  const now = Date.now();
+  let targetSess = sess;
+  const nd = normDeliverDir(dir || (sess ? sessions.get(sess)?.dir : ''));
+  if (!targetSess && nd) {
+    for (const [sid, sObj] of sessions) {
+      if (normDeliverDir(sObj?.dir) === nd) {
+        targetSess = sid;
+        break;
+      }
+    }
+  }
+  if (targetSess) lastTeamDeliver.set(targetSess, now);
+  if (nd) lastDirDeliver.set(nd, now);
+  const nt = normDeliverText(text);
+  if (nt) lastTextDeliver.set(nt, now);
+  if (!targetSess) return;
   sfx.play('task');
-  lastTeamDeliver.set(sess, Date.now());
   let actor = null;
   if (by?.id && teamChibis.has(by.id)) {
     actor = teamChibis.get(by.id);
@@ -124,8 +151,22 @@ export function deliverTaskBy(by, sess, text) {
       }
     }
   }
-  const s = sessions.get(sess);
-  (actor || director)?.deliver(sess, s?.masked ? 'Công việc nội bộ' : (text || ''));
+  const s = sessions.get(targetSess);
+  (actor || director)?.deliver(targetSess, s?.masked ? 'Công việc nội bộ' : (text || ''));
+}
+
+export function getAssigner(ownerId) {
+  if (ownerId && ownerId !== 'director' && teamChibis.has(ownerId)) return teamChibis.get(ownerId);
+  return director;
+}
+
+export function reportSpotForAssigner(assigner) {
+  const target = assigner || director;
+  if (!target) return null;
+  if (target === director) return null; // use STATIONS.director
+  const h = target.homeData || DIR_HOME;
+  const rx = h.standX ?? (h.x - 0.85), rz = h.standZ ?? (h.z + 0.35);
+  return { x: rx, z: rz, face: faceTo(rx, rz, h.seatX ?? h.x, h.seatZ ?? h.z), node: h.node || 'DRw', sit: false };
 }
 
 export function setup() {
@@ -144,8 +185,28 @@ export function setup() {
     attachPaper() { this.paper = new THREE.Mesh(paperGeo, paperDocM); this.paper.position.set(0, -0.06, 0.07); this.paper.rotation.x = 0.3; this.paper.visible = !!this.job; this.P.armR.hand.add(this.paper); }
     rebuild() { super.rebuild(); this.attachPaper(); }
     deliver(sess, text) {
+      if (!sess) return;
+      this.recentDelivers ||= new Map();
+      const now = Date.now();
+      const normTxt = normDeliverText(text);
+      const prev = this.recentDelivers.get(sess);
       const q = this.queue.find((j) => j.sess === sess);
-      if (q) q.text = text; else if (this.job?.sess === sess && this.job.stage === 'going') this.job.text = text; else this.queue.push({ sess, text, at: state.sim });
+      if (q) {
+        q.text = text;
+        this.recentDelivers.set(sess, { at: now, text: normTxt });
+        return;
+      }
+      if (this.job?.sess === sess) {
+        this.job.text = text;
+        this.recentDelivers.set(sess, { at: now, text: normTxt });
+        return;
+      }
+      if (prev && (now - prev.at < 15_000 || (normTxt && prev.text === normTxt && now - prev.at < 45_000))) {
+        this.recentDelivers.set(sess, { at: prev.at, text: normTxt || prev.text });
+        return;
+      }
+      this.recentDelivers.set(sess, { at: now, text: normTxt });
+      this.queue.push({ sess, text, at: state.sim });
     }
     // where to take it: beside the person's desk, in the aisle behind the chair; someone without a desk, where they are
     target(j) {
@@ -157,6 +218,7 @@ export function setup() {
       const w = workers.get(j.sess);
       if (!w || w.leaving || state.sim - j.at > 90) return;
       this.job = { ...j, stage: 'going' }; this.paper.visible = true; this.hush(); this.station = 'out';
+      this.hurry = true;
       this.job.to = this.target(j);
       this.goTo(this.job.to, () => this.arrive());
     }
@@ -167,12 +229,13 @@ export function setup() {
       const near = w.phase !== 'walk' && !w.wcBusy && Math.hypot(w.pos.x - this.pos.x, w.pos.y - this.pos.y) < 1.7;
       j.stage = 'hand'; j.w = w; j.drop = !near && j.to.desk != null;
       const who = short(dn(sessions.get(j.sess)), 22), what = state.streamer ? tr('people.newTask') : short(j.text, 44);
+      const holdDur = this.queue.length > 0 ? 0.45 : near ? (reduceMotion ? 0.65 : 0.85) : 0.65;
       if (near) {   // hand it over
-        this.faceTarget = Math.atan2(w.pos.x - this.pos.x, w.pos.y - this.pos.y); this.anim = 'globe'; j.until = state.sim + (reduceMotion ? 1.2 : 1.9);
+        this.faceTarget = Math.atan2(w.pos.x - this.pos.x, w.pos.y - this.pos.y); this.anim = 'globe'; j.until = state.sim + holdDur;
         this.say('prompt', tr('people.handOver', { what }));
         if (w.pose !== 'sit') w.faceTarget = Math.atan2(this.pos.x - w.pos.x, this.pos.y - w.pos.y);
       } else {      // not at the desk: leave it there
-        this.faceTarget = j.to.face; this.anim = 'tidy'; j.until = state.sim + 1.3;
+        this.faceTarget = j.to.face; this.anim = 'tidy'; j.until = state.sim + holdDur;
         this.say('prompt', j.drop ? tr('people.leaveOnDesk', { who }) : tr('people.handOver', { what }));
       }
       sfx.play('task');
@@ -184,7 +247,7 @@ export function setup() {
       if (j?.stage === 'hand') {
         if (state.sim < j.until) return;
         if (j.drop) dropNote(j.to.desk, j.sess); else flyPaper(this, j.w);
-        this.given++; this.paper.visible = false; this.job = null; this.hush(); this.anim = 'idle';
+        this.given++; this.paper.visible = false; this.job = null; this.hurry = this.queue.length > 0; this.hush(); this.anim = 'idle';
         return;
       }
       if (!j && this.queue.length && state.sim >= (this.holdUntil || 0)) { this.start(this.queue.shift()); return; }
@@ -195,17 +258,19 @@ export function setup() {
         this.nextIdle = state.sim + rand(6, 11);
       }
     }
-    goHome() { this.station = 'going-home'; this.goTo(this.homeData, () => { this.station = 'home'; this.face = this.faceTarget = this.homeData.face || 0; this.anim = 'type'; this.nextIdle = state.sim + rand(4, 8); }); }
+    goHome() { this.station = 'going-home'; this.hurry = this.queue.length > 0; this.goTo(this.homeData, () => { this.station = 'home'; this.hurry = false; this.face = this.faceTarget = this.homeData.face || 0; this.anim = 'type'; this.nextIdle = state.sim + rand(4, 8); }); }
     // a person reports a finished turn at the desk
-    ack() {
+    ack(w) {
       this.reports++;
-      if (this.station !== 'home' || this.phase === 'walk') return false;
+      const nearHome = Math.hypot(this.pos.x - this.homeData.x, this.pos.y - this.homeData.z) < 3.5;
+      if (!nearHome && this.phase === 'walk') return false;
+      if (w && this.pose !== 'sit') this.faceTarget = Math.atan2(w.pos.x - this.pos.x, w.pos.y - this.pos.y);
       this.anim = 'idle'; this.waveUntil = state.sim + 1.4; this.nextIdle = this.holdUntil = state.sim + 2.6;
       const text = tr('people.directorThanks'); this.say('substop', text);
       setTimeout(() => { if (this.lastSay?.text === text) this.hush(); }, 2400);
       return true;
     }
-    reset() { for (const n of deskNotes.values()) n.m.removeFromParent(); deskNotes.clear(); this.queue = []; this.job = null; this.chore = null; this.after = null; this.paper.visible = false; this.hush(); this.path = []; this.phase = 'idle'; this.pos.set(this.homeData.x, this.homeData.z); this.spot = this.homeData; this.face = this.faceTarget = this.homeData.face || 0; this.pose = 'sit'; this.station = 'home'; this.anim = 'type'; }
+    reset() { for (const n of deskNotes.values()) n.m.removeFromParent(); deskNotes.clear(); this.recentDelivers?.clear(); this.queue = []; this.job = null; this.hurry = false; this.chore = null; this.after = null; this.paper.visible = false; this.hush(); this.path = []; this.phase = 'idle'; this.pos.set(this.homeData.x, this.homeData.z); this.spot = this.homeData; this.face = this.faceTarget = this.homeData.face || 0; this.pose = 'sit'; this.station = 'home'; this.anim = 'type'; }
   };
   director = PRO ? new Director() : null;
   if (director) npcs.push(director);

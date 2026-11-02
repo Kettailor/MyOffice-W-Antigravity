@@ -101,6 +101,14 @@
 .ac-seg-b[aria-checked="true"] { background: var(--accent); color: var(--on-accent); }
 .ac-seg-b:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .auto-note { margin: 0; font-size: .68rem; color: var(--muted); }
+
+/* Rust engine, security shield & Docker lifecycle controls */
+.rust-sec { display: grid; gap: 10px; }
+.rust-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; align-items: center; }
+.rust-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: .66rem; font-weight: 700; white-space: nowrap; border: 1px solid var(--line-2); background: var(--card-2); color: var(--muted); }
+.rust-pill--ok { background: rgba(25, 158, 112, .16); border-color: rgba(25, 158, 112, .45); color: var(--green-ink); }
+.rust-pill--warn { background: var(--amber-soft); border-color: rgba(201, 133, 0, .45); color: var(--amber); }
+.rust-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 @media (max-width: 520px) {
   .verdict { grid-template-columns: 1fr; }
   .verdict-trend { width: auto; grid-template-columns: 1fr 1fr; gap: 6px 14px; }

@@ -10,6 +10,7 @@ export default async function SessionDrawer() {
         <span className="dr-dot" id="ds-dot"></span>
         <div className="dr-title"><h2 id="ds-name"></h2><p id="ds-dir"></p></div>
         <span className="pill" id="ds-status"></span>
+        <button className="icon-btn ds-wide-btn" id="ds-wide-btn" type="button" title={t('ui.sessionDrawer.expand')} aria-label={t('ui.sessionDrawer.expand')} aria-pressed="false"><span data-icon="maximize"></span></button>
         <button className="icon-btn" type="button" data-close aria-label={t('common.close')}><span data-icon="x"></span></button>
       </header>
       <div className="dr-actions" id="ds-actions"></div>

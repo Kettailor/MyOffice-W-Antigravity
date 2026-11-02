@@ -19,11 +19,13 @@ import { MAX_TASK_IMAGES, openTaskSheet, dictate, shrink } from './task-sheet.js
 import { toast } from './activity.js';
 import { TOKEN } from '../net/live.js';
 import { sfx } from '../audio/sfx.js';
-import { REACTIONS, byId, canSeeSession, chat, chatPin, chatPoll, chatSend, chatSendPhoto, chatSendPhotoData, isMentioningMe, isMsgVisible, myViewerId, onChat, people, react, recall, rsvp, setOpen, shouldNotifyForMsg, vote, who } from './group-chat.js';
+import { CHAT_RETENTION_MS, REACTIONS, STAFF_FACES, byId, canSeeSession, channelOf, chat, chatPin, chatPoll, chatSend, chatSendPhoto, chatSendPhotoData, isMentioningMe, isMsgVisible, myViewerId, onChat, people, react, recall, rsvp, setChatChannel, setOpen, shouldNotifyForMsg, vote, who } from './group-chat.js';
 import { t as tr, locale } from '../../i18n/index.js';
 
-let root, body, typingEl, pinEl, newBtn, input, bar, stickersEl, membersEl, mentionEl, moreEl, replyEl, headSub, headAv, toEl, pickEl, chatThumbsEl;
+let root, body, typingEl, pinEl, newBtn, input, bar, stickersEl, membersEl, mentionEl, moreEl, replyEl, headSub, headAv, toEl, pickEl, chatThumbsEl, tabsEl, tabWorkBtn, tabCasualBtn, tabWorkBadge, tabCasualBadge, channelSubEl;
 let replyTo = null, readTo = null, stickTab = 'sticker';   // the message you answer; the last one read when the window shut; the panel's tab
+let lastHeadKey = '';
+let msgLimit = 100;
 let mentionedHumans = [];   // IDs of human participants @mentioned in the current input
 const chatPhotos = [];   // up to MAX_TASK_IMAGES (5) images pasted via Ctrl+V or attached in chat
 
@@ -72,8 +74,21 @@ function timeLabel(ts) {
 }
 const mask = (text) => (state.streamer ? String(text || '').replace(/“[^”]*”/g, '“…”') : String(text || ''));
 const meP = () => ({ key: 'me', name: !state.isLocal && state.viewer ? `${state.viewer.role || 'Trợ lý'}: ${state.viewer.name}` : tr('chat.boss') });
-const faceOf = (key, name) => (key === 'me' ? meP() : { ...(who(key) || {}), key, name: who(key)?.name || name || '?' });
+const faceOf = (key, name) => {
+  if (key === 'me') return meP();
+  const w = who(key);
+  if (w) return { ...w, key: w.key || key, name: w.name || name || '?' };
+  const sf = STAFF_FACES[key] || STAFF_FACES[`__${key}`];
+  if (sf) return { key, name: name || (sf.nameKey ? tr(sf.nameKey) : `?`), look: sf.look, staff: true };
+  return { key, name: name || '?' };
+};
 const nameOf = (key) => (key === 'me' ? tr('chat.you') : who(key)?.name || '');
+const inCurrentChannel = (m) => {
+  if (!isMsgVisible(m) || channelOf(m) !== (chat.channel || 'work')) return false;
+  const ts = m.ts || m.at;
+  if (ts && Date.now() - ts > CHAT_RETENTION_MS) return false;
+  return true;
+};
 
 /* ---------- stickers: drawn here (no one's artwork): a big emoji and a caption in round, outlined letters ---------- */
 const STICKER_EMOJI = ['👌', '🙏', '👀', '🔥', '💪', '🤭', '🎉', '🥺'];
@@ -368,10 +383,71 @@ function row(m, prev, nextM) {
 
 /* ---------- drawing ---------- */
 const atBottom = () => body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+function drawTabs() {
+  if (!tabsEl) return;
+  const ch = chat.channel || 'work';
+  root?.setAttribute('data-channel', ch);
+  if (tabWorkBtn) {
+    const on = ch === 'work';
+    tabWorkBtn.classList.toggle('is-on', on);
+    tabWorkBtn.setAttribute('aria-selected', String(on));
+  }
+  if (tabCasualBtn) {
+    const on = ch === 'casual';
+    tabCasualBtn.classList.toggle('is-on', on);
+    tabCasualBtn.setAttribute('aria-selected', String(on));
+  }
+  if (tabWorkBadge) {
+    const nw = state.chatNotify === 'off' ? 0 : (chat.unreadWork || 0);
+    tabWorkBadge.hidden = !nw || ch === 'work';
+    tabWorkBadge.textContent = nw > 9 ? '9+' : String(nw);
+  }
+  if (tabCasualBadge) {
+    const nc = state.chatNotify === 'off' ? 0 : (chat.unreadCasual || 0);
+    tabCasualBadge.hidden = !nc || ch === 'casual';
+    tabCasualBadge.textContent = nc > 9 ? '9+' : String(nc);
+  }
+  if (channelSubEl) {
+    channelSubEl.textContent = tr(ch === 'casual' ? 'chat.tabs.casualSub' : 'chat.tabs.workSub');
+  }
+  if (toEl) {
+    toEl.hidden = DEMO_CHAT || ch === 'casual';
+  }
+  if (pickEl && ch === 'casual') {
+    pickEl.hidden = true;
+  }
+}
+function switchChannel(ch) {
+  const next = ch === 'casual' ? 'casual' : 'work';
+  if (chat.channel === next) return;
+  msgLimit = 100;
+  setReply(null);
+  setChatChannel(next);
+  drawTabs();
+  drawTarget();
+  redraw();
+  drawTyping();
+  body.scrollTop = body.scrollHeight;
+}
 function redraw() {
   if (!root) return;
-  const list = chat.msgs.filter(isMsgVisible), frag = document.createDocumentFragment();
+  drawTabs();
+  const allList = chat.msgs.filter(inCurrentChannel);
+  const list = allList.length > msgLimit ? allList.slice(-msgLimit) : allList;
+  const frag = document.createDocumentFragment();
   frag.append(el('div', 'zc-push'));   // (pushes a short conversation down to the input, like the app)
+  if (allList.length > msgLimit) {
+    const hiddenCount = allList.length - msgLimit;
+    const moreBtn = el('button', 'zc-day zc-load-more', `⬆️ Xem thêm ${Math.min(100, hiddenCount)} tin nhắn cũ`);
+    moreBtn.type = 'button';
+    moreBtn.addEventListener('click', () => {
+      const prevHeight = body.scrollHeight;
+      msgLimit += 100;
+      redraw();
+      body.scrollTop = Math.max(0, body.scrollHeight - prevHeight);
+    });
+    frag.append(moreBtn);
+  }
   let newDone = false;
   for (let i = 0; i < list.length; i++) {
     if (i === 0 || list[i].at - list[i - 1].at > GAP_MS || new Date(list[i].at).toDateString() !== new Date(list[i - 1].at).toDateString()) frag.append(el('div', 'zc-day', timeLabel(list[i].at)));
@@ -391,13 +467,15 @@ function redraw() {
     frag.append(seen);
   }
   body.replaceChildren(frag);
-  drawPin(); drawHead();
+  drawPin(); drawHead(); drawTyping();
 }
+export const renderMessages = redraw;
 // a new message at the end: added on its own (redrawing every row would take a bubble out from under the pointer);
 // the one before may lose its time and its ♡, the "seen" line moves under it
 function appendOne(m) {
-  if (!isMsgVisible(m)) return;
-  const list = chat.msgs.filter(isMsgVisible), i = list.indexOf(m), prev = list[i - 1];
+  drawTabs();
+  if (!inCurrentChannel(m)) { drawHead(); return; }
+  const list = chat.msgs.filter(inCurrentChannel), i = list.indexOf(m), prev = list[i - 1];
   if (i < 0 || i !== list.length - 1 || !prev || (prev.kind !== 'sys' && !body.querySelector(`.zc-row[data-id="${CSS.escape(prev.id)}"]`))) { redraw(); return; }
   body.querySelector('.zc-seen')?.remove();
   if (m.at - prev.at > GAP_MS || new Date(m.at).toDateString() !== new Date(prev.at).toDateString()) body.append(el('div', 'zc-day', timeLabel(m.at)));
@@ -409,21 +487,41 @@ function appendOne(m) {
 }
 function redrawOne(m) {
   const old = body?.querySelector(`.zc-row[data-id="${CSS.escape(m.id)}"]`); if (!old) return;
-  const i = chat.msgs.findIndex((x) => x.id === m.id); old.replaceWith(row(chat.msgs[i] || m, chat.msgs[i - 1], chat.msgs[i + 1]));
+  const list = chat.msgs.filter(inCurrentChannel);
+  const i = list.findIndex((x) => x.id === m.id);
+  if (i < 0) return;
+  old.replaceWith(row(list[i] || m, list[i - 1], list[i + 1]));
 }
 function flash(id) { const r = body.querySelector(`.zc-row[data-id="${CSS.escape(id || '')}"]`); r?.scrollIntoView({ block: 'center', behavior: 'smooth' }); r?.classList.add('is-flash'); setTimeout(() => r?.classList.remove('is-flash'), 1400); }
-function drawHead() { headSub.textContent = tr('chat.members', { n: people().length + 1 }); headAv.replaceChildren(groupAvatar(46)); }
+function drawHead() {
+  const ppl = people();
+  const isCasual = chat.channel === 'casual';
+  const subTxt = tr(isCasual ? 'chat.tabs.casualSub' : 'chat.tabs.workSub');
+  headSub.textContent = `${tr('chat.members', { n: ppl.length + (isCasual ? 9 : 1) })} · ${subTxt}`;
+  const headKey = `${chat.channel || 'work'}|${ppl.join(',')}|${state.isLocal}|${state.viewer?.name || ''}`;
+  if (headKey !== lastHeadKey) {
+    lastHeadKey = headKey;
+    headAv.replaceChildren(groupAvatar(46));
+  }
+}
 function drawPin() {
   const m = chat.pinned && byId(chat.pinned);
-  pinEl.hidden = !m || m.recalled;
-  if (m && !m.recalled) {
+  const visibleInCh = m && !m.recalled && channelOf(m) === (chat.channel || 'work');
+  pinEl.hidden = !visibleInCh;
+  if (visibleInCh) {
     pinEl.querySelector('.zc-pin-t').textContent = m.kind === 'poll' ? `📊 ${m.poll.q}` : m.kind === 'remind' ? `⏰ ${m.remind.title}` : m.kind === 'perm' ? `🛡️ ${m.perm?.label || mask(m.text)}` : `${m.name}: ${mask(m.text)}`;
   }
 }
+export const renderPin = drawPin;
 function drawTyping() {
-  const t = chat.typing;
-  typingEl.hidden = !t.length;
-  if (t.length) typingEl.querySelector('span').textContent = tr('chat.typing', { name: t.length > 1 ? `${t[0]} +${t.length - 1}` : t[0] });
+  if (!typingEl) return;
+  const curCh = chat.channel || 'work';
+  const names = [...new Set((chat.typing || [])
+    .filter((x) => (typeof x === 'string' ? curCh === 'work' : (x?.channel || 'work') === curCh))
+    .map((x) => (typeof x === 'string' ? x : x?.name))
+    .filter(Boolean))];
+  typingEl.hidden = !names.length;
+  if (names.length) typingEl.querySelector('span').textContent = tr('chat.typing', { name: names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0] });
 }
 function badge() {
   const b = $('chat-badge'); if (!b) return;
@@ -456,10 +554,12 @@ onChat((what, m) => {
   if (what === 'badge') return;
   if (what === 'add') peek(m);
   if (!root || root.hidden) return;
+  drawTabs();
   if (what === 'typing') { drawTyping(); return; }
   if (what === 'update') { redrawOne(m); drawPin(); return; }
   const stick = atBottom() || m?.from === 'me';
   if (what === 'add') appendOne(m); else redraw();
+  if (what === 'add' && !inCurrentChannel(m)) return;
   if (stick) body.scrollTop = body.scrollHeight;
   else if (what === 'add' && m.kind !== 'sys') { const n = (Number(newBtn.dataset.n) || 0) + 1; newBtn.dataset.n = String(n); newBtn.textContent = tr('chat.newMsgs', { n }); newBtn.hidden = false; }
 });
@@ -545,30 +645,31 @@ function send() {
   }
   const mentionList = [...activeMentions];
 
-  if (target && !mentionList.length && (v.trim() || imgs.length)) {
+  if (target && chat.channel !== 'casual' && !mentionList.length && (v.trim() || imgs.length)) {
     sendTo(v.trim() || 'Hãy phân tích hình ảnh đính kèm và xử lý yêu cầu.', imgs);
     setReply(null);
     return;
   }
   const tagged = v.trim() && !mentionList.length && [...sessions.values()].filter(canSeeSession).sort((a, b) => dn(b).length - dn(a).length).find((s) => v.includes(`@${dn(s)}`));
-  if (imgs.length && tagged) {
+  if (imgs.length && tagged && chat.channel !== 'casual') {
     openTaskSheet(root, { to: { id: tagged.id }, text: v.replace(`@${dn(tagged)}`, '').trim(), images: imgs });
     setReply(null);
     return;
   }
   if (imgs.length) {
-    for (const imgData of imgs) chatSendPhotoData(imgData);
+    for (const imgData of imgs) chatSendPhotoData(imgData, { channel: chat.channel });
   }
   if (v.trim()) {
     chatSend(v, {
+      channel: chat.channel,
       replyTo: replyTo?.id,
       mentions: mentionList,
-      humanOnly: mentionList.length > 0 || !tagged,
+      humanOnly: mentionList.length > 0,
     });
   }
   setReply(null);
   // @ a conversation: give it this as work? (one tap opens the sheet with it filled in: its folder, photos, send)
-  if (tagged) setTimeout(() => {
+  if (tagged && chat.channel !== 'casual') setTimeout(() => {
     const ask = el('div', 'zc-ask'), yes = el('button', 'zc-ask-yes', tr('chat.task.askYes')), no = el('button', 'zc-ask-no', tr('chat.task.askNo'));
     yes.type = no.type = 'button';
     yes.addEventListener('click', () => { ask.remove(); openTaskSheet(root, { to: { id: tagged.id }, text: v.replace(`@${dn(tagged)}`, '').trim() }); });
@@ -602,10 +703,12 @@ function drawTarget() {
     const x = el('button', 'zc-ib zc-to-x'); x.type = 'button'; x.title = tr('chat.to.clear'); x.append(icon('x')); x.addEventListener('click', () => setTarget(null));
     toEl.append(el('small', 'zc-to-sub', tr('chat.to.sub', { folder: target.folder })), x);
   }
-  input.placeholder = target
+  const isCasual = chat.channel === 'casual';
+  toEl.hidden = DEMO_CHAT || isCasual;
+  input.placeholder = !isCasual && target
     ? `${tr('chat.to.placeholder', { name: target.name })} (Ctrl+V dán tối đa ${MAX_TASK_IMAGES} ảnh)`
-    : tr(matchMedia('(max-width: 640px)').matches ? 'chat.placeholder' : 'chat.placeholderPc', { group: tr('chat.group') });
-  root.classList.toggle('is-to', !!target);
+    : tr(isCasual ? 'chat.tabs.casualPlaceholder' : 'chat.tabs.workPlaceholder');
+  root.classList.toggle('is-to', !isCasual && !!target);
 }
 // the list: the group, then each conversation open now (its folder, what it's doing)
 async function openPick() {
@@ -730,7 +833,7 @@ function drawMore() {
   const at = el('button', 'zc-more-o'); at.type = 'button'; at.append(icon('at'), el('span', null, tr('chat.mention')));
   at.addEventListener('click', () => { moreEl.hidden = true; input.focus(); input.setRangeText(input.value && !/\s$/.test(input.value) ? ' @' : '@', input.selectionStart, input.selectionEnd, 'end'); mentions(); });
   const task = el('button', 'zc-more-o'); task.type = 'button'; task.append(icon('clipboard'), el('span', null, tr('chat.task.title')));
-  task.addEventListener('click', () => { moreEl.hidden = true; const imgs = chatPhotos.splice(0); drawChatThumbs(); syncBar(); openTaskSheet(root, { text: input.value.trim(), images: imgs }); });
+  task.addEventListener('click', () => { moreEl.hidden = true; if (chat.channel === 'casual') switchChannel('work'); const imgs = chatPhotos.splice(0); drawChatThumbs(); syncBar(); openTaskSheet(root, { text: input.value.trim(), images: imgs }); });
   moreEl.replaceChildren(task, at, form);
 }
 function drawMembers() {
@@ -743,7 +846,9 @@ function drawMembers() {
   };
   add({ ...meP(), name: `${tr('chat.boss')} (${tr('chat.you')})` }, tr('chat.memberYou'));
   for (const s of [...sessions.values()].filter(canSeeSession).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))) add(faceOf(s.id, dn(s)), `${statusOf(s)} · 📁 ${folderOf(s)}`, s.link);
-  for (const k of ['reception', 'hr', 'accountant', 'cleaner']) { const p = who(k); if (p) add(p, tr('chat.memberStaff')); }
+  if (chat.channel === 'casual') {
+    for (const k of ['dept1', 'dept2', 'dept3', 'dept4', 'reception', 'hr', 'accountant', 'guard', 'cleaner']) { const p = who(k); if (p) add(p, tr('chat.memberStaff')); }
+  }
   membersEl.replaceChildren(el('b', 'zc-mem-h', `${tr('chat.membersTitle')} (${rows.length})`), ...rows, el('p', 'zc-mem-note', tr('chat.note')));
 }
 const ib = (name, title, fn, cls = '') => { const b = el('button', `zc-ib ${cls}`); b.type = 'button'; b.title = title; b.append(icon(name)); if (fn) b.addEventListener('click', fn); else { b.disabled = true; b.classList.add('is-deco'); } return b; };
@@ -762,6 +867,23 @@ function build() {
   const members = () => { membersEl.hidden = !membersEl.hidden; if (!membersEl.hidden) drawMembers(); };
   head.append(ib('back', tr('chat.close'), () => toggle(false), 'zc-back zc-mo'), headAv, title,
     ib('search', '', null, 'zc-pc'), ib('call', ''), ib('video', ''), ib('panel', tr('chat.membersTitle'), members, 'zc-pc'), ib('menu', tr('chat.membersTitle'), members, 'zc-mo'), ib('x', tr('chat.close'), () => toggle(false), 'zc-pc zc-close'));
+  // 2-channel tabs bar: Work Group (`work`) vs Watercooler Chat (`casual`)
+  tabsEl = el('div', 'zc-tabs'); tabsEl.setAttribute('role', 'tablist');
+  const tabRow = el('div', 'zc-tabs-row');
+  tabWorkBtn = el('button', 'zc-tab is-on'); tabWorkBtn.id = 'zc-tab-work'; tabWorkBtn.type = 'button'; tabWorkBtn.dataset.ch = 'work'; tabWorkBtn.setAttribute('role', 'tab'); tabWorkBtn.setAttribute('aria-selected', 'true');
+  tabWorkBadge = el('i', 'zc-tab-badge'); tabWorkBadge.id = 'zc-badge-work'; tabWorkBadge.hidden = true;
+  tabWorkBtn.append(el('span', null, tr('chat.tabs.work')), tabWorkBadge);
+  tabWorkBtn.addEventListener('click', () => switchChannel('work'));
+
+  tabCasualBtn = el('button', 'zc-tab'); tabCasualBtn.id = 'zc-tab-casual'; tabCasualBtn.type = 'button'; tabCasualBtn.dataset.ch = 'casual'; tabCasualBtn.setAttribute('role', 'tab'); tabCasualBtn.setAttribute('aria-selected', 'false');
+  tabCasualBadge = el('i', 'zc-tab-badge'); tabCasualBadge.id = 'zc-badge-casual'; tabCasualBadge.hidden = true;
+  tabCasualBtn.append(el('span', null, tr('chat.tabs.casual')), tabCasualBadge);
+  tabCasualBtn.addEventListener('click', () => switchChannel('casual'));
+
+  tabRow.append(tabWorkBtn, tabCasualBtn);
+  channelSubEl = el('small', 'zc-tabs-sub', tr('chat.tabs.workSub'));
+  tabsEl.append(tabRow, channelSubEl);
+
   pinEl = el('div', 'zc-pin'); pinEl.hidden = true;
   const pinText = el('span', 'zc-pin-x'); pinText.append(el('b', null, tr('chat.pinned')), el('span', 'zc-pin-t'));
   const pinIc = el('span', 'zc-pin-ic'); pinIc.append(icon('pinbar'));
@@ -789,8 +911,16 @@ function build() {
   const attachBtn = (cls = '', idAttr = '') => { const b = ib('clip', tr('chat.attachPhoto'), () => chatFileIn.click(), cls); if (idAttr) b.id = idAttr; return b; };
   const atBtn = () => { moreEl.hidden = true; input.focus(); input.setRangeText(input.value && !/\s$/.test(input.value) ? ' @' : '@', input.selectionStart, input.selectionEnd, 'end'); mentions(); };
   const toolbar = el('div', 'zc-toolbar zc-pc');
+  const taskToolbarBtn = ib('clipboard', tr('chat.task.title'), () => {
+    if (chat.channel === 'casual') switchChannel('work');
+    const imgs = chatPhotos.splice(0);
+    drawChatThumbs();
+    syncBar();
+    openTaskSheet(root, { text: input.value.trim(), images: imgs });
+  }, 'zc-task-btn');
+  taskToolbarBtn.id = 'zc-task-btn';
   toolbar.append(ib('smile', tr('chat.stickerTab'), () => openStickers('sticker')), photoBtn(''), attachBtn('', 'zc-photo-btn'), ib('card', ''), ib('chart', tr('chat.newPoll'), openMore), ib('at', tr('chat.mention'), atBtn),
-    ib('clipboard', tr('chat.task.title'), () => { const imgs = chatPhotos.splice(0); drawChatThumbs(); syncBar(); openTaskSheet(root, { text: input.value.trim(), images: imgs }); }, 'zc-task-btn'), ib('format', ''), ib('more', tr('chat.more'), openMore), chatFileIn);
+    taskToolbarBtn, ib('format', ''), ib('more', tr('chat.more'), openMore), chatFileIn);
   chatThumbsEl = el('div', 'zc-chat-thumbs'); chatThumbsEl.hidden = true;
   bar = el('form', 'zc-bar');
   input = el('textarea', 'zc-in'); input.id = 'zc-input'; input.rows = 1; input.maxLength = 600;
@@ -827,14 +957,16 @@ function build() {
   hint.append(el('span', null, tr('chat.hintRc')), hintX);
   try { hint.hidden = localStorage.getItem('office-chat-hint') === 'seen'; } catch { /* storage blocked */ }
   hintX.addEventListener('click', () => { hint.hidden = true; try { localStorage.setItem('office-chat-hint', 'seen'); } catch { /* storage blocked */ } });
-  toEl = el('div', 'zc-to'); toEl.hidden = DEMO_CHAT; pickEl = el('div', 'zc-to-pick'); pickEl.hidden = true;
-  root.append(head, pinEl, body, newBtn, typingEl, mentionEl, replyEl, hint, stickersEl, moreEl, toolbar, pickEl, toEl, chatThumbsEl, bar, membersEl);
+  toEl = el('div', 'zc-to'); toEl.id = 'zc-to'; toEl.hidden = DEMO_CHAT; pickEl = el('div', 'zc-to-pick'); pickEl.hidden = true;
+  root.append(head, tabsEl, pinEl, body, newBtn, typingEl, mentionEl, replyEl, hint, stickersEl, moreEl, toolbar, pickEl, toEl, chatThumbsEl, bar, membersEl);
+  drawTabs();
   drawTarget();
   $('app').append(root);
 }
 export function toggle(on = !chat.open) {
   if (!root) build();
-  if (!on) readTo = [...chat.msgs].reverse().find((m) => m.kind !== 'sys')?.id || null;   // (where to draw "Tin nhắn mới" next time)
+  msgLimit = 100;
+  if (!on) readTo = [...chat.msgs.filter(inCurrentChannel)].reverse().find((m) => m.kind !== 'sys')?.id || null;   // (where to draw "Tin nhắn mới" next time)
   root.hidden = !on; setOpen(on); $('btn-chat')?.setAttribute('aria-pressed', String(on));
   if (on) {
     redraw(); drawTyping();
@@ -877,7 +1009,7 @@ function dayHeaderLabel(ts) {
 
 function collectChatPhotos() {
   const list = [];
-  for (const m of chat.msgs.filter(isMsgVisible)) {
+  for (const m of chat.msgs.filter(inCurrentChannel)) {
     const photos = msgPhotos(m);
     if (!photos.length) continue;
     const parsed = parseLegacySender(m);
@@ -1117,6 +1249,14 @@ export function closeLightbox() {
 export function setup() {
   window.visualViewport?.addEventListener('resize', fitKeyboard); window.visualViewport?.addEventListener('scroll', fitKeyboard);
   $('btn-chat')?.addEventListener('click', () => toggle());
+  $('btn-task')?.addEventListener('click', () => {
+    if (!chat.open) toggle(true);
+    if (chat.channel === 'casual') switchChannel('work');
+    const imgs = chatPhotos.splice(0);
+    drawChatThumbs();
+    syncBar();
+    openTaskSheet(root, { text: input?.value.trim() || '', images: imgs });
+  });
   addEventListener('keydown', (e) => {
     if (lbEl && !lbEl.hidden) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeLightbox(); return; }

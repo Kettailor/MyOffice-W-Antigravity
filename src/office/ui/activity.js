@@ -4,7 +4,7 @@ import { $, el, fmtBytes, fmtClock, hhmm, nowMs } from '../core/env.js';
 import { STATUS_LABEL, verb } from './event-text.js';
 import { TYPE_ICON, TYPE_TONE, icon } from './icons.js';
 import { hoverRing, selRing } from '../interact/rings.js';
-import { AGENT_NAME, agentMark, agentOf, colorOf, dn, dnOf, sessions, workers } from '../people/workers.js';
+import { AGENT_NAME, agentMark, agentOf, awayHooks, colorOf, dn, dnOf, npcs, sessions, subs, workers } from '../people/workers.js';
 import { renderLite } from './lite.js';
 import { deleteSession, openSession, renameSession, renderActivity, renderSessionHead, renderSubs, tab, toggleSession } from './session-drawer.js';
 import { macSnap } from './mac-drawer.js';
@@ -12,6 +12,8 @@ import { queuePlace } from '../interact/place-cards.js';
 import { unseenDone } from '../life/your-turn.js';
 import { whereabouts } from '../people/outings.js';
 import { imageUrl, openImage } from './image-view.js';
+import { uiCfg } from './settings.js';
+import { resize } from '../scene/renderer.js';
 import { t as tr, num } from '../../i18n/index.js';
 
 let feedFilter = 'all';
@@ -25,16 +27,38 @@ export const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
 // with their actions, so "needs you" never hides inside a group.
 const KIND = { cmd: ['bash', 'test', 'testok', 'testfail', 'deploy', 'commit', 'push', 'pull', 'cired', 'cigreen'], edit: ['edit', 'write'], read: ['read', 'grep', 'glob', 'skill'], web: ['web', 'fetch', 'mcp'], agent: ['agent', 'substart', 'substop'] };
 const typeFilter = new Set();
+const expandedGroups = new Set();
 const kindOk = (e) => !typeFilter.size || [...typeFilter].some((k) => KIND[k].includes(e.type));
+
+function catOfEvent(e) {
+  const t = e?.type || '';
+  if (['read', 'grep', 'glob', 'skill', 'print'].includes(t)) return { cat: 'read', sum: 'read', emoji: '📄' };
+  if (['edit', 'write', 'plan'].includes(t)) return { cat: 'edit', sum: 'edit', emoji: '✏️' };
+  if (['bash', 'test', 'commit', 'push', 'pull'].includes(t)) return { cat: 'cmd', sum: 'cmd', emoji: '⚡' };
+  if (['web', 'fetch', 'mcp'].includes(t)) return { cat: 'web', sum: 'web', emoji: '🌐' };
+  if (['agent', 'substart', 'substop'].includes(t)) return { cat: 'agent', sum: 'agent', emoji: '🤖' };
+  if (['stop', 'cigreen', 'testok', 'deploy'].includes(t)) return { cat: 'done', sum: 'other', emoji: '✅' };
+  if (['wait', 'ask', 'fail', 'cired', 'testfail', 'interrupt'].includes(t)) return { cat: 'warn', sum: 'other', emoji: '⚠️' };
+  return { cat: 'step', sum: 'other', emoji: '🔹' };
+}
+
+function attachThumb(host, e) {
+  if (!e.img) return;
+  const th = el('span', 'fg-thumb'), im = el('img');
+  im.loading = 'lazy'; im.alt = ''; im.src = imageUrl(e.img);
+  im.addEventListener('error', () => { th.remove(); host.classList.remove('has-thumb'); });
+  th.dataset.img = e.img; th.dataset.name = e.label || ''; th.title = tr('activity.image.view');
+  th.append(im); host.append(th); host.classList.add('has-thumb');
+}
+
 function lineOf(e) {
-  const ln = el('span', 'fg-line'), ic = el('span', 'fi-ico');
+  const c = catOfEvent(e);
+  const ln = el('span', 'fg-line fi'), ic = el('span', 'fi-ico');
   ic.append(icon(TYPE_ICON[e.type] || 'sparkle')); if (TYPE_TONE[e.type]) ic.dataset.tone = TYPE_TONE[e.type];
-  ln.append(ic, el('span', 'fg-text', cap(verb(e))));
-  if (e.img) {   // an image it read, wrote or edited: a thumbnail, a click opens it (image-view.js)
-    const th = el('span', 'fg-thumb'), im = el('img'); im.loading = 'lazy'; im.alt = ''; im.src = imageUrl(e.img);
-    im.addEventListener('error', () => { th.remove(); ln.classList.remove('has-thumb'); });   // (gone from the disk)
-    th.dataset.img = e.img; th.dataset.name = e.label || ''; th.title = tr('activity.image.view'); th.append(im); ln.append(th); ln.classList.add('has-thumb');
-  }
+  const pill = el('span', 'fi-pill', tr(`activity.cat.${c.cat}`));
+  pill.dataset.cat = c.cat;
+  ln.append(ic, pill, el('span', 'fg-text', cap(verb(e))));
+  attachThumb(ln, e);
   return ln;
 }
 export function feedRow(e) {
@@ -44,17 +68,66 @@ export function feedRow(e) {
 }
 function groupCard(g, live) {
   const s = sessions.get(g.sess), first = g.items[0];
-  const li = el('li', 'fg');
-  const b = el('button', 'fg-card' + (live ? ' fg--live' : '')); b.type = 'button'; b.dataset.sess = g.sess; if (g.agent) b.dataset.agent = g.agent;
-  const head = el('span', 'fg-head'), dot = el('i'); dot.style.background = s ? colorOf(s) : '#5E687B';
-  head.append(dot, el('b', null, dnOf(first)));
+  const grpKey = `${g.sess}:${g.agent || ''}:${g.items[g.items.length - 1]?.id || first.id}`;
+  const isExpanded = expandedGroups.has(grpKey);
+  const li = el('li', 'fg' + (live ? ' fg--live' : '') + (isExpanded ? ' is-expanded' : ''));
+  li.dataset.grp = grpKey;
+  const b = el('div', 'fg-card' + (live ? ' fg--live' : ''));
+  b.setAttribute('role', 'button');
+  b.tabIndex = 0;
+  b.dataset.sess = g.sess;
+  if (g.agent) b.dataset.agent = g.agent;
+
+  const head = el('div', 'fg-head');
+  const dot = el('i', 'fg-dot' + (live ? ' is-live' : ''));
+  dot.style.background = live ? 'var(--green)' : (s ? colorOf(s) : '#5E687B');
+  head.append(dot, el('b', 'fg-title', dnOf(first)));
   if (g.agent) head.append(el('span', 'fg-agent', tr('activity.subagent')));
   if (live) head.append(el('span', 'fg-live', tr('activity.working')));
-  head.append(el('time', null, hhmm(first.ts)));
-  const lines = el('span', 'fg-lines');
-  for (const e of g.items.slice(0, 4)) lines.append(lineOf(e));
-  if (g.items.length > 4) lines.append(el('span', 'fg-more', tr('activity.more', { n: g.items.length - 4 })));
-  b.append(head, lines);
+  const timeBadge = el('time', 'fg-time-badge', ago(first.ts));
+  timeBadge.title = hhmm(first.ts);
+  head.append(timeBadge);
+
+  const heroCat = catOfEvent(first);
+  const hero = el('div', 'fi fi--hero');
+  hero.dataset.cat = heroCat.cat;
+  const heroPill = el('span', 'fi-pill', tr(`activity.cat.${heroCat.cat}`));
+  heroPill.dataset.cat = heroCat.cat;
+  const heroText = el('span', 'fg-text fi-hero-text', cap(verb(first)));
+  hero.append(heroPill, heroText);
+  attachThumb(hero, first);
+
+  b.append(head, hero);
+
+  const rest = g.items.slice(1);
+  if (rest.length > 0) {
+    const counts = { read: 0, edit: 0, cmd: 0, web: 0, agent: 0, other: 0 };
+    const emojis = { read: '📄', edit: '✏️', cmd: '⚡', web: '🌐', agent: '🤖', other: '🔹' };
+    for (const item of rest) {
+      const { sum } = catOfEvent(item);
+      counts[sum] = (counts[sum] || 0) + 1;
+    }
+    const summary = el('div', 'fg-summary');
+    summary.setAttribute('role', 'button');
+    summary.tabIndex = 0;
+    summary.setAttribute('aria-expanded', String(isExpanded));
+    const chipsWrap = el('div', 'fg-sum-chips');
+    for (const k of ['read', 'edit', 'cmd', 'web', 'agent', 'other']) {
+      if (!counts[k]) continue;
+      const chip = el('span', 'fg-sum-chip', `${emojis[k]} ${counts[k]} ${tr(`activity.sum.${k}`)}`);
+      chip.dataset.cat = k;
+      chipsWrap.append(chip);
+    }
+    const toggleLbl = el('span', 'fg-sum-toggle', isExpanded ? tr('activity.collapseSteps') : tr('activity.expandSteps', { n: rest.length }));
+    toggleLbl.dataset.count = String(rest.length);
+    summary.append(chipsWrap, toggleLbl);
+
+    const moreBox = el('div', 'fg-more fg-lines');
+    moreBox.hidden = !isExpanded;
+    for (const e of rest) moreBox.append(lineOf(e));
+    b.append(summary, moreBox);
+  }
+
   b.title = g.agent ? tr('activity.openSubChat') : tr('activity.openChat');
   li.append(b);
   return li;
@@ -70,25 +143,34 @@ function alertCard(e) {
   li.append(box);
   return li;
 }
+let lastFeedSig = '';
 export function renderFeed() {
   const list = $('feed-list');
-  const latest = new Map(); for (const e of state.feed) latest.set(e.sess, e.id);
-  const rows = state.feed.filter((e) => (feedFilter === 'all' || ATT.has(e.type)) && kindOk(e)).slice(-90).reverse();
+  const mainFeed = state.feed.filter((e) => !e.agent && !['agent', 'substart', 'substop'].includes(e.type));
+  const latest = new Map(); for (const e of mainFeed) latest.set(e.sess, e.id);
+  const rows = mainFeed.filter((e) => (feedFilter === 'all' || ATT.has(e.type)) && kindOk(e)).slice(-90).reverse();
+  const att = mainFeed.filter((e) => ATT.has(e.type) && nowMs() - e.ts < 3600e3).length;
+  const attEl = $('att-count');
+  if (attEl) { attEl.hidden = !att; const attStr = String(att); if (attEl.textContent !== attStr) attEl.textContent = attStr; }
+  const feedFabCount = $('feed-fab-count'), feedFabBtn = $('feed-expand-fab');
+  if (feedFabCount) feedFabCount.textContent = String(att || rows.length);
+  if (feedFabBtn) feedFabBtn.dataset.att = String(att);
+  const sig = `${feedFilter}|${[...typeFilter].join(',')}|${state.streamer ? 1 : 0}|${rows.map((e) => `${e.id}:${e.type}:${e.ts}:${dnOf(e)}`).join(';')}|${[...sessions.values()].filter((s) => s.status === 'work').map((s) => `${s.id}:${latest.get(s.id) || ''}`).join(',')}`;
+  if (sig === lastFeedSig) return;
+  lastFeedSig = sig;
   list.replaceChildren();
   if (!rows.length) list.append(el('li', 'fi-empty', tr(feedFilter === 'att' ? 'activity.empty.att' : typeFilter.size ? 'activity.empty.type' : 'activity.empty.all')));
   const groups = [];
   for (const e of rows) {
-    const g = groups[groups.length - 1], att = ATT.has(e.type);
-    if (g && !att && !g.att && g.sess === e.sess && g.agent === (e.agent || null) && g.items[g.items.length - 1].ts - e.ts < 240e3) g.items.push(e);
-    else groups.push({ sess: e.sess, agent: e.agent || null, att, items: [e] });
+    const g = groups[groups.length - 1], attItem = ATT.has(e.type);
+    if (g && !attItem && !g.att && g.sess === e.sess && g.items[g.items.length - 1].ts - e.ts < 240e3) g.items.push(e);
+    else groups.push({ sess: e.sess, agent: null, att: attItem, items: [e] });
   }
   for (const g of groups) {
     if (g.att) { list.append(alertCard(g.items[0])); continue; }
     const s = sessions.get(g.sess);
     list.append(groupCard(g, s?.status === 'work' && g.items.some((e) => latest.get(g.sess) === e.id)));
   }
-  const att = state.feed.filter((e) => ATT.has(e.type) && nowMs() - e.ts < 3600e3).length;
-  $('att-count').hidden = !att; $('att-count').textContent = att;
 }
 let feedQueued = false;
 export function queueFeed() { if (feedQueued) return; feedQueued = true; requestAnimationFrame(() => { feedQueued = false; renderFeed(); if (state.selectedId && tab === 'act') renderActivity(); }); }
@@ -101,16 +183,34 @@ function ago(ts) {
   if (s < 86400) return tr('time.hour', { n: Math.floor(s / 3600) });
   return tr('time.day', { n: Math.floor(s / 86400) });
 }
+export const HOME_IDLE_MS = 8 * 3600e3;
+export function isAtHome(s) {
+  if (!s || s.status !== 'rest' || s.bg?.length) return false;
+  const w = workers.get(s.id);
+  if (w) {
+    if (w.away) return true;
+    if (w.homeBound) return false;
+  }
+  const last = Math.max(s.doneAt || 0, s.lastAt || 0);
+  return last > 0 && nowMs() - last >= HOME_IDLE_MS;
+}
+export function uiStatusOf(s) {
+  if (!s) return 'rest';
+  if (s.status === 'rest' && isAtHome(s)) return 'home';
+  return s.status;
+}
 export function doingOf(s) {
   if (s.status === 'wait') return { ic: 'alert', text: tr('activity.doing.wait') };
   const where = whereabouts(workers.get(s.id));   // out of the office: at the shop, on the way home…
+  if (isAtHome(s)) return { ic: 'zzz', text: tr('activity.doing.atHome', { time: ago(Math.max(s.doneAt || 0, s.lastAt || 0)) }) };
   if (where) return where;
   if (s.status === 'rest' && s.bg?.length) return { ic: 'terminal', text: `${tr('activity.doing.bg', { desc: s.bg[0].desc })}${s.bg.length > 1 ? ` (+${s.bg.length - 1})` : ''}` };
   if (s.status === 'rest') return { ic: 'zzz', text: nowMs() - (s.lastAt || 0) < 90e3 ? tr('activity.doing.justDone') : tr('activity.doing.resting', { time: ago(s.lastAt) }) };
   if (s.last) return { ic: TYPE_ICON[s.last.type] || 'sparkle', text: cap(verb(s.last)) };
   return { ic: 'sparkle', text: tr('activity.doing.working') };
 }
-const order = (a, b) => (a.status === 'wait' ? -1 : 0) - (b.status === 'wait' ? -1 : 0) || (a.status === 'rest') - (b.status === 'rest') || (a.desk - b.desk);
+const STATUS_RANK = { wait: 0, work: 1, rest: 2, home: 3 };
+const order = (a, b) => (STATUS_RANK[uiStatusOf(a)] ?? 2) - (STATUS_RANK[uiStatusOf(b)] ?? 2) || (a.desk - b.desk);
 let uiQueued = false;
 export function queueUi() {
   if (uiQueued) return; uiQueued = true;
@@ -120,11 +220,11 @@ export function queueUi() {
   });
 }
 // Rows are keyed by session id and updated in place, so keyboard focus and hover survive live updates. Sessions are
-// grouped (needs you → working → resting, resting can fold away), each row shows how long the current task has run,
+// grouped (needs you → working → idle → at home), each row shows how long the current task has run,
 // the session's RAM (from the Mac snapshot, by pid) and a 30-minute activity sparkline.
 const railRows = new Map();
-let railOrder = '', railFilter = null, restCollapsed = false;
-const GROUPS = [['wait'], ['work'], ['rest']];   // labels: activity.group.<key>
+let railOrder = '', railFilter = null, restCollapsed = false, homeCollapsed = false;
+const GROUPS = [['wait'], ['work'], ['rest'], ['home']];   // labels: activity.group.<key>
 let grpEls;
 const SVGNS = 'http://www.w3.org/2000/svg';
 function sparkEl() {
@@ -139,14 +239,14 @@ function setSpark(svg, counts) {
 }
 const metaTime = (s) => (s.status === 'work' && s.taskStart ? fmtClock((nowMs() - s.taskStart) / 1000) : s.status === 'wait' ? tr('activity.waitingFor', { time: ago(s.lastAt) }) : ago(s.lastAt));
 function railRow(s) {
-  const li = el('li', 'ri-li');
-  const b = el('button', 'ri'); b.type = 'button'; b.dataset.sess = s.id;
+  const li = el('li', 'ri-li sess-item');
+  const b = el('button', 'ri sess'); b.type = 'button'; b.dataset.sess = s.id;
   const av = el('span', 'av'), avTxt = el('span', 'av-txt'); av.append(avTxt, el('i', 'av-st')); avTxt.append(agentMark(agentOf(s))); av.title = AGENT_NAME[agentOf(s)];
   const main = el('span', 'ri-main'), top = el('span', 'ri-top'), name = el('span', 'ri-name'), doing = el('span', 'ri-doing');
   const dIco = el('span', 'ri-dico'), dTxt = el('span', 'ri-dtxt'); doing.append(dIco, dTxt);
   top.append(name); main.append(top, doing);
-  const meta = el('span', 'ri-meta'), time = el('span', 'ri-time'), ram = el('span', 'ri-ram'), spark = sparkEl();
-  meta.append(time, spark, ram);
+  const meta = el('span', 'ri-meta'), stBadge = el('span', 'ri-st-badge pill'), time = el('span', 'ri-time'), ram = el('span', 'ri-ram'), spark = sparkEl();
+  meta.append(stBadge, time, spark, ram);
   const edit = el('button', 'ri-edit', '✏️');
   edit.type = 'button';
   edit.title = tr('drawer.rename.title');
@@ -212,12 +312,12 @@ function railRow(s) {
   });
   const ctx = el('span', 'ri-ctx'), ctxB = el('b'); ctx.append(ctxB);
   b.append(av, main, meta, edit, del, ctx);
-  const subList = el('ul', 'ri-subs'); subList.hidden = true;
+  const subList = el('ul', 'ri-subs sub-list'); subList.hidden = true;
   li.append(b, subList);
   const c = el('button', 'chip'); c.type = 'button'; c.dataset.sess = s.id;
   const cd = el('i'), cn = el('span'), cs = el('small');
   c.append(cd, cn, cs);
-  return { li, b, av, avTxt, top, name, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, edit, del, subList, subSig: '', c, cd, cn, cs };
+  return { li, b, av, avTxt, top, name, stBadge, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, edit, del, subList, subSig: '', c, cd, cn, cs };
 }
 function subRow(s, x) {
   const li = el('li');
@@ -226,19 +326,27 @@ function subRow(s, x) {
   li.append(b);
   return li;
 }
-function renderRail() {
+export function renderRail() {
   const all = [...sessions.values()].sort(order);
   const q = query.trim().toLowerCase();
   const rail = $('rail-list'), chips = $('chips');
   const ram = new Map((macSnap?.claude || []).map((c) => [c.pid, c.mem]));
-  const count = { wait: 0, work: 0, rest: 0 };
+  const count = { wait: 0, work: 0, rest: 0, home: 0 };
   for (const [id, r] of railRows) if (!sessions.has(id)) { r.li.remove(); r.c.remove(); railRows.delete(id); }
   for (const s of all) {
-    count[s.status] = (count[s.status] || 0) + 1;
+    const stKey = uiStatusOf(s);
+    count[stKey] = (count[stKey] || 0) + 1;
     let r = railRows.get(s.id);
     if (!r) { r = railRow(s); railRows.set(s.id, r); }
     const color = colorOf(s), cur = String(s.id === state.selectedId);
-    r.b.dataset.status = s.status; r.b.dataset.done = unseenDone.has(s.id) ? '1' : ''; r.b.setAttribute('aria-current', cur); r.av.style.setProperty('--c', color);
+    r.b.dataset.status = stKey; r.b.dataset.done = unseenDone.has(s.id) ? '1' : ''; r.b.setAttribute('aria-current', cur);
+    r.b.style.setProperty('--c', color);
+    r.av.style.setProperty('--c', color);
+    if (r.stBadge) {
+      r.stBadge.dataset.status = stKey;
+      const stTxt = STATUS_LABEL[stKey] || '';
+      if (r.stBadge.textContent !== stTxt) r.stBadge.textContent = stTxt;
+    }
     { const k = agentOf(s); if (r.avTxt.firstChild?.dataset?.agent !== k) { r.avTxt.replaceChildren(agentMark(k)); r.av.title = AGENT_NAME[k]; } }
     const nk = dn(s) + '|' + (s.dir || '') + '|' + (s.origin || '') + (s.link ? '|rc' : '');
     if (r.nameKey !== nk) {
@@ -262,20 +370,27 @@ function renderRail() {
     if (sig !== r.subSig) { r.subSig = sig; r.subList.replaceChildren(...subsNow.map((x) => subRow(s, x))); }
     r.subList.hidden = !subsNow.length;
     const match = !q || s.name.toLowerCase().includes(q) || String(s.title || '').toLowerCase().includes(q) || String(s.dir || '').toLowerCase().includes(q);
-    const folded = s.status === 'rest' && restCollapsed && !q && railFilter !== 'rest';
-    r.li.hidden = !match || (railFilter && s.status !== railFilter) || folded;
-    r.c.dataset.status = s.status; r.c.setAttribute('aria-current', cur); r.cd.style.background = color;
+    const folded = ((stKey === 'rest' && restCollapsed && railFilter !== 'rest') || (stKey === 'home' && homeCollapsed && railFilter !== 'home')) && !q;
+    r.li.hidden = !match || (railFilter && stKey !== railFilter) || folded;
+    r.c.dataset.status = stKey; r.c.setAttribute('aria-current', cur); r.cd.style.background = color;
     if (r.cn.textContent !== dn(s)) r.cn.textContent = dn(s);
-    r.cs.textContent = STATUS_LABEL[s.status];
+    r.cs.textContent = STATUS_LABEL[stKey];
   }
   for (const [k] of GROUPS) { const g = grpEls[k]; g.n.textContent = count[k] || 0; g.li.hidden = !count[k] || (railFilter && railFilter !== k); }
   grpEls.rest.b.setAttribute('aria-expanded', String(!restCollapsed || !!q || railFilter === 'rest'));
-  for (const k of ['work', 'wait', 'rest']) { $('st-' + k).textContent = count[k] || 0; }
+  if (grpEls.home) grpEls.home.b.setAttribute('aria-expanded', String(!homeCollapsed || !!q || railFilter === 'home'));
+  for (const k of ['work', 'wait', 'rest', 'home']) { const elSt = $('st-' + k); if (elSt) elSt.textContent = count[k] || 0; }
+  const fabCount = $('rail-fab-count'), fabBtn = $('rail-expand-fab');
+  if (fabCount) fabCount.textContent = String((count.work || 0) + (count.wait || 0) + (count.rest || 0) || all.length);
+  if (fabBtn) {
+    fabBtn.dataset.work = String(count.work || 0);
+    fabBtn.dataset.wait = String(count.wait || 0);
+  }
   document.querySelector('.st[data-st="wait"]').classList.toggle('has', !!count.wait);
-  const ord = all.map((s) => s.id + s.status).join();
+  const ord = all.map((s) => s.id + uiStatusOf(s)).join();
   if (ord !== railOrder) {
     railOrder = ord;
-    for (const [k] of GROUPS) { rail.append(grpEls[k].li); for (const s of all) if (s.status === k) rail.append(railRows.get(s.id).li); }
+    for (const [k] of GROUPS) { rail.append(grpEls[k].li); for (const s of all) if (uiStatusOf(s) === k) rail.append(railRows.get(s.id).li); }
     for (const s of all) chips.append(railRows.get(s.id).c);
   }
   $('empty').hidden = all.length > 0 || !state.connectedOnce;
@@ -284,41 +399,101 @@ function renderRail() {
 function onListClick(ev) {
   if (ev.target.closest('.ri-del') || ev.target.closest('.ri-edit') || ev.target.closest('.ri-rename-form')) return;
   const g = ev.target.closest('.grp-btn');
-  if (g) { if (g.dataset.g === 'rest') { restCollapsed = !restCollapsed; try { localStorage.setItem('office-rest-folded', restCollapsed ? '1' : '0'); } catch { /* storage blocked */ } renderRail(); } return; }
+  if (g) {
+    if (g.dataset.g === 'rest') {
+      restCollapsed = !restCollapsed;
+      try { localStorage.setItem('office-rest-folded', restCollapsed ? '1' : '0'); } catch { /* storage blocked */ }
+      renderRail();
+    } else if (g.dataset.g === 'home') {
+      homeCollapsed = !homeCollapsed;
+      try { localStorage.setItem('office-home-folded', homeCollapsed ? '1' : '0'); } catch { /* storage blocked */ }
+      renderRail();
+    }
+    return;
+  }
   const b = ev.target.closest('[data-sess]'); if (!b) return; if (b.dataset.agent) openFromRow(b); else toggleSession(b.dataset.sess);
 }
 export const fmtTok = (n) => (n >= 1e6 ? `${num(n / 1e6, 1)}M` : `${Math.round(n / 1000)}k`);
 export const fmtUsd = (v) => `$${v >= 100 ? Math.round(v) : v.toFixed(2)}`;
-const KPIS = [['prompts', 'clipboard'], ['read', 'file'], ['edit', 'pencil'], ['cmd', 'terminal'], ['cost', 'coin']];   // labels: activity.kpi.<key>
+let lastKpiSig = '';
+export function renderKpi() {
+  const list = [...sessions.values()];
+  const subCount = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
+  const toolsCount = (state.stats.read || 0) + (state.stats.edit || 0) + (state.stats.cmd || 0);
+  const stepsCount = Math.max(state.feed.length, (state.stats.prompts || 0) + toolsCount);
+  const costStr = fmtUsd(list.reduce((a, s) => a + (s.usage?.cost || 0), 0));
+  const kpiSig = `${stepsCount}|${toolsCount}|${subCount}|${costStr}`;
+  if (kpiSig === lastKpiSig) return;
+  lastKpiSig = kpiSig;
+  const host = $('feed-stats') || $('kpi');
+  if (!host) return;
+  const cards = [
+    { key: 'steps', ic: 'sparkle', val: num(stepsCount) },
+    { key: 'tools', ic: 'terminal', val: num(toolsCount) },
+    { key: 'subs', ic: 'users', val: num(subCount) },
+    { key: 'cost', ic: 'coin', val: costStr, isCost: true },
+  ];
+  host.replaceChildren(...cards.map(({ key, ic, val, isCost }) => {
+    const label = tr(`activity.kpi.${key}`);
+    const d = el('div', isCost ? 'kpi kpi--cost' : 'kpi');
+    d.dataset.kpi = key;
+    const topRow = el('div', 'kpi-top');
+    const b = el('b', 'kpi-val', val);
+    if (isCost) b.prepend(el('small', null, '≈'));
+    const i = el('span', 'kpi-ic');
+    i.append(icon(ic));
+    topRow.append(b, i);
+    d.append(topRow, el('span', 'kpi-lbl', label));
+    d.title = isCost ? tr('activity.costTitle') : tr('activity.kpiToday', { label });
+    return d;
+  }));
+}
 export function renderHud() {
   const list = [...sessions.values()];
   const waiting = list.filter((s) => s.status === 'wait').length;
   const subCount = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
-  $('active-count').textContent = list.length ? tr('activity.sessions', { n: list.length }) + (subCount ? ` · ${tr('activity.subsRunning', { n: subCount })}` : '') : tr('activity.noSessions');
-  $('feed-stats').replaceChildren(...KPIS.map(([k, ic]) => {
-    const label = tr(`activity.kpi.${k}`);
-    const d = el('div', k === 'cost' ? 'kpi kpi--cost' : 'kpi'), i = el('span', 'kpi-ic'); i.append(icon(ic));
-    const b = el('b', null, k === 'cost' ? fmtUsd(list.reduce((a, s) => a + (s.usage?.cost || 0), 0)) : num(state.stats[k] || 0));
-    if (k === 'cost') b.prepend(el('small', null, '≈'));   // (an estimate: the list price, not a bill)
-    d.append(i, b, el('span', null, label)); d.title = k === 'cost' ? tr('activity.costTitle') : tr('activity.kpiToday', { label });
-    return d;
-  }));
-  $('bell-dot').hidden = !waiting;
+  const actText = list.length ? tr('activity.sessions', { n: list.length }) + (subCount ? ` · ${tr('activity.subsRunning', { n: subCount })}` : '') : tr('activity.noSessions');
+  const actEl = $('active-count');
+  if (actEl && actEl.textContent !== actText) actEl.textContent = actText;
+  renderKpi();
+  const bellDot = $('bell-dot');
+  if (bellDot && bellDot.hidden !== !waiting) bellDot.hidden = !waiting;
   const yours = waiting + unseenDone.size;
-  document.title = yours ? tr('activity.docTitle', { n: yours }) : 'My Office';
+  const wantTitle = yours ? tr('activity.docTitle', { n: yours }) : 'My Office';
+  if (document.title !== wantTitle) document.title = wantTitle;
 }
+const markers = { get length() { return workers.size + subs.size + npcs.length + (state.selectedId ? 1 : 0) + (state.hovered ? 1 : 0); } };
 export function updateMarkers(t) {
+  if (!markers.length) return;
   const sel = state.selectedId ? workers.get(state.selectedId) : null;
   selRing.visible = !!sel;
   if (sel) { selRing.position.set(sel.pos.x, 0.03 + sel.gy(), sel.pos.y); selRing.scale.setScalar(1 + Math.sin(t * 4) * 0.06); }
   hoverRing.visible = !!state.hovered && state.hovered !== sel && !!state.hovered.root.parent;
   if (hoverRing.visible) { hoverRing.position.set(state.hovered.pos.x, 0.025 + state.hovered.gy(), state.hovered.pos.y); hoverRing.scale.setScalar(state.hovered.sub ? 0.8 : 1); }
+  const isNameAllowed = (w) => {
+    if (w.isSub || w.sub) return uiCfg.subNames !== false;
+    if (w.isDeptAmbient || w.deptStaff || w.staff || (w.id && String(w.id).startsWith('__') && w.id !== '__director' && w.id !== '__co_director')) {
+      return uiCfg.staffNames !== false;
+    }
+    return uiCfg.chibiNames !== false;
+  };
   for (const w of workers.values()) {
     const s = sessions.get(w.id);
-    const show = w.root.visible && (!s || s.status !== 'rest' || w.id === state.selectedId || w === state.hovered || w.phase === 'walk');
+    const nameAllowed = isNameAllowed(w);
+    const show = nameAllowed && w.root.visible;
     if (w.tagObj.visible !== show) w.tagObj.visible = show;
     const wait = s?.status === 'wait';
     if (w.tagEl.classList.contains('tag--wait') !== wait) w.tagEl.classList.toggle('tag--wait', wait);
+  }
+  for (const w of subs.values()) {
+    if (!w?.tagObj) continue;
+    const show = isNameAllowed(w) && w.root.visible;
+    if (w.tagObj.visible !== show) w.tagObj.visible = show;
+  }
+  for (const w of npcs) {
+    if (!w?.tagObj) continue;
+    const show = isNameAllowed(w) && w.root.visible;
+    if (w.tagObj.visible !== show) w.tagObj.visible = show;
   }
 }
 
@@ -336,6 +511,29 @@ export function setup() {
     b.setAttribute('aria-pressed', String(typeFilter.has(b.dataset.k))); renderFeed();
   });
   $('feed-list').addEventListener('click', (ev) => {
+    const sum = ev.target.closest('.fg-summary');
+    if (sum) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const fg = sum.closest('.fg');
+      const more = fg?.querySelector('.fg-more');
+      const toggleEl = sum.querySelector('.fg-sum-toggle');
+      if (fg && more) {
+        const exp = more.hidden;
+        more.hidden = !exp;
+        fg.classList.toggle('is-expanded', exp);
+        sum.setAttribute('aria-expanded', String(exp));
+        if (fg.dataset.grp) {
+          if (exp) expandedGroups.add(fg.dataset.grp);
+          else expandedGroups.delete(fg.dataset.grp);
+        }
+        if (toggleEl) {
+          const n = Number(toggleEl.dataset.count) || more.children.length;
+          toggleEl.textContent = exp ? tr('activity.collapseSteps') : tr('activity.expandSteps', { n });
+        }
+      }
+      return;
+    }
     const im = ev.target.closest('[data-img]');
     if (im) { const b = im.closest('[data-sess]'); openImage(im.dataset.img, im.dataset.name, (b && sessions.get(b.dataset.sess)?.name) || ''); return; }
     const b = ev.target.closest('[data-sess]'); if (b) openFromRow(b);
@@ -343,11 +541,48 @@ export function setup() {
   $('flt-all').addEventListener('click', () => setFilter('all'));
   $('flt-att').addEventListener('click', () => setFilter('att'));
   try { restCollapsed = localStorage.getItem('office-rest-folded') === '1'; } catch { /* storage blocked */ }
+  try { homeCollapsed = localStorage.getItem('office-home-folded') === '1'; } catch { /* storage blocked */ }
+  const appEl = $('app');
+  const setRailCollapsed = (collapsed) => {
+    if (!appEl) return;
+    appEl.classList.toggle('rail-collapsed', collapsed);
+    $('rail-toggle')?.setAttribute('aria-expanded', String(!collapsed));
+    try { localStorage.setItem('office-rail-collapsed', collapsed ? '1' : '0'); } catch { /* storage blocked */ }
+    resize();
+    setTimeout(() => { resize(); window.dispatchEvent(new Event('resize')); }, 260);
+  };
+  try {
+    if (localStorage.getItem('office-rail-collapsed') === '1') {
+      appEl?.classList.add('rail-collapsed');
+      $('rail-toggle')?.setAttribute('aria-expanded', 'false');
+    }
+  } catch { /* storage blocked */ }
+  $('rail-toggle')?.addEventListener('click', () => setRailCollapsed(!appEl?.classList.contains('rail-collapsed')));
+  $('rail-expand-fab')?.addEventListener('click', () => setRailCollapsed(false));
+  const setFeedCollapsed = (collapsed) => {
+    if (!appEl) return;
+    appEl.classList.toggle('feed-collapsed', collapsed);
+    $('feed-collapse-btn')?.setAttribute('aria-expanded', String(!collapsed));
+    try { localStorage.setItem('office-feed-collapsed', collapsed ? '1' : '0'); } catch { /* storage blocked */ }
+    resize();
+    setTimeout(() => { resize(); window.dispatchEvent(new Event('resize')); }, 260);
+  };
+  try {
+    if (localStorage.getItem('office-feed-collapsed') === '1') {
+      appEl?.classList.add('feed-collapsed');
+      $('feed-collapse-btn')?.setAttribute('aria-expanded', 'false');
+    }
+  } catch { /* storage blocked */ }
+  $('feed-collapse-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setFeedCollapsed(!appEl?.classList.contains('feed-collapsed'));
+  });
+  $('feed-expand-fab')?.addEventListener('click', () => setFeedCollapsed(false));
   grpEls = Object.fromEntries(GROUPS.map(([k]) => {
     const li = el('li', 'grp'); li.dataset.g = k;
     const b = el('button', 'grp-btn'); b.type = 'button'; b.dataset.g = k;
     const n = el('b'); b.append(el('span', null, tr(`activity.group.${k}`)), n);
-    if (k === 'rest') { const ch = el('span', 'grp-chev'); ch.append(icon('chevron')); b.append(ch); } else b.disabled = true;
+    if (k === 'rest' || k === 'home') { const ch = el('span', 'grp-chev'); ch.append(icon('chevron')); b.append(ch); } else b.disabled = true;
     li.append(b); return [k, { li, b, n }];
   }));
   $('rail-list').addEventListener('click', onListClick);
@@ -359,6 +594,25 @@ export function setup() {
     for (const x of document.querySelectorAll('.st')) x.setAttribute('aria-pressed', String(x.dataset.st === railFilter));
     renderRail();
   });
+  awayHooks.change = () => queueUi();
   // running timers tick every second without re-rendering the list
-  setInterval(() => { for (const [id, r] of railRows) { const s = sessions.get(id); if (s && s.status !== 'rest') r.time.textContent = metaTime(s); } }, 1000);
+  let tick = 0;
+  setInterval(() => {
+    tick = (tick + 1) % 5;
+    let statusChanged = false;
+    for (const [id, r] of railRows) {
+      const s = sessions.get(id);
+      if (!s) continue;
+      if (s.status !== 'rest' || tick === 0) r.time.textContent = metaTime(s);
+      if (tick === 0) {
+        if (r.b.dataset.status !== uiStatusOf(s)) statusChanged = true;
+        else if (s.status === 'rest') {
+          const d = doingOf(s);
+          if (r.dIcoName !== d.ic) { r.dIcoName = d.ic; r.dIco.replaceChildren(icon(d.ic)); }
+          if (r.dTxt.textContent !== d.text) r.dTxt.textContent = d.text;
+        }
+      }
+    }
+    if (statusChanged) renderRail();
+  }, 1000);
 }

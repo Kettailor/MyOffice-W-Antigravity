@@ -12,8 +12,8 @@ import { togglePlan, togglePop } from './settings.js';
 import { t as tr } from '../../i18n/index.js';
 
 // a phone upright, or sideways (wide but short, with a finger for a pointer)
-const PHONE = '(max-width: 720px), (max-height: 520px) and (hover: none) and (pointer: coarse)';
-const TABS = [['office', 'home'], ['sessions', 'users'], ['activity', 'list'], ['approve', 'alert'], ['chat', 'chat']];
+const PHONE = '(max-width: 780px), (max-height: 520px) and (hover: none) and (pointer: coarse)';
+const TABS = [['office', 'home'], ['sessions', 'users'], ['task', 'clipboard'], ['activity', 'list'], ['chat', 'chat']];
 let mq, bar, tab = 'office', emptyEl;
 export const isPhone = () => !!mq?.matches;
 const chatOpen = () => !!$('zchat') && !$('zchat').hidden;
@@ -26,9 +26,20 @@ function closeSheets(but = '') {
   if (but !== 'sessions') document.querySelector('.side-left')?.classList.remove('ph-open');
   if (but !== 'activity') $('feed')?.classList.remove('ph-open');
   if (but !== 'approve') document.documentElement.classList.remove('ph-approve');
-  if (but !== 'chat' && chatOpen()) $('btn-chat')?.click();
+  if (but !== 'chat' && but !== 'task' && chatOpen()) $('btn-chat')?.click();
+  const isSheetOpen = but === 'sessions' || but === 'activity';
+  document.body.classList.toggle('m-tab', isSheetOpen);
+  if (isSheetOpen) document.body.dataset.mtab = but;
+  else delete document.body.dataset.mtab;
 }
 export function showTab(next) {
+  if (next === 'task') {
+    tab = 'task';
+    closeSheets('task');
+    $('btn-task')?.click();
+    sync();
+    return;
+  }
   if (next === tab && next !== 'office') next = 'office';   // (a second tap on the open tab goes back to the office)
   tab = next;
   closeSheets(next);
@@ -44,20 +55,30 @@ function badge(name, n, tone = '') {
 }
 function sync() {
   if (!bar) return;
-  if (tab === 'chat' && !chatOpen()) tab = 'office';   // (closed from inside: its back button)
+  if ((tab === 'chat' || tab === 'task') && !chatOpen()) tab = 'office';   // (closed from inside: its back button)
   for (const b of bar.querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   const waiting = $('perm-stack')?.children.length || 0;
+  const attCount = Number($('att-count')?.textContent) || 0;
   badge('approve', waiting, 'red');
+  badge('activity', waiting + attCount, waiting ? 'red' : 'amber');
   badge('sessions', Number($('st-wait')?.textContent) || 0, 'amber');
   const cb = $('chat-badge'); badge('chat', cb && !cb.hidden ? Number(cb.textContent.replace(/\D/g, '')) || 1 : 0, 'red');
   emptyEl.hidden = !(tab === 'approve' && !waiting);
   document.documentElement.classList.toggle('ph-has-perms', waiting > 0);
 }
-// a close button at the top of a sheet that has none of its own
-function closer(host) {
+// a close button and drag handle pill at the top of a sheet
+function closer(host, withGrip = false) {
   if (!host || host.querySelector(':scope > .ph-close')) return;
   const b = el('button', 'ph-close'); b.type = 'button'; b.setAttribute('aria-label', tr('ui.phone.close')); b.append(icon('x'));
   b.addEventListener('click', () => showTab('office'));
+  if (withGrip && !host.querySelector(':scope > .ph-grip')) {
+    const grip = el('div', 'ph-grip');
+    grip.setAttribute('aria-hidden', 'true');
+    grip.append(el('i', 'ph-grip-pill'));
+    grip.addEventListener('click', () => showTab('office'));
+    host.prepend(grip, b);
+    return;
+  }
   host.prepend(b);
 }
 function apply() {
@@ -69,21 +90,32 @@ function apply() {
 
 export function setup() {
   mq = matchMedia(PHONE);
-  bar = el('nav', 'ph-tabs'); bar.setAttribute('role', 'tablist'); bar.setAttribute('aria-label', tr('ui.phone.tabs'));
+  bar = el('nav', 'ph-tabs mbar'); bar.setAttribute('role', 'tablist'); bar.setAttribute('aria-label', tr('ui.phone.tabs'));
   for (const [name, ic] of TABS) {
-    const b = el('button', 'ph-tab'); b.type = 'button'; b.dataset.tab = name; b.setAttribute('role', 'tab');
+    const isPrimary = name === 'task';
+    const b = el('button', 'ph-tab mbar-btn' + (isPrimary ? ' ph-tab--primary mbar-btn--primary' : ''));
+    b.type = 'button';
+    b.dataset.tab = name;
+    b.dataset.act = name;
+    b.setAttribute('role', 'tab');
     const badgeEl = el('i', 'ph-badge'); badgeEl.hidden = true;
-    b.append(icon(ic), el('span', null, tr(`ui.phone.${name}`)), badgeEl);
+    const icWrap = el('span', 'ph-tab-ic'); icWrap.append(icon(ic));
+    b.append(icWrap, el('span', 'ph-tab-lbl', tr(`ui.phone.${name}`)), badgeEl);
     b.addEventListener('click', () => showTab(name));
     bar.append(b);
   }
   emptyEl = el('div', 'ph-empty'); emptyEl.hidden = true;
   emptyEl.append(icon('check'), el('b', null, tr('ui.phone.approveEmpty')), el('span', null, tr('ui.phone.approveEmptySub')));
   $('app').append(bar, emptyEl);
-  for (const host of [document.querySelector('.side-left'), $('feed'), $('pop-plan'), $('pop-look')]) closer(host);
+  closer(document.querySelector('.side-left'), true);
+  closer($('feed'), true);
+  for (const host of [$('pop-plan'), $('pop-look')]) closer(host, false);
+  $('stage')?.addEventListener('pointerdown', () => {
+    if (isPhone() && (tab === 'sessions' || tab === 'activity')) showTab('office');
+  });
   // the counts on the tabs, and the chat closed from inside
   const watch = new MutationObserver(() => sync());
-  for (const id of ['perm-stack', 'st-wait', 'chat-badge']) { const n = $(id); if (n) watch.observe(n, { childList: true, characterData: true, subtree: true, attributes: true }); }
+  for (const id of ['perm-stack', 'st-wait', 'chat-badge', 'att-count']) { const n = $(id); if (n) watch.observe(n, { childList: true, characterData: true, subtree: true, attributes: true }); }
   new MutationObserver(() => { if (!$('zchat')) return; watch.observe($('zchat'), { attributes: true, attributeFilter: ['hidden'] }); sync(); }).observe($('app'), { childList: true });
   mq.addEventListener('change', apply);
   apply();

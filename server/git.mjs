@@ -47,6 +47,10 @@ export function createGit({ onRepo, onCommit, onPush, onPull, onInitRepo, onCi }
     const out = await run('git', ['rev-parse', '--show-toplevel'], cwd);
     if (out && out.trim()) {
       const normRoot = path.resolve(out.trim());
+      if (roots.size >= 200) {
+        const oldest = roots.keys().next().value;
+        if (oldest !== undefined) roots.delete(oldest);
+      }
       roots.set(cwd, normRoot);
       roots.set(String(rawCwd), normRoot);
       return normRoot;

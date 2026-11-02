@@ -45,3 +45,6 @@ playwright-report/
 /.demo-build/
 /demo-site/
 /out/
+/rust-native/target/
+/rust-native/.cargo/
+/bin/work-office-native*

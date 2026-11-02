@@ -54,6 +54,12 @@ export default {
     done: 'Đã đổi tên phiên thành "{name}".',
     reset: 'Đã khôi phục tên mặc định của phiên.',
   },
+  stop: {
+    button: '⏹️ Dừng',
+    title: 'Dừng thực thi phiên làm việc này ngay lập tức',
+    stopping: '⏳ Đang dừng…',
+    stopped: '⏹️ Đã dừng thực thi phiên làm việc.',
+  },
   loadingChat: 'Đang tải hội thoại…',
   chatUnreadable: 'Không đọc được hội thoại của phiên này.',
   copy: 'Chép',

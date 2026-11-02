@@ -3,10 +3,10 @@ import { state } from '../core/state.js';
 import { $, LAYOUT, PLANS, STATIC } from '../core/env.js';
 import { bubbleText } from './event-text.js';
 import { labels } from '../scene/renderer.js';
-import { subs, workers } from '../people/workers.js';
+import { npcs, subs, workers } from '../people/workers.js';
 import { isNightHour, night, setNight } from '../world/room-update.js';
 import { queueUi, renderFeed, toast } from './activity.js';
-import { renderChat, renderSessionHead, tab } from './session-drawer.js';
+import { renderChat, renderSessionHead, renderSubs, tab } from './session-drawer.js';
 import { renderLimits } from './mac-drawer.js';
 import { stickyNotes } from './whiteboard.js';
 import { setLook } from './look-switch.js';
@@ -27,18 +27,35 @@ const setPref = (k, v) => {
   try { localStorage.setItem(devKey(k), v); localStorage.setItem(k, v); } catch { /* storage blocked */ }
 };
 
+export const DEFAULTS = {
+  chibiNames: true,
+  staffNames: true,
+  subNames: true,
+  workSteps: true,
+};
+export const uiCfg = {
+  get chibiNames() { return state.showChibiNames ?? DEFAULTS.chibiNames; },
+  set chibiNames(v) { state.showChibiNames = v; },
+  get staffNames() { return state.showStaffNames ?? DEFAULTS.staffNames; },
+  set staffNames(v) { state.showStaffNames = v; },
+  get subNames() { return state.showSubNames ?? DEFAULTS.subNames; },
+  set subNames(v) { state.showSubNames = v; },
+  get workSteps() { return state.showWorkSteps ?? DEFAULTS.workSteps; },
+  set workSteps(v) { state.showWorkSteps = v; },
+};
+
 export let popLook;
 let btnLook;
 // switching the floor plan rebuilds the whole office, so the page reloads (sessions come back from the server)
 function setLayout(l) {
-  if (l === LAYOUT || !PLANS.includes(l)) return;
-  setPref('office-layout', l);
-  setPref('office-layout-v2', l);
+  if (l !== 'hq' || l === LAYOUT || !PLANS.includes(l)) return;
+  setPref('office-layout', 'hq');
+  setPref('office-layout-v2', 'hq');
   try {
-    localStorage.setItem(devKey('office-layout-v2'), l);
-    localStorage.setItem('office-layout-v2', l);
+    localStorage.setItem(devKey('office-layout-v2'), 'hq');
+    localStorage.setItem('office-layout-v2', 'hq');
   } catch { /* storage blocked */ }
-  toast(tr({ pro: 'settings.toPro', hq: 'settings.toHq', cozy: 'settings.toCozy' }[l]));
+  toast(tr('settings.toHq'));
   const u = new URL(location.href);
   u.searchParams.delete('layout');
   setTimeout(() => {
@@ -86,6 +103,23 @@ function setToggle(k, v) {
   if (k === 'stream') setStreamer(v);
   if (k === 'zones') { state.zonesOn = v; setPref('office-zones', v ? 'on' : 'off'); }
   if (k === 'teams') { state.teamsOn = v; setPref('office-teams', v ? 'on' : 'off'); updateTeamTags(); }
+  if (k === 'chibiNames') { state.showChibiNames = v; setPref('office-chibi-names', v ? 'on' : 'off'); }
+  if (k === 'staffNames') { state.showStaffNames = v; setPref('office-staff-names', v ? 'on' : 'off'); }
+  if (k === 'subNames') { state.showSubNames = v; setPref('office-sub-names', v ? 'on' : 'off'); }
+  if (k === 'workSteps') {
+    state.showWorkSteps = v;
+    setPref('office-work-steps', v ? 'on' : 'off');
+    const STEP_TYPES = new Set(['read', 'grep', 'glob', 'skill', 'edit', 'write', 'bash', 'test', 'web', 'fetch', 'mcp', 'plan']);
+    for (const w of [...workers.values(), ...subs.values(), ...npcs]) {
+      if (w?.lastSay && STEP_TYPES.has(w.lastSay.type) && w.bubbleObj) {
+        w.bubbleObj.visible = v && w.root.visible;
+      }
+    }
+    if (state.selectedId) {
+      if (tab === 'chat') renderChat(false);
+      else if (tab === 'subs' && state.subView) renderSubs(false);
+    }
+  }
   if (k === 'season') {   // decorations are built when the page loads
     setPref('office-season', v ? 'on' : 'off');
     toast(tr(v ? 'settings.seasonOn' : 'settings.seasonOff')); setTimeout(() => location.reload(), 300);
@@ -94,7 +128,19 @@ function setToggle(k, v) {
 }
 export function syncToggles() {
   const seasonOn = getPref('office-season') !== 'off';
-  const val = { sound: sfx.on, autocam: state.camAuto, perm: state.permOn, stream: state.streamer, zones: state.zonesOn, teams: state.teamsOn !== false, season: seasonOn };
+  const val = {
+    sound: sfx.on,
+    autocam: state.camAuto,
+    perm: state.permOn,
+    stream: state.streamer,
+    zones: state.zonesOn,
+    teams: state.teamsOn !== false,
+    chibiNames: state.showChibiNames !== false,
+    staffNames: state.showStaffNames !== false,
+    subNames: state.showSubNames !== false,
+    workSteps: state.showWorkSteps !== false,
+    season: seasonOn,
+  };
   labels.domElement.classList.toggle('show-zones', state.zonesOn);
   for (const b of document.querySelectorAll('[data-tgl]')) b.setAttribute('aria-checked', String(!!val[b.dataset.tgl]));
 }
@@ -118,6 +164,10 @@ export function setChatNotify(mode) {
 export function setup() {
   /* ---------- appearance popover: backdrop, character look, time of day ---------- */
   state.teamsOn = getPref('office-teams') !== 'off';
+  state.showChibiNames = getPref('office-chibi-names') !== 'off';
+  state.showStaffNames = getPref('office-staff-names') !== 'off';
+  state.showSubNames = getPref('office-sub-names') !== 'off';
+  state.showWorkSteps = getPref('office-work-steps') !== 'off';
   if (getPref('office-autocam') !== null) state.camAuto = getPref('office-autocam') !== 'off';
   if (getPref('office-perm') !== null) state.permOn = getPref('office-perm') !== 'off';
   if (getPref('office-zones') !== null) state.zonesOn = getPref('office-zones') === 'on';

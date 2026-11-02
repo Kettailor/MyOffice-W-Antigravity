@@ -281,7 +281,7 @@ export function buildStreetLife(G, { XS, ZS, STREET_W, SB, shops = [], parks = [
   textures();
   const low = quality.level === 'low';
   const C = officeMiddle();
-  const TER = HQ ? { x0: -8.9, x1: 15.7, z0: -8.5, z1: 28.7 } : PRO ? { x0: -8.9, x1: 15.7, z0: -8.5, z1: 11.7 } : { x0: -8.9, x1: 12.1, z0: -6.7, z1: 10.7 };
+  const TER = HQ ? { x0: -8.9, x1: 15.7, z0: -8.5, z1: 18.5 } : PRO ? { x0: -8.9, x1: 15.7, z0: -8.5, z1: 11.7 } : { x0: -8.9, x1: 12.1, z0: -6.7, z1: 10.7 };
   const inSB = (x, z) => x > SB.x0 && x < SB.x1 && z > SB.z0 && z < SB.z1;
   const near = (x, z, r) => Math.hypot(x - C[0], z - C[1]) < r;
   const HALF = STREET_W / 2, LO = -110, HI = 110, LEN = HI - LO;
@@ -680,18 +680,21 @@ export function buildStreetLife(G, { XS, ZS, STREET_W, SB, shops = [], parks = [
         if (v.extra && !v.ownAll) extras.draw(v, m4);
       }
       const fx = Math.cos(yaw), fz = -Math.sin(yaw), rx = -fz, rz = fx, lit = v.mode !== 'parked';   // heading, its right; parked: lights off
+      const h3 = n * 3;
       if (lit) {
-        headPos.set([x + fx * (v.half + 0.05), GY + v.K.head, z + fz * (v.half + 0.05)], n * 3);
-        tailPos.set([x - fx * (v.half + 0.05), GY + v.K.head + 0.04, z - fz * (v.half + 0.05)], n * 3);
+        const fh = v.half + 0.05;
+        headPos[h3] = x + fx * fh; headPos[h3 + 1] = GY + v.K.head; headPos[h3 + 2] = z + fz * fh;
+        tailPos[h3] = x - fx * fh; tailPos[h3 + 1] = GY + v.K.head + 0.04; tailPos[h3 + 2] = z - fz * fh;
         P.set(x + fx * (v.half + 2.6), GY + 0.03, z + fz * (v.half + 2.6)); q.setFromAxisAngle(UP, yaw - Math.PI / 2); m4.compose(P, q, S1); beams.setMatrixAt(n, m4);
-      } else { headPos[n * 3 + 1] = tailPos[n * 3 + 1] = OFF; beams.setMatrixAt(n, Z0); }
+      } else { headPos[h3 + 1] = tailPos[h3 + 1] = OFF; beams.setMatrixAt(n, Z0); }
       // indicators: the right pair (pulling in), the left pair (pulling out) or all four (hazards), flashing
       const hy = GY + Math.min(v.K.head, 0.8), fl = v.half + 0.04, sd = v.w - 0.14;   // (just outside the nose and the tail)
-      [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([side, end], i) => {
+      for (let i = 0; i < 4; i++) {
+        const side = i < 2 ? 1 : -1, end = (i & 1) === 0 ? 1 : -1;
         const k = (n * 4 + i) * 3, show = flash && (v.blink === 2 || v.blink === side);
-        if (!show) { blinkPos[k + 1] = OFF; return; }
+        if (!show) { blinkPos[k + 1] = OFF; continue; }
         blinkPos[k] = x + fx * end * fl + rx * side * sd; blinkPos[k + 1] = hy; blinkPos[k + 2] = z + fz * end * fl + rz * side * sd;
-      });
+      }
     });
     // each kind's meshes draw only up to the highest one out (the quiet hours cost little)
     for (const [name, M] of Object.entries(meshes)) if (M) for (const o of Object.values(M)) if (o) { o.count = tops[name]; o.instanceMatrix.needsUpdate = true; }
@@ -922,7 +925,8 @@ export function buildStreetLife(G, { XS, ZS, STREET_W, SB, shops = [], parks = [
       if (p.job) jm[p.job].setMatrixAt(p.slot, m4);
       pm.hat.setMatrixAt(k, p.hat && !rain ? m4 : Z0);
       if (rain) pm.umbrella.setMatrixAt(k, m4);
-      for (const [n, sgn] of [[0, 1], [1, -1]]) {   // legs from the hips, swinging opposite ways
+      for (let n = 0; n < 2; n++) {   // legs from the hips, swinging opposite ways
+        const sgn = n === 0 ? 1 : -1;
         qs.setFromAxisAngle(ZA, swing * sgn).premultiply(q);
         P.set(x + Math.sin(p.yaw) * 0.1 * sgn, yb + 0.72 + bob, z + Math.cos(p.yaw) * 0.1 * sgn);   // (the body's left-right is its local z)
         m4.compose(P, qs, S1); pm.leg.setMatrixAt(k * 2 + n, m4);

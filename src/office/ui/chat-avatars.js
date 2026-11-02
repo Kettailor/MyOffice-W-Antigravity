@@ -49,6 +49,7 @@ function next() {
   busy = true;
   requestAnimationFrame(() => {
     let url = null; try { url = draw(job.look); } catch (err) { console.error(err); }
+    if (cache.size > 150) cache.delete(cache.keys().next().value);
     cache.set(k, url); waiting.delete(k);
     for (const el of job.els) if (url) { el.style.backgroundImage = `url(${url})`; el.textContent = ''; }
     next();

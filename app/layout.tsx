@@ -39,8 +39,9 @@ export async function generateMetadata(): Promise<Metadata> {
   const lang = await getLang(), t = await getT();
   const title = t('ui.meta.title'), description = t('ui.meta.description');
   const at = (sub: string) => `${SITE}${ROOT}${sub}`, url = at(lang === 'en' ? '/' : `/${lang}/`);
+  const fallbackBase = `http://localhost:${process.env.OFFICE_PORT || 4310}`;
   return {
-    ...(SITE && { metadataBase: new URL(SITE) }),
+    metadataBase: new URL(SITE || fallbackBase),
     title: { absolute: 'My Office' }, description, applicationName: 'My Office',
     keywords: ['Claude Code', 'AI agents', '3D office', 'developer tools', 'văn phòng 3D', 'Claude Code dashboard'],
     openGraph: { type: 'website', siteName: 'My Office', title, description, locale: lang === 'vi' ? 'vi_VN' : 'en_US', ...(SITE && { url }) },

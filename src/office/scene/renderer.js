@@ -56,7 +56,7 @@ export function setup() {
   // CPU and takes seconds: then the office runs light, with no shadows or post effects, a quarter of the pixels and a few
   // frames a second, so the page stays usable.
   SOFTWARE_GL = (() => { const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info'); return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : ''); })();
-  renderer.setPixelRatio(SOFTWARE_GL ? 0.5 : Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(SOFTWARE_GL ? 0.5 : Math.min(window.devicePixelRatio || 1, 1.35));
   renderer.shadowMap.enabled = !SOFTWARE_GL;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   stage.appendChild(renderer.domElement);
@@ -64,8 +64,8 @@ export function setup() {
   stage.appendChild(labels.domElement);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.12;
-  HOME = HQ ? new THREE.Vector3(3, 0.3, 8.5) : PRO ? new THREE.Vector3(3, 0.3, 0.7) : new THREE.Vector3(0, 0.3, 0.2);
-  BASE_ZOOM = (small.matches ? 1.35 : 1) * (HQ ? 0.62 : PRO ? 0.8 : 1);
+  HOME = HQ ? new THREE.Vector3(3, 0.3, 3.8) : PRO ? new THREE.Vector3(3, 0.3, 0.7) : new THREE.Vector3(0, 0.3, 0.2);
+  BASE_ZOOM = (small.matches ? 1.35 : 1) * (HQ ? 0.74 : PRO ? 0.8 : 1);
   camera.position.set(...(HQ ? [19, 23, 19] : PRO ? [17, 20, 17] : [18, 16, 18])).add(HOME);
   camera.zoom = BASE_ZOOM;
   controls = new OrbitControls(camera, renderer.domElement);

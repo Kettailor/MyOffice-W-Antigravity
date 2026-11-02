@@ -5,6 +5,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { cpuFromDelta, kidsOf, readText, readdir, sh } from './shared.mjs';
+import { findNativeRustBin } from '../antigravity.mjs';
 
 export const NAME = 'Linux';
 export const UID = process.getuid?.() ?? -1;   // (this module is also loaded, unused, on Windows)
@@ -32,8 +33,13 @@ export function parseStat(line) {
   return { name, ppid: +f[1], pgid: +f[2], ticks: +f[11] + +f[12], startTicks: +f[19], rssPages: +f[21] };
 }
 const cpuState = { prev: null, at: 0 };
+let lastFullProcs = null, lastFullAt = 0;
+let lastLiteProcs = null, lastLiteAt = 0;
 async function readProcs(full) {
-  const { hz, page, boot } = await sys(), now = Date.now() / 1000, procs = new Map();
+  const nowMs = Date.now();
+  if (full && lastFullProcs && nowMs - lastFullAt < 1500) return lastFullProcs;
+  if (!full && lastLiteProcs && nowMs - lastLiteAt < 1500) return lastLiteProcs;
+  const { hz, page, boot } = await sys(), now = nowMs / 1000, procs = new Map();
   const pids = (await readdir('/proc')).filter((d) => /^\d+$/.test(d));
   await Promise.all(pids.map(async (d) => {
     const base = `/proc/${d}`, st = parseStat(await readText(`${base}/stat`));
@@ -44,10 +50,13 @@ async function readProcs(full) {
     if (full) {
       // the executable's path when it is ours to read (a process title such as "next-server (v16)" would hide "node")
       let exe = ''; try { exe = await fsp.readlink(`${base}/exe`); } catch { /* another user's */ }
-      Object.assign(p, { comm: exe || st.name, args: (await readText(`${base}/cmdline`)).split('\0').filter(Boolean).join(' ') || st.name, up: Math.max(0, Math.round(now - start)), mem: p.rss });
+      const rawCmd = (await readText(`${base}/cmdline`)).slice(0, 512);
+      Object.assign(p, { comm: exe || st.name, args: rawCmd.split('\0').filter(Boolean).join(' ') || st.name, up: Math.max(0, Math.round(now - start)), mem: p.rss });
     }
     procs.set(p.pid, p);
   }));
+  if (full) { lastFullProcs = procs; lastFullAt = Date.now(); }
+  else { lastLiteProcs = procs; lastLiteAt = Date.now(); }
   return procs;
 }
 export async function processes() {
@@ -65,6 +74,24 @@ export function parseMeminfo(text) {
   return { total: kb('MemTotal'), available: kb('MemAvailable') || kb('MemFree'), swapTotal: kb('SwapTotal'), swapFree: kb('SwapFree') };
 }
 export async function memory() {
+  const nativeBin = findNativeRustBin();
+  if (nativeBin) {
+    try {
+      const out = await sh(nativeBin, ['--sys-linux-mem'], 2000);
+      const rm = out ? JSON.parse(out) : null;
+      if (rm && rm.total > 0) {
+        const total = rm.total, used = Math.max(0, total - (rm.available || os.freemem()));
+        return {
+          total,
+          used,
+          compressed: 0,
+          swapTotal: rm.swapTotal || 0,
+          swapUsed: Math.max(0, (rm.swapTotal || 0) - (rm.swapFree || 0)),
+          pressure: rm.pressure || 'normal',
+        };
+      }
+    } catch { /* fallback to /proc/meminfo */ }
+  }
   const [info, psi] = await Promise.all([readText('/proc/meminfo'), readText('/proc/pressure/memory')]);
   const m = parseMeminfo(info), total = m.total || os.totalmem(), used = Math.max(0, total - (m.available || os.freemem()));
   // the kernel's own pressure figures when it has them (share of time tasks stalled on memory), else how much is left
@@ -87,13 +114,25 @@ export function parseNetTcp(text) {
   }
   return out;
 }
-const tcpRows = async () => [...parseNetTcp(await readText('/proc/net/tcp')), ...parseNetTcp(await readText('/proc/net/tcp6'))];
+let cachedTcpRows = null, cachedTcpAt = 0;
+const tcpRows = async () => {
+  const now = Date.now();
+  if (cachedTcpRows && now - cachedTcpAt < 1500) return cachedTcpRows;
+  const [tcp4, tcp6] = await Promise.all([readText('/proc/net/tcp'), readText('/proc/net/tcp6')]);
+  cachedTcpRows = [...parseNetTcp(tcp4), ...parseNetTcp(tcp6)];
+  cachedTcpAt = Date.now();
+  return cachedTcpRows;
+};
 export async function listeners() {
   const listen = new Map((await tcpRows()).filter((r) => r.state === '0A' && r.port).map((r) => [r.inode, r.port]));
   const map = new Map();
   if (!listen.size) return map;
   // which process holds each listening socket: look through our own processes' open files
-  for (const d of (await readdir('/proc')).filter((x) => /^\d+$/.test(x))) {
+  const knownProcs = lastFullProcs || lastLiteProcs;
+  const pids = knownProcs
+    ? [...knownProcs.values()].filter((p) => UID < 0 || p.uid === UID).map((p) => String(p.pid))
+    : (await readdir('/proc')).filter((x) => /^\d+$/.test(x));
+  for (const d of pids) {
     const fds = await readdir(`/proc/${d}/fd`);
     for (const fd of fds) {
       let link = ''; try { link = await fsp.readlink(`/proc/${d}/fd/${fd}`); } catch { continue; }

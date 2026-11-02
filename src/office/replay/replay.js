@@ -24,7 +24,8 @@ export const dayKey = (t) => new Date(t).toLocaleDateString('sv-SE');
 export function rangeOf(r) {
   const now = Date.now(), d0 = new Date(); d0.setHours(0, 0, 0, 0);
   if (r === '3h') return { from: now - 3 * 3600e3, to: now };
-  if (r === 'today') return { from: d0.getTime(), to: now };
+  if (r === '6h') return { from: now - 6 * 3600e3, to: now };
+  if (r === 'today' || r === 'all') return { from: d0.getTime(), to: now };
   if (r === 'yesterday') return { from: d0.getTime() - 86400e3, to: d0.getTime() - 1 };
   return { from: now - 3600e3, to: now };
 }

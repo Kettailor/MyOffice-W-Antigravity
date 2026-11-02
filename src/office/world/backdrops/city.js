@@ -30,10 +30,9 @@ export function buildCity(G) {
   street.rotation.x = -Math.PI / 2; street.position.y = GY; street.receiveShadow = true; G.add(street);
   const XS = [], ZS = [];
   // (three more rows in front than the camera usually sees: a low photo looks out over them)
-  for (let k = -6; k <= 4; k++) { XS.push(18 + k * BLOCK); ZS.push(16.2 + k * BLOCK); }
+  for (let k = -6; k <= 4; k++) { XS.push(18 + k * BLOCK); ZS.push((HQ && k >= 0 ? 20.9 : 16.2) + k * BLOCK); }
   // The office's own superblock (terrace + its sidewalks): no streets or buildings inside.
-  // (headquarters reaches a block further forward: its superblock takes the next street in too)
-  const SB = { x0: -12 + STREET_W / 2, x1: 18 - STREET_W / 2, z0: -13.8 + STREET_W / 2, z1: (HQ ? 31.2 : 16.2) - STREET_W / 2 };
+  const SB = { x0: -12 + STREET_W / 2, x1: 18 - STREET_W / 2, z0: -13.8 + STREET_W / 2, z1: (HQ ? 20.9 : 16.2) - STREET_W / 2 };
   const inSB = (x, z) => x > SB.x0 && x < SB.x1 && z > SB.z0 && z < SB.z1;
 
   /* facade styles: a one-floor, one-bay module (day) and a 32 x 64 cell atlas of lit windows (night) */

@@ -9,6 +9,7 @@ import { scene } from '../scene/renderer.js';
 import { ROOM_LAMPS } from '../scene/lights.js';
 import { mat } from '../scene/blocks.js';
 import { night } from '../world/room-update.js';
+import { ARC } from '../world/props/arcade.js';
 import { PRN, paper, printQueue, prnLed } from '../world/props/printer.js';
 import { STEAM_AT } from '../world/furniture/coffee.js';
 import { cat, catGo } from '../world/props/cat.js';
@@ -27,9 +28,9 @@ export const line = (key) => tr(key);   // an array in the dictionary: one line 
 export const dist = (w, x, z) => Math.hypot(w.pos.x - x, w.pos.y - z);
 const shown = (w) => w.root.parent && w.root.visible && !w.leaving && !w.away && !w.homeBound;
 // free to get up: in place (not walking, riding the lift or in the middle of something), awake, nothing urgent waiting
-export const free = (w) => shown(w) && !w.staff && !w.chore && w.phase !== 'walk' && !w.after && !w.liftHold && !w.liftWait && !w.inStall && !w.wcBusy && !w.queued
+export const free = (w) => shown(w) && (!w.deptStaff || w.busySub) && !w.staff && !w.chore && w.phase !== 'walk' && !w.after && !w.liftHold && !w.liftWait && !w.inStall && !w.wcBusy && !w.queued
   && !w.want?.priority && w.anim !== 'sleep' && w.anim !== 'wake' && (w !== director || (!director.job && director.station === 'home'));
-export const asleep = (w) => shown(w) && w.phase !== 'walk' && w.anim === 'sleep';
+export const asleep = (w) => shown(w) && (!w.deptStaff || w.busySub) && w.phase !== 'walk' && w.anim === 'sleep';
 // on the company floor, only the people in the same room as the thing (walls in between: they would not notice)
 const roomAt = (x, z) => (PRO ? ROOM_LAMPS.find((r) => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1) : null);
 const inRoom = (w, r) => !r || (w.pos.x > r.x0 && w.pos.x < r.x1 && w.pos.y > r.z0 && w.pos.y < r.z1);
@@ -270,6 +271,30 @@ export function lookUp(w) {
   if (replay.on || w.sub || w === director || !free(w) || w.station !== 'desk' || sessions.get(w.id)?.status !== 'work') return;
   w.errand({ type: 'idle', anim: 'idle', wait: 0, hold: 1.5, linger: 0.2, line: line('people.busy') });
   w.waveUntil = state.sim + 1.2;
+}
+
+/* ---------- the arcade cabinet ---------- */
+export function arcadePlay() {
+  state.arcCoin = state.sim + 12;
+  sfx.play('coin');
+  if (replay.on || people().some((w) => w.chore?.arcade)) return true;
+  const w = nearest(ARC.x, ARC.z, PRO ? 18 : 12, (p) => (free(p) || asleep(p)) && p !== director && !p.sub, false);
+  const spot = w && (standBy(ARC.x, ARC.z + 0.52, [0, 1]) || wayTo(w, ARC.x, ARC.z));
+  if (!w || !spot) return false;
+  w.errand({
+    arcade: true,
+    spot,
+    look: [ARC.x, ARC.z],
+    type: 'idle',
+    anim: 'console',
+    wait: 0.4,
+    hold: 8.5,
+    anim2: 'celebrate',
+    linger: 1.2,
+    line: line('people.tv.invite'),
+    at: () => { sfx.play('coin'); return line('people.tv.win'); },
+  });
+  return true;
 }
 
 export function setup() {

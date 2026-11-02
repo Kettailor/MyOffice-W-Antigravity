@@ -3,6 +3,17 @@
 export default {
   director: 'Director',
   subagent: 'subagent',
+  deptWorker: 'Staff {n}',
+  phoneSupport: {
+    call: ['Reception, please send backup support! 📞', 'Calling for extra specialist support! ☎️'],
+    ok: 'Backup specialist is on the elevator! 🏃',
+    arrive: ['Backup support reporting in, right on it! 💪', 'Here to help the team! 🚀', 'Reporting in! Let me lend a hand! ⚡'],
+    bye: ['Workload is clear, heading back now! 👋', 'All caught up, see you all next time! ✨'],
+  },
+  arcade: {
+    play: ['Space Invaders time! 👾', 'Going for the high score! 🕹️', 'One more coin! 🪙'],
+    win: ['New high score! 🏆👾', 'Cleared the stage! 🎉'],
+  },
   // the small badge on a boss's name tag
   team: { one: '{n} subagent', other: '{n} subagents' },
   needsApproval: 'Needs approval',
@@ -13,6 +24,7 @@ export default {
   subReportDone: 'all done',
   bossThanks: 'Got the report, thanks! 👍',
   bgWait: 'Waiting on a background job: {desc}',
+  goingHome: 'Clocking out, heading home!',
   // the director, with your prompt
   newTask: 'a new task',
   handOver: 'New task: “{what}”',

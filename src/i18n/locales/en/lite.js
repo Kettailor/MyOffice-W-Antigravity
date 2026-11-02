@@ -2,7 +2,8 @@
 export default {
   wait: 'Needs you',
   work: 'Working',
-  rest: 'Resting',
+  rest: 'Idle',
+  home: 'Off duty',
   empty: 'No Antigravity sessions open yet.',
   subs: { one: '{n} subagent', other: '{n} subagents' },
   ctx: 'context {pct}%',

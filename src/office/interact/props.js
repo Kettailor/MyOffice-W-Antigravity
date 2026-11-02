@@ -1,7 +1,7 @@
 // Furniture you can point at: highlight, tooltip, click actions.
 import * as THREE from 'three';
 import { state } from '../core/state.js';
-import { $, PRO, SEASON, el, rand, reduceMotion } from '../core/env.js';
+import { $, HQ, PRO, SEASON, el, rand, reduceMotion } from '../core/env.js';
 import { STATUS_LABEL } from '../ui/event-text.js';
 import { scene } from '../scene/renderer.js';
 import { lamps } from '../scene/lights.js';
@@ -28,6 +28,7 @@ import { BIL } from '../world/props/billiards.js';
 import { tableClick } from '../people/billiards.js';
 import { KTV } from '../world/props/karaoke.js';
 import { boothClick } from '../people/karaoke.js';
+import { foosClick } from '../people/foosball.js';
 import { neonG, neonM } from '../world/props/neon.js';
 import { SOFA, cat, catGo, petCat } from '../world/props/cat.js';
 import { vac } from '../world/props/vacuum.js';
@@ -44,7 +45,7 @@ import { openPlace } from './place-cards.js';
 import { ray } from '../ui/whiteboard.js';
 import { setTimeMode } from '../ui/settings.js';
 import { fp } from './first-person.js';
-import { coffeeMade, lampSwitched, lightsSwitched, pagePrinted, plantThirsty, waterPlant } from '../people/errands.js';
+import { arcadePlay, coffeeMade, lampSwitched, lightsSwitched, pagePrinted, plantThirsty, waterPlant } from '../people/errands.js';
 import { bellG, ringBell } from '../people/gatherings.js';
 import { flipSwitch, switches } from '../world/props/switches.js';
 import { sfx } from '../audio/sfx.js';
@@ -80,14 +81,14 @@ function meshesIn([x0, y0, z0, x1, y1, z1]) {
   for (const o of scene.children) {
     if (o.userData.dynamic || o.userData.worker || o.isLight || o.isCSS2DObject || o === board) continue;
     _bx.setFromObject(o);
-    if (!_bx.isEmpty() && box.containsBox(_bx)) o.traverse((m) => { if (m.isMesh) out.push(m); });
+    if (!_bx.isEmpty() && box.containsBox(_bx)) o.traverse((m) => { if (m.isMesh && !m.userData.prop) out.push(m); });
   }
   return out;
 }
-const meshesOf = (...gs) => { const out = []; for (const g of gs) g.traverse((m) => { if (m.isMesh) out.push(m); }); return out; };
+const meshesOf = (...gs) => { const out = []; for (const g of gs) if (g) g.traverse((m) => { if (m.isMesh) out.push(m); }); return out; };
 export const PROPS = new Map(), propMeshes = [];
 function prop(id, def) {
-  const p = { id, ...def };
+  const p = { id, ...def, meshes: [...new Set((def.meshes || []).filter(Boolean))] };
   for (const m of p.meshes) { m.userData.prop = p; propMeshes.push(m); }
   _bx.makeEmpty(); for (const m of p.meshes) _bx.expandByObject(m);
   p.center = _bx.getCenter(new THREE.Vector3()); p.top = _bx.max.y; p.box = _bx.clone();
@@ -133,13 +134,15 @@ function toggleLamp(L) { L.on = !L.on; L.bulb.color.copy(L.on ? BULB_ON : BULB_O
 const TIME_NEXT = { auto: 'day', day: 'night', night: 'auto' };
 function cycleTime() { const m = TIME_NEXT[state.nightManual ? (night ? 'night' : 'day') : 'auto']; setTimeMode(m); toast(tr('props.clock.toast', { mode: tr('props.clock.' + m) })); sfx.play('click'); }
 /* the things themselves */
-function deskSession(i) { return [...sessions.values()].find((s) => s.desk === i); }
+function deskSession(i) { for (const s of sessions.values()) if (s.desk === i) return s; return undefined; }
 function openDesk(i) { const s = deskSession(i); if (s) openSession(s.id); else openPlace('desks', PROPS.get('desk' + i)); }
 export function buildProps() {
   scene.updateMatrixWorld(true);
   const R = ROCKET_HOME;
-  const REG = PRO ? { window: [6.7, 0.9, -8.2, 8.7, 3.2, -7.6], meeting: [-2.55, 0, -7.5, 2.95, 1.45, -3.75] }
-    : { window: [-1.6, 1.0, -6.1, 3.4, 3.7, -5.5], meeting: [3.7, 0, 0.85, 6.75, 1.3, 3.95] };
+  const REG = PRO ? {
+    window: [6.7, 0.9, -8.2, 8.7, 3.2, -7.6],
+    meeting: HQ ? [-7.9, 0, 10.9, -0.8, 2.3, 15.75] : [-2.55, 0, -7.5, 2.95, 1.45, -3.75],
+  } : { window: [-1.6, 1.0, -6.1, 3.4, 3.7, -5.5], meeting: [3.7, 0, 0.85, 6.75, 1.3, 3.95] };
   prop('shelf', { name: tr('props.shelf.name'), hint: tr('props.shelf.hint'), place: 'library', meshes: meshesOf(shelf), bounce: shelf });
   prop('window', { name: tr('props.window.name'), hint: tr('props.window.hint'), place: 'window', meshes: [...meshesIn(REG.window), ...meshesOf(globeStand)], act: () => { globeBoost = 9; } });
   prop('racks', { name: tr(PRO ? 'props.racks.namePro' : 'props.racks.name'), hint: tr('props.racks.hint'), meshes: meshesOf(rackG), act: () => { rackParty = state.sim + 1.2; openMac(); } });
@@ -151,7 +154,7 @@ export function buildProps() {
   prop('coffee', { name: tr(PRO ? 'props.coffee.namePro' : 'props.coffee.name'), hint: tr('props.coffee.hint'), place: 'coffee', meshes: PRO ? [...meshesOf(coffeeG), ...meshesIn([11.9, 0, -8.1, 14.1, 2.2, -7.1])] : meshesOf(coffeeG), act: () => { brewCoffee(); coffeeMade(); } });
   prop('meeting', { name: tr('props.meeting.name'), hint: tr('props.meeting.hint'), place: 'meeting', meshes: meshesIn(REG.meeting) });
   prop('printer', { name: tr('props.printer.name'), hint: tr('props.printer.hint'), place: 'printer', meshes: [...meshesIn([PRN.x - 0.4, 0, PRN.z - 0.35, PRN.x + 0.4, 1.05, PRN.z + 0.35]), paper], act: () => { printPage(); pagePrinted(); } });
-  prop('arcade', { name: tr('props.arcade.name'), hint: tr('props.arcade.hint'), place: PRO ? 'lounge' : undefined, meshes: meshesIn([ARC.x - 0.45, 0, ARC.z - 0.42, ARC.x + 0.45, 1.85, ARC.z + 0.53]), act: () => { state.arcCoin = state.sim + 3; sfx.play('coin'); toast(tr('props.arcade.soon')); } });
+  prop('arcade', { name: tr('props.arcade.name'), hint: tr('props.arcade.hint'), place: PRO ? 'lounge' : undefined, meshes: meshesIn([ARC.x - 0.45, 0, ARC.z - 0.42, ARC.x + 0.45, 1.85, ARC.z + 0.53]), act: () => { arcadePlay(); } });
   prop('aquarium', { name: tr('props.aquarium.name'), hint: tr('props.aquarium.hint'), place: PRO ? 'lounge' : undefined, meshes: meshesIn([AQ.x - 1.15, 0, AQ.z - 0.35, AQ.x + 1.15, 1.65, AQ.z + 0.35]), act: feedFish });
   // petted, it soon goes looking for a keyboard to sit on
   prop('cat', { name: tr('props.cat.name'), hint: tr('props.cat.hint'), meshes: meshesOf(cat.g), dyn: cat.g, act: () => { petCat(); cat.restless = true; cat.restlessAt = state.sim + 2.2; } });
@@ -162,11 +165,17 @@ export function buildProps() {
   if (PRO) {
     prop('trophies', { name: tr('props.trophies.name'), hint: tr('props.trophies.hint'), place: 'director', meshes: meshesOf(PRO_FX.trophyCab) });
     prop('director', { name: tr('props.director.name'), hint: tr('props.director.hint'), place: 'director', meshes: [...meshesOf(PRO_FX.execDesk), ...meshesIn([-7.1, 0, -8.05, -3.5, 1.3, -7.4])] });
+    prop('coDirector', { name: tr('props.director.name'), hint: tr('props.director.hint'), place: 'coDirector', meshes: meshesIn([-2.5, 0, -7.95, 2.9, 2.3, -3.1]) });
     prop('wc', { name: tr('props.wc.name'), hint: tr('props.wc.hint'), place: 'wc', meshes: meshesIn([-8.0, 0, 5.4, -6.7, 2.0, 8.1]) });
-    prop('foosball', { name: tr('props.foosball.name'), hint: tr('props.foosball.hint'), place: 'lounge', meshes: meshesOf(PRO_FX.foosball), bounce: PRO_FX.foosball, act: () => sfx.play('click') });
+    prop('foosball', { name: tr('props.foosball.name'), hint: tr('props.foosball.hint'), place: 'lounge', meshes: meshesOf(PRO_FX.foosball), bounce: PRO_FX.foosball, act: foosClick });
+    if (PRO_FX.receptionPhone) prop('phone', { name: tr('props.phone.name'), hint: tr('props.phone.hint'), meshes: meshesOf(PRO_FX.receptionPhone), bounce: PRO_FX.receptionPhone, act: () => { sfx.play('beep'); toast(tr('props.phone.hint')); } });
     if (GTV) prop('gametv', { name: tr('props.gametv.name'), hint: tr('props.gametv.hint'), meshes: meshesOf(GTV.g), act: tvClick });
     if (BIL) prop('billiards', { name: tr('props.billiards.name'), hint: tr('props.billiards.hint'), place: 'lounge', meshes: [...meshesOf(BIL.g), ...meshesOf(BIL.rack)], act: tableClick });
     if (KTV) prop('karaoke', { name: tr('props.karaoke.name'), hint: tr('props.karaoke.hint'), meshes: meshesOf(KTV.g), act: boothClick });
+    if (HQ) {
+      prop('meeting2', { name: `${tr('props.meeting.name')} 2`, hint: tr('props.meeting.hint'), place: 'meeting', meshes: meshesIn([-0.6, 0, 10.9, 6.5, 2.3, 15.75]) });
+      prop('meeting3', { name: `${tr('props.meeting.name')} 3`, hint: tr('props.meeting.hint'), place: 'meeting', meshes: meshesIn([6.7, 0, 10.9, 13.9, 2.3, 15.75]) });
+    }
   }
   if (seasonProp) prop('season', { name: tr('props.season.' + SEASON), hint: tr('props.season.hint', { season: seasonName(SEASON) }), meshes: meshesOf(seasonProp),
     act: () => { if (!reduceMotion) confetti(SEASON_SPOT.centre[0], 2.6, SEASON_SPOT.centre[1]); sfx.play('pop'); } });
@@ -225,7 +234,7 @@ export function setHoverProp(p, ev) {
   if (p !== hoverProp) {
     hoverProp = p;
     setOutline(p ? p.meshes : state.hoverPlace ? placeMeshes(state.hoverPlace) : []);
-    for (const [id, pl] of Object.entries(PLACES)) pl.el?.classList.toggle('zone--hot', !!p && p.place === id);
+    for (const [id, pl] of Object.entries(PLACES)) pl.el?.classList.toggle('zone--hot', !!p && (p.place === id || p.id === id));
   }
   if (!p || !ev) { ptip.hidden = true; return; }
   ptipT.textContent = p.name; ptipH.textContent = propHint(p);
@@ -250,12 +259,15 @@ export function pickProp(r = ray.ray) {
 }
 export function pickPerson(r = ray.ray) {
   let best = null, bd = Infinity;
-  for (const w of [...workers.values(), ...subs.values(), ...npcs]) {
-    if (!w.root.parent || !w.root.visible) continue;
+  const check = (w) => {
+    if (!w.root.parent || !w.root.visible) return;
     const k = w.scale || 1, h = (w.pose === 'sit' ? 1.6 : 1.95) * k, rr = 0.34 * k;
     _pb.min.set(w.pos.x - rr, 0, w.pos.y - rr); _pb.max.set(w.pos.x + rr, h, w.pos.y + rr);
     const d = rayDist(r, _pb); if (d < bd) { bd = d; best = { worker: w }; }
-  }
+  };
+  for (const w of workers.values()) check(w);
+  for (const w of subs.values()) check(w);
+  for (const w of npcs) check(w);
   for (const b of devPool) if (b.g.visible) { const d = rayDist(r, _pb.setFromObject(b.g)); if (d < bd) { bd = d; best = { devBox: true }; } }
   return best ? { ...best, d: bd } : null;
 }

@@ -8,7 +8,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createTasks } from './tasks.mjs';
 
@@ -17,21 +18,103 @@ const DATA_DIR = process.env.OFFICE_DATA_DIR ? path.resolve(process.env.OFFICE_D
 const BRIDGE_PORT = Number(process.env.OFFICE_BRIDGE_PORT) || 4311;
 const ALLOWED_WIFI_SSID = (process.env.OFFICE_WIFI_SSID || 'Ket').trim().toLowerCase();
 const HOST_NET_FILE = path.join(DATA_DIR, 'host-net.json');
+const TOKEN_FILE = path.join(DATA_DIR, 'token');
+const STOP_FLAG_FILE = path.join(DATA_DIR, '.bridge-stopped');
+const WAKEUP_FILE = path.join(DATA_DIR, 'bridge-wakeup.json');
+const AUTO_STOP = !process.argv.includes('--keep-alive') && (
+  process.argv.includes('--on-demand') ||
+  process.env.WORKOFFICE_BRIDGE_AUTO_STOP === '1' ||
+  process.env.WORKOFFICE_BRIDGE_AUTO_STOP !== '0'
+);
+const IDLE_TIMEOUT_MS = Number(process.env.WORKOFFICE_BRIDGE_IDLE_MS) || 45_000;
+let lastActivityAt = Date.now();
+function touchActivity() {
+  lastActivityAt = Date.now();
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// Legacy `--watchdog` flag now delegates to the lightweight Rust `watch-bridge` daemon
+// (or watches `data/bridge-wakeup.json` on-demand instead of keeping a heavy server alive 24/7).
+if (process.argv.includes('--watchdog')) {
+  const rustWatcher = path.join(ROOT, 'bin', process.platform === 'win32' ? 'work-office-native.exe' : 'work-office-native');
+  if (fs.existsSync(rustWatcher)) {
+    spawn(rustWatcher, ['watch-bridge', ROOT], {
+      cwd: ROOT,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }).unref();
+    process.exit(0);
+  }
+  const selfScript = fileURLToPath(import.meta.url);
+  let childProc = null;
+  setInterval(() => {
+    if (fs.existsSync(STOP_FLAG_FILE)) process.exit(0);
+    if (childProc || !fs.existsSync(WAKEUP_FILE)) return;
+    try { fs.unlinkSync(WAKEUP_FILE); } catch { /* ignore */ }
+    childProc = spawn(process.execPath, [selfScript, '--on-demand'], {
+      cwd: ROOT,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    childProc.on('exit', () => { childProc = null; });
+  }, 250);
+} else {
+
+function getBridgeToken() {
+  try {
+    if (fs.existsSync(TOKEN_FILE)) {
+      const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+      if (t) return t;
+    }
+    const created = crypto.randomBytes(9).toString('base64url');
+    fs.writeFileSync(TOKEN_FILE, created, { mode: 0o600 });
+    return created;
+  } catch {
+    return '';
+  }
+}
+
+function verifyBridgeToken(req) {
+  const expected = getBridgeToken();
+  if (!expected) return true;
+  const provided = String(req.headers['x-bridge-token'] || '').trim();
+  if (!provided) return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 function isTailscaleIp(addr = '') {
   const m = /^100\.(\d+)\./.exec(String(addr || ''));
   return !!(m && +m[1] >= 64 && +m[1] <= 127);
 }
 
-function detectHostIps() {
+function currentNetIfSig() {
+  const parts = [];
+  for (const [ifName, list] of Object.entries(os.networkInterfaces())) {
+    for (const n of list || []) {
+      if (n && n.family === 'IPv4' && !n.internal) parts.push(`${ifName}:${n.address}`);
+    }
+  }
+  return parts.sort().join('|');
+}
+
+const wlanCache = { at: 0, sig: '', onKet: false, macs: new Set(), names: new Set(['wi-fi', 'wlan']) };
+
+function detectHostIps(force = false) {
   let wifiIp = null;
   let tsIp = null;
-  let onKet = false;
-  const macs = new Set();
-  const names = new Set(['wi-fi', 'wlan']);
-  if (process.platform === 'win32') {
+  const now = Date.now();
+  const sig = currentNetIfSig();
+  const ttl = wlanCache.onKet ? 60_000 : 30_000;
+  if (process.platform === 'win32' && (force || !wlanCache.at || sig !== wlanCache.sig || now - wlanCache.at >= ttl)) {
+    wlanCache.at = now;
+    wlanCache.sig = sig;
+    let onKet = false;
+    const macs = new Set();
+    const names = new Set(['wi-fi', 'wlan']);
     try {
       const out = execFileSync('netsh', ['wlan', 'show', 'interfaces'], { timeout: 2500, windowsHide: true }).toString('utf8');
       for (const b of out.split(/\r?\n\s*\r?\n/)) {
@@ -44,7 +127,13 @@ function detectHostIps() {
         if (nameM) names.add(nameM[1].trim().toLowerCase());
       }
     } catch { /* ignore */ }
+    wlanCache.onKet = onKet;
+    wlanCache.macs = macs;
+    wlanCache.names = names;
   }
+  const onKet = wlanCache.onKet;
+  const macs = wlanCache.macs;
+  const names = wlanCache.names;
   const nets = os.networkInterfaces();
   for (const [ifName, list] of Object.entries(nets)) {
     const lowName = ifName.toLowerCase();
@@ -120,6 +209,8 @@ process.on('unhandledRejection', (err) => {
 const hostTasks = createTasks({
   dataDir: DATA_DIR,
   claude: findHostCli,
+  max: Number(process.env.OFFICE_MAX_CONCURRENT_TASKS) || 12,
+  perHour: Number(process.env.OFFICE_TASKS_PER_HOUR) || 100,
   env: () => {
     const e = { ...process.env };
     delete e.ANTIGRAVITY_LS_ADDRESS;
@@ -130,12 +221,14 @@ const hostTasks = createTasks({
     return e;
   },
   onStart(t) {
+    touchActivity();
     const res = streams.get(t.id);
     if (res && !res.writableEnded) {
       res.write(JSON.stringify({ event: 'start', id: t.id, sid: t.sid || null }) + '\n');
     }
   },
   onDone(t) {
+    touchActivity();
     const res = streams.get(t.id);
     streams.delete(t.id);
     if (res && !res.writableEnded) {
@@ -161,16 +254,31 @@ const server = http.createServer((req, res) => {
     res.writeHead(403).end();
     return;
   }
-  if (req.method === 'GET' && req.url === '/health') {
+  if (req.method === 'GET' && (req.url === '/health' || req.url === '/status')) {
+    touchActivity();
     const net = detectHostIps();
-    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, ...net }));
+    const activeTasks = hostTasks.list().length;
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+      ok: true,
+      mode: AUTO_STOP ? 'on-demand' : 'persistent',
+      running: activeTasks,
+      idleMs: Math.max(0, Date.now() - lastActivityAt),
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
+      ...net,
+    }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/task/start') {
+  if (req.method === 'POST' && (req.url === '/task/start' || req.url === '/dispatch')) {
+    touchActivity();
+    if (!verifyBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
     const chunks = [];
     let len = 0;
-    req.on('data', (c) => { len += c.length; if (len <= 10_000_000) chunks.push(c); });
+    req.on('data', (c) => { len += c.length; if (len <= 64_000_000) chunks.push(c); });
     req.on('end', () => {
+      touchActivity();
       let body = {};
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'badJson' }));
@@ -195,20 +303,114 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.method === 'POST' && req.url === '/task/stop') {
+  if (req.method === 'POST' && (req.url === '/task/stop' || req.url === '/stop')) {
+    touchActivity();
+    if (!verifyBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      touchActivity();
+      let body = {};
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* ignore */ }
+      let stopped = 0;
+      if (body?.id && hostTasks.stop(String(body.id))) {
+        stopped++;
+      }
+      if (typeof hostTasks.stopBySession === 'function' && (body?.sid || body?.dir || body?.id)) {
+        const r = await hostTasks.stopBySession({
+          id: String(body?.id || ''),
+          sid: String(body?.sid || ''),
+          dir: String(body?.dir || ''),
+        });
+        stopped += Number(r?.stopped) || 0;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, stopped }));
+    });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/docker/control') {
+    touchActivity();
+    if (!verifyBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
+      touchActivity();
       let body = {};
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* ignore */ }
-      const ok = hostTasks.stop(String(body.id || ''));
-      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok }));
+      const action = String(body?.action || 'status').toLowerCase();
+      if (action === 'bridge') {
+        const net = detectHostIps(true);
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, action: 'bridge', message: 'Host Bridge synced', ...net }));
+        return;
+      }
+      if (action === 'restart' || action === 'up' || action === 'down') {
+        const composeArgs = action === 'restart' ? ['compose', 'restart'] : action === 'up' ? ['compose', 'up', '-d'] : ['compose', 'stop'];
+        try {
+          const child = spawn('docker', composeArgs, { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true });
+          child.unref();
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, action }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, action, error: String(err?.message || err) }));
+        }
+        return;
+      }
+      // 'status'
+      let containerRunning = false;
+      try {
+        const out = execFileSync('docker', ['inspect', '-f', '{{.State.Running}}', 'work-office'], { timeout: 3000, windowsHide: true }).toString('utf8').trim();
+        containerRunning = out === 'true';
+      } catch { /* ignore */ }
+      const net = detectHostIps();
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+        ok: true,
+        action: 'status',
+        containerRunning,
+        bridgeUp: true,
+        bridgeOnDemand: AUTO_STOP,
+        ...net,
+      }));
     });
     return;
   }
   res.writeHead(404).end();
 });
 
-server.listen(BRIDGE_PORT, '0.0.0.0', () => {
-  console.log(`Work Office Host Bridge listening on port ${BRIDGE_PORT}`);
+// Auto-stop idle timer: when running on-demand and 0 tasks are active for IDLE_TIMEOUT_MS (45s),
+// cleanly shut down to free 100% of Node.js RAM & CPU on the Windows host.
+setInterval(() => {
+  const runningCount = hostTasks.list().length + streams.size;
+  if (runningCount > 0) {
+    touchActivity();
+    return;
+  }
+  if (AUTO_STOP && Date.now() - lastActivityAt >= IDLE_TIMEOUT_MS) {
+    try { detectHostIps(true); } catch { /* ignore */ }
+    try { if (fs.existsSync(WAKEUP_FILE)) fs.unlinkSync(WAKEUP_FILE); } catch { /* ignore */ }
+    console.log(`[host-bridge] Idle for ${Math.round((Date.now() - lastActivityAt) / 1000)}s with 0 active tasks. Auto-stopping to free RAM.`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 400).unref();
+  }
+}, 5_000).unref();
+
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    // Another Host Bridge instance is already listening on 4311
+    process.exit(0);
+  }
+  console.error('[host-bridge] server error:', err?.message || err);
 });
+
+server.listen(BRIDGE_PORT, '0.0.0.0', () => {
+  touchActivity();
+  try {
+    if (fs.existsSync(WAKEUP_FILE)) fs.unlinkSync(WAKEUP_FILE);
+  } catch { /* ignore */ }
+  console.log(`Work Office Host Bridge listening on port ${BRIDGE_PORT} (${AUTO_STOP ? `on-demand, auto-stop after ${Math.round(IDLE_TIMEOUT_MS / 1000)}s idle` : 'persistent'})`);
+});
+}

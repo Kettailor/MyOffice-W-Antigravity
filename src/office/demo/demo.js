@@ -256,7 +256,7 @@ export function applyMsg(d, quiet = false) {
   else if (d.k === 'access') { state.access = d.access || null; state.requireTaskApproval = !!d.access?.requireTaskApproval; if (d.teamMembers) { state.teamMembers = d.teamMembers; syncTeamMembers(d.teamMembers); } if (d.participants) state.participants = d.participants; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
   else if (d.k === 'teamOnline') { state.teamMembers = d.teamMembers || []; state.participants = d.participants || []; syncTeamMembers(state.teamMembers); renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
   else if (d.k === 'viewer') { state.viewer = d.viewer || null; state.requireTaskApproval = !!d.requireTaskApproval; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
-  else if (d.k === 'taskDeliver') { if (!quiet && d.sess) deliverTaskBy(d.by, d.sess, d.text); }
+  else if (d.k === 'taskDeliver') { if (!quiet && (d.sess || d.dir)) deliverTaskBy(d.by, d.sess, d.text, d.dir); }
   else if (d.k === 'acctlogin') acctLogin(d);   // (adding an account: a step of its sign-in)
   else if (d.k === 'acctswitch') acctSwitched(d);   // (new sessions moved to another account)
   else if (d.k === 'acctmove') { if (!quiet) acctMoved(d); }

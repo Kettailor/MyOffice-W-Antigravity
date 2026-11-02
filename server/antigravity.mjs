@@ -7,8 +7,86 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { execFile } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { redact } from './redact.mjs';
+
+let cachedNativeBin = undefined;
+export function findNativeRustBin() {
+  if (cachedNativeBin !== undefined) return cachedNativeBin;
+  const envBin = process.env.WORK_OFFICE_NATIVE_BIN;
+  const binName = process.platform === 'win32' ? 'work-office-native.exe' : 'work-office-native';
+  const candidates = [
+    ...(envBin ? [envBin] : []),
+    '/usr/local/bin/work-office-native',
+    path.join(process.cwd(), 'bin', binName),
+    path.join(process.cwd(), 'rust-native', 'target', 'release', binName),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) {
+        cachedNativeBin = c;
+        return c;
+      }
+    } catch { /* ignore */ }
+  }
+  cachedNativeBin = null;
+  return null;
+}
+
+function scanBrainWithRust(nativeBin, brainDirs) {
+  return new Promise((resolve) => {
+    execFile(nativeBin, ['--scan-brain', ...brainDirs], { timeout: 2500, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+      if (err || !stdout) { resolve(null); return; }
+      try {
+        const arr = JSON.parse(String(stdout));
+        if (!Array.isArray(arr)) { resolve(null); return; }
+        resolve(arr.map((item) => ({
+          convId: item.convId,
+          convDir: item.convDir,
+          transcriptFile: item.transcriptFile,
+          st: {
+            isFile: () => true,
+            size: Number(item.size) || 0,
+            mtimeMs: Number(item.mtimeMs) || 0,
+            birthtimeMs: Number(item.birthtimeMs) || Number(item.mtimeMs) || 0,
+          },
+        })));
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function tailTranscriptWithRust(nativeBin, transcriptFile, offset = 0) {
+  return new Promise((resolve) => {
+    execFile(nativeBin, ['--tail-transcript', transcriptFile, String(offset)], {
+      timeout: 3000,
+      maxBuffer: 12 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout) => {
+      if (err || !stdout) return resolve(null);
+      try {
+        const res = JSON.parse(stdout);
+        if (!res || !res.ok || !Array.isArray(res.lines)) return resolve(null);
+        resolve(res);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function capMap(map, max = 500, keep = 400) {
+  if (map.size <= max) return;
+  const drop = map.size - keep;
+  let i = 0;
+  for (const k of map.keys()) {
+    map.delete(k);
+    if (++i >= drop) break;
+  }
+}
 
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -29,15 +107,19 @@ try {
     for (const [k, v] of Object.entries(saved)) {
       if (v && typeof v === 'object') persistentMetaMap.set(k, v);
     }
+    capMap(persistentMetaMap, 600, 450);
   }
 } catch { /* first run or missing cache */ }
 
 try {
   const delSaved = JSON.parse(fs.readFileSync(DELETED_SESSIONS_FILE, 'utf8'));
   if (delSaved && typeof delSaved === 'object') {
+    const cutoff30d = Date.now() - 30 * 86400_000;
     for (const [k, v] of Object.entries(delSaved)) {
-      if (k) deletedConvIds.set(k, Number(v) || Date.now());
+      const ts = Number(v) || Date.now();
+      if (k && ts >= cutoff30d) deletedConvIds.set(k, ts);
     }
+    capMap(deletedConvIds, 500, 400);
   }
 } catch { /* first run or missing file */ }
 
@@ -46,6 +128,7 @@ function scheduleSaveSummaryCache() {
   saveCacheTimer = setTimeout(() => {
     saveCacheTimer = null;
     try {
+      capMap(persistentMetaMap, 600, 450);
       fs.mkdirSync(DATA_DIR, { recursive: true });
       const obj = Object.fromEntries(persistentMetaMap);
       fsp.writeFile(SUMMARY_CACHE_FILE, JSON.stringify(obj)).catch(() => {});
@@ -56,6 +139,11 @@ function scheduleSaveSummaryCache() {
 
 function saveDeletedSessions() {
   try {
+    const cutoff30d = Date.now() - 30 * 86400_000;
+    for (const [k, ts] of deletedConvIds) {
+      if (ts < cutoff30d) deletedConvIds.delete(k);
+    }
+    capMap(deletedConvIds, 500, 400);
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const obj = Object.fromEntries(deletedConvIds);
     fsp.writeFile(DELETED_SESSIONS_FILE, JSON.stringify(obj)).catch(() => {});
@@ -134,12 +222,20 @@ export function normalizeWorkspacePath(dir = '', knownRoots = []) {
 }
 
 // Reads ~/.gemini/config/projects/*.json to map project_id -> workspace root path (used by Antigravity CLI `agy`).
+let projectWsCache = { at: 0, mtimeMs: 0, map: new Map() };
 function readConfigProjectWorkspaces() {
+  const now = Date.now();
+  if (now - projectWsCache.at < 15_000 && projectWsCache.map.size > 0) return projectWsCache.map;
   const out = new Map();
   try {
     const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
     const projDir = path.join(home, '.gemini', 'config', 'projects');
     if (!fs.existsSync(projDir)) return out;
+    const st = fs.statSync(projDir);
+    if (st.mtimeMs === projectWsCache.mtimeMs && projectWsCache.map.size > 0) {
+      projectWsCache.at = now;
+      return projectWsCache.map;
+    }
     for (const f of fs.readdirSync(projDir)) {
       if (!f.endsWith('.json')) continue;
       try {
@@ -156,6 +252,7 @@ function readConfigProjectWorkspaces() {
         }
       } catch { /* ignore malformed project file */ }
     }
+    projectWsCache = { at: now, mtimeMs: st.mtimeMs, map: out };
   } catch { /* ignore */ }
   return out;
 }
@@ -935,6 +1032,7 @@ export function createAntigravityWatcher({
 }) {
   const states = new Map(); // convId -> { offset, mtimeMs, model, firstPrompt, lastStepType, lastStepHasTools, lastFeedbackAt, steps }
   const subStates = new Map(); // subConvId -> { offset, mtimeMs, steps, parentId }
+  const convStatCache = new Map(); // "${brain}|${convId}" -> { checkedAt, convDir, transcriptFile, st }
 
   function parseStepLine(line, s, st, liveEvents, knownRoots, fallbackTs = Date.now()) {
     if (!line.trim()) return false;
@@ -1079,14 +1177,15 @@ export function createAntigravityWatcher({
             const subAgent = formatSubagentRole(rawRole) || rawRole || 'Subagent';
             if (recId && (a.Role || a.Name || a.TypeName || a.SubagentType)) {
               subRoleByConvId.set(recId, { role: subAgent, typeName: String(a.TypeName || a.SubagentType || subAgent) });
+              capMap(subRoleByConvId, 500, 400);
             }
             const subLabel = clip(subAgent || 'Subagent', 28);
             const subDesc = clip(redact(oneLine(a.Prompt || a.Message || a.Description || '')), 70);
+            const provKey = recId || `prov-${subAgent.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}`;
             st.pendingSubCalls = (st.pendingSubCalls || 0) + 1;
             st.lastSubInvokeAt = ts || Date.now();
             if (Date.now() - ts < 60_000) {
               s.subs ||= {};
-              const provKey = recId || `prov-${subAgent.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}`;
               if (!s.subs[provKey]) {
                 s.subs[provKey] = {
                   id: provKey,
@@ -1106,7 +1205,7 @@ export function createAntigravityWatcher({
               liveEvents.push({
                 kind: 'substart',
                 ts,
-                agent: subAgent,
+                agent: provKey,
                 label: subLabel,
                 desc: subDesc,
               });
@@ -1131,7 +1230,10 @@ export function createAntigravityWatcher({
       } else if (typeof j.content === 'string' && j.content.trim()) {
         s.lastReply = clip(redact(oneLine(j.content.trim())), 240);
         usageChanged = true;
-        const hasActiveSubs = (st.pendingSubCalls || 0) > 0 || Object.keys(s.subs || {}).length > 0 || (s.bg && s.bg.size > 0);
+        if ((st.pendingSubCalls || 0) > 0 && st.lastSubInvokeAt > 0 && ts - st.lastSubInvokeAt > 5 * 60_000) {
+          st.pendingSubCalls = 0;
+        }
+        const hasActiveSubs = ((st.pendingSubCalls || 0) > 0 && Date.now() - ts < 5 * 60_000) || Object.keys(s.subs || {}).length > 0 || (s.bg && s.bg.size > 0);
         if (hasActiveSubs) {
           s.status = 'work';
           s.busy = true;
@@ -1146,6 +1248,11 @@ export function createAntigravityWatcher({
       }
     } else if (j.type === 'GENERIC') {
       st.lastStepType = 'GENERIC';
+    }
+    if (st.steps.length > 600 && st.steps[0]?.ts < cutoff8d) {
+      let drop = 0;
+      while (drop < st.steps.length && st.steps[drop].ts < cutoff8d) drop++;
+      if (drop > 0) st.steps.splice(0, drop);
     }
     return usageChanged;
   }
@@ -1215,6 +1322,11 @@ export function createAntigravityWatcher({
               }
             }
           }
+          if (subSt.steps.length > 300 && subSt.steps[0]?.ts < cutoff8d) {
+            let drop = 0;
+            while (drop < subSt.steps.length && subSt.steps[drop].ts < cutoff8d) drop++;
+            if (drop > 0) subSt.steps.splice(0, drop);
+          }
         }
       } finally { await fh.close(); }
     }
@@ -1236,6 +1348,7 @@ export function createAntigravityWatcher({
       if (meta.agentName || meta.title) {
         const cleanRole = formatSubagentRole(meta.agentName || meta.title) || meta.agentName || meta.title;
         subRoleByConvId.set(subCand.convId, { role: cleanRole, typeName: meta.agentName || meta.title });
+        capMap(subRoleByConvId, 500, 400);
       }
       const savedRole = subRoleByConvId.get(subCand.convId);
       const rawSubName = savedRole?.role || meta.agentName || meta.title || `sub-${subCand.convId.slice(0, 4)}`;
@@ -1243,21 +1356,51 @@ export function createAntigravityWatcher({
       const subLabel = clip(subName, 24);
       const subDesc = clip(meta.title || subSt.promptDesc || subName, 70);
       if (isRunning) {
-        for (const [k, v] of Object.entries(parentSession.subs)) {
-          if (v?.provisional) delete parentSession.subs[k];
-        }
         const prevSub = parentSession.subs[subCand.convId];
+        let matchedProvId = prevSub?.prevId || null;
+        let matchedProvSub = null;
+        if (!wasRunning || prevSub?.provisional) {
+          for (const [k, v] of Object.entries(parentSession.subs)) {
+            if (v?.provisional && v.type === subLabel) {
+              matchedProvId = k;
+              matchedProvSub = v;
+              break;
+            }
+          }
+          if (!matchedProvId) {
+            for (const [k, v] of Object.entries(parentSession.subs)) {
+              if (v?.provisional) {
+                matchedProvId = k;
+                matchedProvSub = v;
+                break;
+              }
+            }
+          }
+          if (matchedProvId && parentSession.subs[matchedProvId]?.provisional) {
+            delete parentSession.subs[matchedProvId];
+          }
+        } else {
+          for (const [k, v] of Object.entries(parentSession.subs)) {
+            if (v?.provisional && v.type === subLabel && k !== subCand.convId) {
+              matchedProvId = k;
+              matchedProvSub = v;
+              delete parentSession.subs[k];
+              break;
+            }
+          }
+        }
         const lastInfo = subSt.lastClassified
           ? { type: subSt.lastClassified.type, label: subSt.lastClassified.label }
-          : (prevSub?.last || { type: 'agent', label: clip(meta.title || subSt.promptDesc || 'Đang chạy tác vụ phụ', 60) });
+          : (prevSub?.last || matchedProvSub?.last || { type: 'agent', label: clip(meta.title || subSt.promptDesc || 'Đang chạy tác vụ phụ', 60) });
         parentSession.subs[subCand.convId] = {
           id: subCand.convId,
           type: subLabel,
           desc: subDesc,
           last: lastInfo,
-          startedAt: prevSub?.startedAt || subCand.st.birthtimeMs || subCand.st.mtimeMs,
+          startedAt: prevSub?.startedAt || matchedProvSub?.startedAt || subCand.st.birthtimeMs || subCand.st.mtimeMs,
           seenAt: subCand.st.mtimeMs,
           steps: meta.stepCount || subSt.steps.length || 1,
+          ...(matchedProvId ? { prevId: matchedProvId } : {}),
         };
         if (parentSession.status === 'rest') {
           parentSession.status = 'work';
@@ -1273,6 +1416,7 @@ export function createAntigravityWatcher({
             agent: subCand.convId,
             label: subLabel,
             desc: subDesc,
+            ...(matchedProvId ? { prevAgent: matchedProvId } : {}),
           };
           pushFeed(e);
           broadcast({ k: 'ev', e, s: pub(parentSession), stats: getStats() });
@@ -1333,7 +1477,7 @@ export function createAntigravityWatcher({
     return changed;
   }
 
-  async function syncConversation(convId, convDir, transcriptFile, fileStat, isPrimaryForWorkspace, workspaceIndex, dbMeta, knownRoots, hasActiveSubCandidate = false) {
+  async function syncConversation(convId, convDir, transcriptFile, fileStat, isPrimaryForWorkspace, workspaceIndex, dbMeta, knownRoots, hasActiveSubCandidate = false, nativeBin = null) {
     const key = 'a' + convId;
     let s = sessions.get(key);
     const isNew = !s;
@@ -1361,6 +1505,8 @@ export function createAntigravityWatcher({
 
     let st = states.get(convId);
     const initial = !st;
+    let resyncingTranscript = false;
+    const prevLastEventAt = s.lastEventAt || 0;
     if (!st) {
       st = {
         offset: 0,
@@ -1383,6 +1529,7 @@ export function createAntigravityWatcher({
       s.agySteps = st.steps;
       states.set(convId, st);
     } else if ((st.transcriptFile && st.transcriptFile !== transcriptFile) || fileStat.size < st.offset) {
+      resyncingTranscript = true;
       st.offset = 0;
       st.mtimeMs = 0;
       st.transcriptFile = transcriptFile;
@@ -1393,38 +1540,60 @@ export function createAntigravityWatcher({
     const liveEvents = [];
     let usageChanged = false;
     if (fileStat.size > st.offset) {
-      const fh = await fsp.open(transcriptFile, 'r');
-      try {
-        if (initial && fileStat.size > 12_000_000) {
-          // Very large transcript (>12 MB): read 256 KB head + 4 MB tail
-          const headBuf = Buffer.alloc(262144);
-          await fh.read(headBuf, 0, headBuf.length, 0);
-          for (const line of headBuf.toString('utf8').split(/\r?\n/)) {
-            if (parseStepLine(line, s, st, null, knownRoots, fileStat.mtimeMs)) usageChanged = true;
-          }
-          const tailLen = 4_000_000;
-          const tailBuf = Buffer.alloc(tailLen);
-          await fh.read(tailBuf, 0, tailLen, fileStat.size - tailLen);
-          const tailLines = tailBuf.toString('utf8').split(/\r?\n/);
-          tailLines.shift();
-          for (const line of tailLines) {
+      const readLen = fileStat.size - st.offset;
+      let handledByRust = false;
+      if (!initial && nativeBin && readLen > 262_144) {
+        const rustTail = await tailTranscriptWithRust(nativeBin, transcriptFile, st.offset);
+        if (rustTail && rustTail.ok) {
+          st.offset = Number(rustTail.nextOffset) || st.offset;
+          for (const line of rustTail.lines) {
             if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs)) usageChanged = true;
           }
-        } else {
-          const readLen = fileStat.size - st.offset;
-          const buf = Buffer.alloc(readLen);
-          await fh.read(buf, 0, readLen, st.offset);
-          const end = buf.lastIndexOf(0x0a);
-          if (end >= 0) {
-            st.offset += end + 1;
-            const lines = buf.subarray(0, end).toString('utf8').split(/\r?\n/);
-            for (const line of lines) {
+          handledByRust = true;
+        }
+      }
+      if (!handledByRust) {
+        const fh = await fsp.open(transcriptFile, 'r');
+        try {
+          if (initial && fileStat.size > 12_000_000) {
+            // Very large transcript (>12 MB): read 256 KB head + 4 MB tail
+            const headBuf = Buffer.alloc(262144);
+            await fh.read(headBuf, 0, headBuf.length, 0);
+            for (const line of headBuf.toString('utf8').split(/\r?\n/)) {
+              if (parseStepLine(line, s, st, null, knownRoots, fileStat.mtimeMs)) usageChanged = true;
+            }
+            const tailLen = 4_000_000;
+            const tailBuf = Buffer.alloc(tailLen);
+            await fh.read(tailBuf, 0, tailLen, fileStat.size - tailLen);
+            const tailLines = tailBuf.toString('utf8').split(/\r?\n/);
+            tailLines.shift();
+            for (const line of tailLines) {
               if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs)) usageChanged = true;
             }
+          } else {
+            const buf = Buffer.alloc(readLen);
+            await fh.read(buf, 0, readLen, st.offset);
+            const end = buf.lastIndexOf(0x0a);
+            if (end >= 0) {
+              st.offset += end + 1;
+              const lines = buf.subarray(0, end).toString('utf8').split(/\r?\n/);
+              for (const line of lines) {
+                if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs)) usageChanged = true;
+              }
+            }
           }
+          if (initial) st.offset = fileStat.size;
+        } finally { await fh.close(); }
+      }
+    }
+    if (resyncingTranscript && liveEvents.length > 0) {
+      const nowTs = Date.now();
+      for (let idx = liveEvents.length - 1; idx >= 0; idx--) {
+        const ev = liveEvents[idx];
+        if ((prevLastEventAt > 0 && ev.ts <= prevLastEventAt) || nowTs - (ev.ts || 0) > 8000) {
+          liveEvents.splice(idx, 1);
         }
-        if (initial) st.offset = fileStat.size;
-      } finally { await fh.close(); }
+      }
     }
 
     // Normalize s.cwd against known workspace roots so subfolders (e.g. e:\BioKit\apps\backend) group under e:\BioKit
@@ -1591,13 +1760,14 @@ export function createAntigravityWatcher({
       } else {
         // Fallback: >15s elapsed after all subagents finished with no new Main Agent turn
         const stopLabel = st.deferredStopLabel;
+        const stopTs = Math.max(st.lastSubStopAt || 0, st.deferredStopAt || 0, s.lastEventAt || 0, fileStat.mtimeMs || 0);
         st.deferredStopLabel = null;
         st.deferredStopAt = 0;
         s.status = 'rest';
         s.busy = false;
         s.inTool = false;
         s.waitCard = null;
-        s.doneAt = Date.now();
+        s.doneAt = initial ? (stopTs || Date.now()) : Date.now();
         if (!initial && !hookActive) {
           liveEvents.push({ kind: 'stop', ts: Date.now(), label: stopLabel });
         }
@@ -1607,6 +1777,7 @@ export function createAntigravityWatcher({
       s.busy = false;
       s.inTool = false;
       s.waitCard = null;
+      if (!s.doneAt) s.doneAt = s.lastEventAt || fileStat.mtimeMs || 0;
     }
     if (s.status !== 'wait') {
       s.waitCard = null;
@@ -1635,7 +1806,7 @@ export function createAntigravityWatcher({
           if (ev.kind === 'prompt') {
             pushFeed({ id: nextSeq(), ts: ev.ts, sess: s.id, name: s.name, type: 'prompt', label: ev.label });
           } else if (ev.kind === 'substart') {
-            pushFeed({ id: nextSeq(), ts: ev.ts, sess: s.id, name: s.name, type: 'substart', agent: ev.agent, label: ev.label, ...(ev.desc ? { desc: ev.desc } : {}) });
+            pushFeed({ id: nextSeq(), ts: ev.ts, sess: s.id, name: s.name, type: 'substart', agent: ev.agent, label: ev.label, ...(ev.desc ? { desc: ev.desc } : {}), ...(ev.prevAgent ? { prevAgent: ev.prevAgent } : {}) });
           } else if (ev.kind === 'tool') {
             const c = await classifyVi(ev.tool_name, ev.tool_input);
             const img = imageId(c.file);
@@ -1666,6 +1837,7 @@ export function createAntigravityWatcher({
             agent: ev.agent,
             label: ev.label,
             ...(ev.desc ? { desc: ev.desc } : {}),
+            ...(ev.prevAgent ? { prevAgent: ev.prevAgent } : {}),
           };
           pushFeed(e);
           broadcast({ k: 'ev', e, s: pub(s), stats: getStats() });
@@ -1715,28 +1887,50 @@ export function createAntigravityWatcher({
 
   async function scan() {
     const brainDirs = agyBrainDirs();
-    const byConvId = new Map();
-    for (const brain of brainDirs) {
-      let entries = [];
-      try { entries = await fsp.readdir(brain, { withFileTypes: true }); } catch { continue; }
-      for (const ent of entries) {
-        if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
-        const convDir = path.join(brain, ent.name);
-        const transcriptFile = path.join(convDir, '.system_generated', 'logs', 'transcript.jsonl');
-        try {
-          const st = await fsp.stat(transcriptFile);
-          if (st.isFile() && st.size > 0) {
-            const prev = byConvId.get(ent.name);
-            if (!prev || st.mtimeMs > prev.st.mtimeMs || (st.mtimeMs === prev.st.mtimeMs && st.size > prev.st.size)) {
-              byConvId.set(ent.name, { convId: ent.name, convDir, transcriptFile, st });
+    const isCustomEnv = Boolean(process.env.OFFICE_AGY_BRAIN_DIR);
+    const nativeBin = !isCustomEnv ? findNativeRustBin() : null;
+    let candidates = nativeBin ? await scanBrainWithRust(nativeBin, brainDirs) : null;
+    if (!candidates) {
+      const byConvId = new Map();
+      const scanNow = Date.now();
+      for (const brain of brainDirs) {
+        let entries = [];
+        try { entries = await fsp.readdir(brain, { withFileTypes: true }); } catch { continue; }
+        for (const ent of entries) {
+          if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
+          const convDir = path.join(brain, ent.name);
+          const transcriptFile = path.join(convDir, '.system_generated', 'logs', 'transcript.jsonl');
+          const cacheKey = `${brain}|${ent.name}`;
+          const cached = !isCustomEnv ? convStatCache.get(cacheKey) : null;
+          try {
+            let st;
+            if (cached && (scanNow - cached.st.mtimeMs > 3600_000) && (scanNow - cached.checkedAt < 15_000)) {
+              st = cached.st;
+            } else {
+              st = await fsp.stat(transcriptFile);
+              if (!isCustomEnv && st.isFile() && st.size > 0) {
+                convStatCache.set(cacheKey, { checkedAt: scanNow, convDir, transcriptFile, st });
+              }
             }
-          }
-        } catch { /* no transcript */ }
+            if (st.isFile() && st.size > 0) {
+              const prev = byConvId.get(ent.name);
+              if (!prev || st.mtimeMs > prev.st.mtimeMs || (st.mtimeMs === prev.st.mtimeMs && st.size > prev.st.size)) {
+                byConvId.set(ent.name, { convId: ent.name, convDir, transcriptFile, st });
+              }
+            }
+          } catch { /* no transcript */ }
+        }
+      }
+      candidates = [...byConvId.values()];
+      candidates.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+      if (convStatCache.size > 500) {
+        for (const [k, v] of convStatCache) {
+          if (scanNow - v.checkedAt > 10 * 60_000) convStatCache.delete(k);
+        }
+        capMap(convStatCache, 500, 400);
       }
     }
-    const candidates = [...byConvId.values()];
     if (!candidates.length) return;
-    candidates.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
 
     const dbSummary = readAgySummariesDb(brainDirs[0]);
     const knownRoots = dbSummary.roots || [];
@@ -1800,6 +1994,7 @@ export function createAntigravityWatcher({
         c.meta,
         knownRoots,
         activeSubParents.has(c.convId),
+        nativeBin,
       ).catch((err) => {
         console.error('agy sync', err);
         return false;
@@ -1823,10 +2018,14 @@ export function createAntigravityWatcher({
     for (const [key, s] of sessions) {
       if (s.isAgy && s.fromFile && !liveKeys.has(key)) {
         states.delete(s.sid);
+        for (const [subId, subSt] of subStates) {
+          if (subSt.parentId === s.sid) subStates.delete(subId);
+        }
         dropSession(key, s);
         anyUsageChanged = true;
       }
     }
+    capMap(subStates, 300, 220);
 
     if (anyUsageChanged && typeof onUsageChange === 'function') {
       onUsageChange();

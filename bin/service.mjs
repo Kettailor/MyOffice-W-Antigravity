@@ -56,19 +56,25 @@ export function serviceFor({ root, server, log, host, port }) {
   if (process.platform === 'win32') {
     const startup = path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
     const file = path.join(startup, 'My Office.vbs'), old = path.join(startup, 'Claude Office.vbs'), q = (s) => s.replace(/"/g, '""');   // (old: the name until 28/10/2026)
+    const bridge = path.join(root, 'server', 'host-bridge.mjs');
+    const bridgeUp = async () => { try { return (await fetch('http://127.0.0.1:4311/health', { signal: AbortSignal.timeout(1200) })).ok; } catch { return false; } };
     return {
       file, restart: `wscript "${file}"`,
       async install() {
         await fsp.mkdir(startup, { recursive: true }); await fsp.rm(old, { force: true });
         await fsp.writeFile(file, [
-          "' My Office: starts the office server at sign-in, without a window. Remove this file to stop that.",
+          "' My Office: starts the office server and host bridge at sign-in, without a window. Remove this file to stop that.",
           'Set sh = CreateObject("WScript.Shell")',
           'Set env = sh.Environment("Process")',
           ...Object.entries({ ...env, OFFICE_LOG: log }).map(([k, v]) => `env("${k}") = "${q(v)}"`),
           `sh.CurrentDirectory = "${q(root)}"`,
+          ...(fs.existsSync(bridge) ? [`sh.Run """${q(node)}"" ""${q(bridge)}"" --watchdog", 0, False`] : []),
           `sh.Run """${q(node)}"" ""${q(server)}""", 0, False`,
           '',
         ].join('\r\n'));
+        if (fs.existsSync(bridge) && !(await bridgeUp())) {
+          spawn(node, [bridge], { cwd: root, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        }
         if (!(await up())) spawn('wscript.exe', [file], { detached: true, stdio: 'ignore', windowsHide: true }).unref();   // and start it now
         return true;
       },

@@ -4,6 +4,7 @@ import { state } from '../core/state.js';
 import { $, el, fmtAgo, fmtBytes, fmtClock, hhmm, replay } from '../core/env.js';
 import { renderer } from '../scene/renderer.js';
 import { colorOf, dn, sessions } from '../people/workers.js';
+import { icon } from '../ui/icons.js';
 import { toast } from '../ui/activity.js';
 import { openSession } from '../ui/session-drawer.js';
 import { renderBell } from '../ui/topbar.js';
@@ -55,24 +56,79 @@ function renderTimeline() {
   const d = tl.data; if (!d) return;
   const { from, to } = d, W = to - from, pct = (t) => `${((t - from) / W) * 100}%`;
   const T = d.totals || {};
-  const kpi = (label, value, note, tone) => { const k = el('div', 'tl-kpi'); if (tone) k.dataset.tone = tone; k.append(el('b', null, value), el('span', null, label)); if (note) k.title = note; return k; };
-  $('tl-kpis').replaceChildren(
-    kpi(tr('timeline.kpi.wait'), T.wait ? fmtSpan(T.wait) : tr('time.min', { n: 0 }), tr('timeline.kpi.waitNote'), 'red'),
-    kpi(tr('timeline.kpi.turn'), T.turn ? fmtSpan(T.turn) : tr('time.min', { n: 0 }), tr('timeline.kpi.turnNote'), 'amber'),
-    kpi(tr('timeline.kpi.work'), T.work ? fmtSpan(T.work) : tr('time.min', { n: 0 }), tr('timeline.kpi.workNote')),
-    kpi(tr('timeline.kpi.prompts'), String(T.prompts || 0)),
+  const workMs = T.work || 0, waitMs = T.wait || 0, turnMs = T.turn || 0;
+  const hasAny = workMs + waitMs + turnMs > 0;
+  const totalMs = Math.max(1, workMs + waitMs + turnMs);
+  const workPct = hasAny ? Math.round((workMs / totalMs) * 100) : 0;
+  const waitPct = hasAny ? Math.round((waitMs / totalMs) * 100) : 0;
+  const restPct = hasAny ? Math.max(0, 100 - workPct - waitPct) : 0;
+
+  const kpi = ({ label, value, note, tone, ic, barPct, isEff }) => {
+    const k = el('div', 'tl-kpi');
+    if (tone) k.dataset.tone = tone;
+    const top = el('div', 'tl-kpi-top');
+    const icWrap = el('span', 'tl-kpi-ic');
+    icWrap.append(icon(ic || 'sparkle'));
+    const meta = el('div', 'tl-kpi-meta');
+    meta.append(el('b', null, value), el('span', null, label));
+    top.append(icWrap, meta);
+    if (typeof barPct === 'number' && !isEff) {
+      top.append(el('em', 'tl-kpi-pct', `${barPct}%`));
+    }
+    k.append(top);
+    if (isEff) {
+      const effWrap = el('div', 'tl-eff');
+      const bar = el('div', 'tl-kpi-bar tl-eff-bar');
+      bar.title = tr('timeline.kpi.effLabel');
+      const sWork = el('i', 'tl-eff-seg'); sWork.dataset.seg = 'work'; sWork.style.width = `${workPct}%`;
+      const sWait = el('i', 'tl-eff-seg'); sWait.dataset.seg = 'wait'; sWait.style.width = `${waitPct}%`;
+      const sRest = el('i', 'tl-eff-seg'); sRest.dataset.seg = 'rest'; sRest.style.width = `${restPct}%`;
+      bar.append(sWork, sWait, sRest);
+      const sub = el('div', 'tl-eff-legend');
+      sub.append(
+        el('small', 'tl-eff-tag is-work', tr('timeline.kpi.effWork', { pct: workPct })),
+        el('small', 'tl-eff-tag is-wait', tr('timeline.kpi.effWait', { pct: waitPct })),
+        el('small', 'tl-eff-tag is-rest', tr('timeline.kpi.effRest', { pct: restPct })),
+      );
+      effWrap.append(bar, sub);
+      k.append(effWrap);
+    } else if (typeof barPct === 'number') {
+      const bar = el('div', 'tl-kpi-bar'), fill = el('i');
+      fill.style.width = `${Math.max(hasAny && barPct > 0 ? 4 : 0, barPct)}%`;
+      bar.append(fill);
+      k.append(bar);
+    }
+    if (note) k.title = note;
+    return k;
+  };
+  const statsHost = $('tl-stats') || $('tl-kpis');
+  statsHost.replaceChildren(
+    kpi({ label: tr('timeline.kpi.work'), value: T.work ? fmtSpan(T.work) : tr('time.min', { n: 0 }), note: tr('timeline.kpi.workNote'), tone: 'green', ic: 'sparkle', barPct: workPct }),
+    kpi({ label: tr('timeline.kpi.wait'), value: T.wait ? fmtSpan(T.wait) : tr('time.min', { n: 0 }), note: tr('timeline.kpi.waitNote'), tone: 'red', ic: 'alert', barPct: waitPct }),
+    kpi({ label: tr('timeline.kpi.turn'), value: T.turn ? fmtSpan(T.turn) : tr('time.min', { n: 0 }), note: tr('timeline.kpi.turnNote'), tone: 'amber', ic: 'clock', barPct: restPct }),
+    kpi({ label: tr('timeline.kpi.prompts'), value: String(T.prompts || 0), tone: 'blue', ic: 'clipboard', isEff: true }),
   );
   const leg = $('tl-legend'); leg.replaceChildren();
   for (const k of ['think', 'read', 'edit', 'shell', 'web', 'agent', 'wait', 'turn']) { const c = el('span', 'tl-leg'); const sw = el('i'); sw.dataset.k = k; c.append(sw, document.createTextNode(kindLabel(k))); leg.append(c); }
-  const box = el('div', 'tl-grid');
+  const box = el('div', 'tl-grid tl-lanes');
+  box.id = 'tl-lanes';
   const axis = el('div', 'tl-row tl-axis'); const at = el('div', 'tl-track');
   for (const t of tlTicks(from, to)) { const k = el('span', 'tl-tick', hhmm(t)); k.style.left = pct(t); at.append(k); }
-  axis.append(el('div', 'tl-name'), at); box.append(axis);
+  const showNow = to >= Date.now() - 60e3;
+  if (showNow) {
+    const nowAxis = el('div', 'tl-now tl-now-line tl-now-axis');
+    nowAxis.style.left = pct(Date.now());
+    nowAxis.append(el('span', 'tl-now-badge', tr('timeline.now')));
+    at.append(nowAxis);
+  }
+  axis.append(el('div', 'tl-name tl-label'), at); box.append(axis);
   if (!d.rows.length) box.append(el('p', 'tl-empty', tl.range === 'yesterday' ? tr('timeline.nothingYesterday') : tr('timeline.nothingHere')));
   d.rows.forEach((r, ri) => {
     const line = el('div', 'tl-row' + (r.agent ? ' tl-row--sub' : ''));
-    const name = el('button', 'tl-name'); name.type = 'button';
-    const s = sessions.get(r.sess), dot = el('i'); dot.style.background = r.agent ? 'var(--blue)' : s ? colorOf(s) : '#5E687B';
+    const name = el('button', 'tl-name tl-label'); name.type = 'button';
+    const s = sessions.get(r.sess), dot = el('i');
+    dot.dataset.status = s?.status || 'rest';
+    dot.style.background = r.agent ? 'var(--blue)' : s ? colorOf(s) : '#5E687B';
     const proj = !r.agent && s?.dir ? String(s.dir).split('/').filter(Boolean).pop() : '';
     const tt = r.totals, note = r.agent ? fmtSpan(tt.work) : `${proj ? proj + ' · ' : ''}${tr('timeline.rowWork', { time: fmtSpan(tt.work) })}${tt.wait > 60e3 ? ` · ${tr('timeline.rowWait', { time: fmtSpan(tt.wait) })}` : ''}`;
     name.append(dot, el('b', null, (!r.agent && (dn(s) || r.title)) || rowName(r)), el('small', null, note));
@@ -81,15 +137,19 @@ function renderTimeline() {
     const track = el('div', 'tl-track');
     r.spans.forEach((x, si) => {
       if (x[2] === 'idle') return;
-      const b = el('div', 'tl-span'); b.dataset.k = x[2]; b.dataset.r = ri; b.dataset.s = si;
-      b.style.left = pct(x[0]); b.style.width = `max(2px, ${((x[1] - x[0]) / W) * 100}%)`;
+      const b = el('div', 'tl-span tl-seg');
+      b.dataset.k = x[2];
+      b.dataset.status = x[2] === 'wait' ? 'wait' : x[2] === 'turn' ? 'rest' : 'work';
+      b.dataset.r = ri;
+      b.dataset.s = si;
+      b.style.left = pct(x[0]); b.style.width = `max(3px, ${((x[1] - x[0]) / W) * 100}%)`;
       track.append(b);
     });
     for (const [t, k, label] of r.marks) {
       if (k !== 'prompt' && k !== 'fail' && k !== 'deploy') continue;
       const m = el('div', 'tl-mark'); m.dataset.k = k; m.style.left = pct(t); m.dataset.t = t; m.dataset.label = label || ''; track.append(m);
     }
-    if (to >= Date.now() - 60e3) { const now = el('div', 'tl-now'); now.style.left = pct(Date.now()); track.append(now); }
+    if (showNow) { const now = el('div', 'tl-now tl-now-line'); now.style.left = pct(Date.now()); track.append(now); }
     line.append(name, track); box.append(line);
   });
   const sc = $('tl-scroll'), keep = sc.scrollTop;

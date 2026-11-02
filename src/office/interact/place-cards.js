@@ -179,8 +179,8 @@ export function openPlace(id, from = null) {
   for (const [k, x] of Object.entries(PLACES)) x.el?.classList.toggle('zone--open', k === id);
   plc.dataset.place = id; plc.hidden = false;
   // glide the camera toward the place so its card has room (not in first person, not while following a session)
-  const pl = PLACES[id], at = pl?.pos || from?.center;
-  if (at && !fp.on && !state.selectedId) { focusTarget.set(at.x * 0.75, Math.min(at.y, 1.5), at.z * 0.75); state.lastUserCam = performance.now(); setView(null); }
+  const pl = PLACES[id], at = from?.center || pl?.pos;
+  if (at && !fp.on && !state.selectedId) { const k = PRO ? 1 : 0.75; focusTarget.set(at.x * k, Math.min(at.y, 1.2), at.z * k); state.lastUserCam = performance.now(); setView(null); }
   renderPlace(true);
 }
 export function closePlace() { if (!plcState.id) return; PLACES[plcState.id]?.el?.classList.remove('zone--open'); plcState.id = null; plc.hidden = true; }

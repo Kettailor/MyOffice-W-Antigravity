@@ -48,7 +48,7 @@ function optimizeStatic() {
   const denyObj = new Set([board, doorPivot, rocket, globeTilt, clockG, cat.g, vac.g, paper, ledMesh, ...bins.map((b) => b.g), ...fishes.map((f) => f.g), ...bubbles,
     ...weeds.map((w) => w.w), ...devPool.map((b) => b.g), ...DESKS.flatMap((d) => [d.chair.userData.back, d.bed.blanket, d.bed.folded]), ...(PRO ? PRO_FX.stalls.map((x) => x.pivot) : [])]);
   const denied = (o) => { for (let q = o; q; q = q.parent) if (denyObj.has(q) || q.userData.worker || q.userData.dynamic || q.userData.noMerge) return true; return false; };
-  const mergeable = (m) => m.isMesh && !m.isInstancedMesh && !m.isSkinnedMesh && m.visible && !Array.isArray(m.material) && m.material && !m.material.transparent
+  const mergeable = (m) => m?.isMesh && !!m.parent && !m.isInstancedMesh && !m.isSkinnedMesh && m.visible && !Array.isArray(m.material) && m.material && !m.material.transparent
     && !denyMat.has(m.material) && !m.children.length && !m.geometry.morphAttributes?.position && !denied(m);
   // roughness to the nearest quarter and metalness to the nearest half: a part at 0.4 and one at 0.6 look the same at
   // this distance, and merging them saves a draw call per desk (and its shadow), 44 times over on the headquarters floor
@@ -59,12 +59,14 @@ function optimizeStatic() {
   function mergeInto(meshes, container) {
     container.updateMatrixWorld(true); inv.copy(container.matrixWorld).invert();
     const buckets = new Map();
-    for (const m of meshes) if (mergeable(m)) { const k = sig(m); if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(m); }
+    const uniqueMeshes = new Set(meshes);
+    for (const m of uniqueMeshes) if (mergeable(m)) { const k = sig(m); if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(m); }
     const made = [];
     for (const list of buckets.values()) {
       if (list.length < 2) continue;
       const geos = [], used = [];
       for (const m of list) {
+        if (!m.parent) continue;
         rel.multiplyMatrices(inv, m.matrixWorld);
         if (rel.determinant() < 0) continue;   // mirrored parts would turn inside out
         let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
@@ -83,7 +85,7 @@ function optimizeStatic() {
       if (typeof material.roughness === 'number') { material.roughness = q(material.roughness, 0.25); material.metalness = q(material.metalness, 0.5); }
       const mesh = new THREE.Mesh(geo, material); mesh.castShadow = used[0].castShadow; mesh.receiveShadow = used[0].receiveShadow;
       container.add(mesh);
-      for (const m of used) m.parent.remove(m);
+      for (const m of used) m.removeFromParent();
       made.push({ mesh, used });
     }
     return made;

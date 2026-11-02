@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { cpuFromDelta, kidsOf, readText, sh } from './shared.mjs';
+import { findNativeRustBin } from '../antigravity.mjs';
 
 export const NAME = 'Windows';
 const HOME = os.homedir();
@@ -22,7 +23,7 @@ export let UID = -1;   // this server's session, known after the first reading
 
 const SCRIPT = `$ErrorActionPreference='SilentlyContinue'
 $e=[datetime]'1970-01-01'
-$p=Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ i=$_.ProcessId; pp=$_.ParentProcessId; n=$_.Name; x=$_.ExecutablePath; c=$_.CommandLine; w=$_.WorkingSetSize; t=[double]($_.KernelModeTime+$_.UserModeTime); s=$(if($_.CreationDate){[int64]($_.CreationDate.ToUniversalTime()-$e).TotalSeconds}else{0}); se=$_.SessionId } }
+$p=Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,WorkingSetSize,KernelModeTime,UserModeTime,CreationDate,SessionId | ForEach-Object { [pscustomobject]@{ i=$_.ProcessId; pp=$_.ParentProcessId; n=$_.Name; x=$_.ExecutablePath; c=$_.CommandLine; w=$_.WorkingSetSize; t=[double]($_.KernelModeTime+$_.UserModeTime); s=$(if($_.CreationDate){[int64]($_.CreationDate.ToUniversalTime()-$e).TotalSeconds}else{0}); se=$_.SessionId } }
 $f=Get-CimInstance Win32_PageFileUsage | Measure-Object -Property AllocatedBaseSize,CurrentUsage -Sum
 $t=Get-NetTCPConnection | ForEach-Object { [pscustomobject]@{ l=$_.LocalPort; s=[int]$_.State; o=$_.OwningProcess } }
 [pscustomobject]@{ p=@($p); fa=($f|Where-Object Property -eq 'AllocatedBaseSize').Sum; fu=($f|Where-Object Property -eq 'CurrentUsage').Sum; t=@($t) } | ConvertTo-Json -Compress -Depth 3`;
@@ -72,11 +73,55 @@ export function cpuPercent() {
   return lastCpuPct;
 }
 
+export function parseNetstat(text = '') {
+  const out = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith('TCP')) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 5) continue;
+    const localAddr = parts[1] || '';
+    const foreignAddr = parts[2] || '';
+    const stateStr = (parts[3] || '').toUpperCase();
+    const pid = Number(parts[parts.length - 1]) || 0;
+    const portMatch = /:(\d+)$/.exec(localAddr);
+    if (!portMatch) continue;
+    const port = Number(portMatch[1]) || 0;
+    if (!port) continue;
+    let state = 0;
+    if (stateStr === 'LISTENING' || stateStr === 'LISTEN' || /:0$/.test(foreignAddr)) {
+      state = LISTEN;
+    } else if (stateStr === 'ESTABLISHED') {
+      state = ESTABLISHED;
+    }
+    if (state) out.push({ port, state, pid });
+  }
+  return out;
+}
+
 let last = null, lastAt = 0, reading = null;
 const cpuState = { prev: null, at: 0 };
 function read() {
-  if (last && Date.now() - lastAt < 4000) return Promise.resolve(last);
-  reading ??= sh('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', SCRIPT], 30000).then((out) => {
+  if (last && Date.now() - lastAt < 8000) return Promise.resolve(last);
+  reading ??= (async () => {
+    const nativeBin = findNativeRustBin();
+    if (nativeBin) {
+      const [rustOut, netOut] = await Promise.all([
+        sh(nativeBin, ['--sys-win32'], 4000),
+        sh('netstat.exe', ['-ano', '-p', 'tcp'], 3000),
+      ]);
+      const r = parseReading(rustOut);
+      if (r && r.procs.size > 0) {
+        r.tcp = parseNetstat(netOut);
+        cpuFromDelta(cpuState, r.procs);
+        const me = r.procs.get(process.pid);
+        if (me) UID = me.uid;
+        last = r;
+        lastAt = Date.now();
+        return r;
+      }
+    }
+    const out = await sh('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', SCRIPT], 30000);
     const r = parseReading(out);
     if (r) {
       cpuFromDelta(cpuState, r.procs);
@@ -84,7 +129,7 @@ function read() {
       last = r; lastAt = Date.now();
     }
     return last || { procs: new Map(), pageTotal: 0, pageUsed: 0, tcp: [] };
-  }).finally(() => { reading = null; });
+  })().finally(() => { reading = null; });
   return reading;
 }
 export async function processes() { const r = await read(); return { procs: r.procs, kids: kidsOf(r.procs) }; }

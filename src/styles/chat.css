@@ -1,11 +1,11 @@
 /* Conversation, markdown, tool steps. */
 /* conversation */
-.chat { display: flex; flex-direction: column; gap: 12px; }
+.chat { display: flex; flex-direction: column; gap: 11px; }
 .chat-day { display: flex; align-items: center; gap: 10px; margin: 6px 0 -2px; font: 700 .62rem/1 var(--font); letter-spacing: .09em; text-transform: uppercase; color: var(--faint); }
 .chat-day::before, .chat-day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-.msg { position: relative; min-width: 0; font-size: .875rem; line-height: 1.62; color: var(--ink); overflow-wrap: anywhere; }
-.msg--claude { align-self: stretch; padding: 11px 14px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
-.msg--user { align-self: flex-end; max-width: 88%; padding: 9px 14px 11px; background: #243450; border: 1px solid rgba(106, 174, 255, .2); border-radius: 16px 16px 5px 16px; }
+.msg { position: relative; min-width: 0; font-size: .88rem; line-height: 1.64; color: var(--ink); overflow-wrap: anywhere; }
+.msg--claude { align-self: stretch; padding: 12px 15px 13px; background: linear-gradient(180deg, rgba(30, 39, 52, .85), rgba(22, 29, 40, .95)); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: 0 3px 10px rgba(0, 0, 0, .2); }
+.msg--user { align-self: flex-end; max-width: 90%; padding: 10px 14px 11px; background: linear-gradient(145deg, #273A5B, #1E2E4A); border: 1px solid rgba(106, 174, 255, .28); border-radius: 16px 16px 5px 16px; box-shadow: 0 3px 10px rgba(0, 0, 0, .2); }
 .msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: .7rem; color: var(--muted); min-height: 22px; }
 .msg-head b { font-size: .76rem; font-weight: 700; color: var(--ink); }
 .msg--user .msg-head { justify-content: flex-end; margin-bottom: 3px; }
@@ -17,7 +17,7 @@
 .msg:hover .msg-copy, .msg-copy:focus-visible { opacity: 1; }
 .msg-copy:hover { background: var(--card-3); color: var(--ink); }
 @media (hover: none) { .msg-copy { opacity: .7; } }
-.msg-body.is-clamped { max-height: 17.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 72%, transparent); mask-image: linear-gradient(#000 72%, transparent); }
+.msg-body.is-clamped { max-height: 28em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 82%, transparent); mask-image: linear-gradient(#000 82%, transparent); }
 .msg-more { all: unset; display: inline-block; margin-top: 6px; font-size: .74rem; font-weight: 700; color: var(--accent); cursor: pointer; }
 .msg-more:hover { text-decoration: underline; }
 .msg-more:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }

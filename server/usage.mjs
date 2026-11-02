@@ -28,7 +28,14 @@ const files = new Map();   // path -> { offset, seen: Map(message id -> output t
 async function readNew(file) {
   let st; try { st = await fsp.stat(file); } catch { return null; }
   let f = files.get(file);
-  if (!f || st.size < f.offset) { f = { offset: 0, seen: new Map() }; files.set(file, f); }
+  if (!f || st.size < f.offset) {
+    if (files.size >= 200 && !files.has(file)) {
+      const oldest = files.keys().next().value;
+      if (oldest !== undefined) files.delete(oldest);
+    }
+    f = { offset: 0, seen: new Map() };
+    files.set(file, f);
+  }
   if (st.size === f.offset) return null;
   const len = Math.min(CHUNK, st.size - f.offset), buf = Buffer.alloc(len);
   const fh = await fsp.open(file, 'r');

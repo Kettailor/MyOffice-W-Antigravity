@@ -1,6 +1,7 @@
 export default {
   chip: {
     director: 'Phòng Giám đốc',
+    coDirectorOffice: 'Phòng Đồng Giám đốc',
     meeting: 'Phòng họp',
     libraryPro: 'Thư viện · tra cứu',
     library: 'Thư viện',

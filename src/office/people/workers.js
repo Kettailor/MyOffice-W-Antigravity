@@ -1,7 +1,7 @@
 // Workers: one character per session or subagent, what they do and where they walk.
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { makeChibi, chibiPose, applyChibiPose, wearOuter, wearHat } from './chibi-rig.js';
+import { makeChibi, chibiPose, applyChibiPose, wearOuter, wearHat, disposeChibi } from './chibi-rig.js';
 import { state } from '../core/state.js';
 import { HQ, PRO, SEASON, V2, el, fmtAgo, nowMs, officeNow, rand, randInt, reduceMotion, replay, short, tint, wrapAngle } from '../core/env.js';
 import { ACT, ANIM_AT, bubbleText, verb } from '../ui/event-text.js';
@@ -9,9 +9,10 @@ import { TYPE_ICON, icon } from '../ui/icons.js';
 import { scene } from '../scene/renderer.js';
 import { canvasTex } from '../scene/blocks.js';
 import { inside } from '../world/layout.js';
-import { lift, liftArrive } from '../world/entrance.js';
+import { lift, liftArrive, liftCall } from '../world/entrance.js';
 import { BAGS, CHAIR_IDLE, COATS, chairs, deskKit } from '../world/desks.js';
-import { CLAUDE_MARK } from '../world/pro/pieces.js';
+import { CLAUDE_MARK, PRO_FX } from '../world/pro/pieces.js';
+import { MEET_ROOMS, MEET_SEATS_BY_ROOM } from '../world/furniture/meeting.js';
 import { DESK_SPOTS, DOOR_IN, DOOR_OUT, NODES, STATIONS, allocate, faceTo, nearestNode, route } from './navigation.js';
 import { COFFEE_Q, hideMeal, joinCoffee, leaveCoffee, showMeal } from './breaks.js';
 import { blocked, fp } from '../interact/first-person.js';
@@ -23,12 +24,23 @@ export const PALETTE = ['#6A8042', '#E8742A', '#3F7CC4', '#8C4FA8', '#D64550', '
 const HAIRS = ['#3B2618', '#1E1E24', '#9A4A24', '#E2B04A', '#5A3825', '#2B2B2B', '#C2703D', '#7A4E2D'];
 const STYLES = ['bob', 'spiky', 'ponytail', 'bun', 'plain', 'curly'];
 const ACCS = ['headphones', 'glasses', 'beanie', 'cap', null, null, null];
+// 4 phòng ban chuyên môn trong trụ sở HQ:
+// 0: UI · Front-end (#0EA5E9), 1: Back-end · API (#F97316), 2: BA · Research (#8B5CF6), 3: QA · Kiểm thử (#10B981)
+export const DEPT_INFO = [
+  { idx: 0, badge: 'UI', color: '#0EA5E9', shirt: '#0EA5E9', pants: '#1E3A5F', acc: 'headphones', style: 'bob' },
+  { idx: 1, badge: 'BE', color: '#F97316', shirt: '#F97316', pants: '#27272A', acc: 'glasses', style: 'spiky' },
+  { idx: 2, badge: 'BA', color: '#8B5CF6', shirt: '#8B5CF6', pants: '#312E81', acc: 'glasses', style: 'bun' },
+  { idx: 3, badge: 'QA', color: '#10B981', shirt: '#10B981', pants: '#064E3B', acc: 'cap', style: 'ponytail' },
+];
+const TOOL_STEP_TYPES = new Set(['read', 'grep', 'glob', 'skill', 'edit', 'write', 'bash', 'web', 'fetch', 'mcp', 'test', 'testok', 'testfail', 'commit', 'push', 'pull', 'deploy', 'compact', 'other']);
+const BUSY_ANIMS = new Set(['type', 'console', 'read', 'board', 'globe', 'tidy', 'sleep', 'wake']);
 // set by outings.js (with the city outside): home(w, gone) takes someone leaving out by the street (true if it does),
 // arrive(w) brings someone back the same way
 export const streetHooks = {};
 // the attendance terminal by the lift (people/hr.js): in(w, then) on the way in from the lift, out(w, then) on the way out,
 // newcomer(w) for a session's first walk in; each calls then() when done (straight away when there is nothing to do)
 export const clockHooks = {};
+export const awayHooks = {};
 const viaClock = (kind, w, then) => (clockHooks[kind] ? clockHooks[kind](w, then) : then());
 export function hash(s) { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
 export const colorOf = (s) => (s.desk >= 0 ? PALETTE[s.desk % PALETTE.length] : PALETTE[hash(s.name) % PALETTE.length]);
@@ -66,10 +78,296 @@ export function updateZs(dt) {
 }
 function lookOf(s) { const h = hash(s.name); return { shirt: colorOf(s), hair: HAIRS[h % HAIRS.length], style: STYLES[(h >>> 3) % STYLES.length], acc: ACCS[(h >>> 7) % ACCS.length], coat: COATS[(h >>> 11) % COATS.length], bag: BAGS[(h >>> 15) % BAGS.length] }; }
 export const workers = new Map();   // session id -> Worker
-export const npcs = [];             // people who aren't sessions: the director on the company floor
+export const npcs = [];             // people who aren't sessions: the director on the company floor + idle deptStaff
+export const deptWorkers = [];      // standing department staff (3-4 per department)
 export const subs = new Map();      // subagent id -> Worker
 export const sessions = new Map();  // session id -> latest session object from the server
 export let Worker;
+
+const pickList = (key) => {
+  const l = tr(key, null, 'list');
+  return Array.isArray(l) ? l[Math.floor(Math.random() * l.length)] : l;
+};
+
+export function rekeySub(oldId, newId, info = null) {
+  if (!oldId || !newId || oldId === newId || !subs.has(oldId)) return subs.get(newId) || null;
+  const sw = subs.get(oldId);
+  subs.delete(oldId);
+  if (subs.has(newId)) {
+    // Target already exists; silently release the duplicate provisional worker
+    releaseSubWorkerImmediate(sw);
+    return subs.get(newId);
+  }
+  sw.id = newId;
+  if (info?.desc) sw.desc = info.desc;
+  if (info?.type && info.type !== 'agent') {
+    const deptCfg = DEPT_INFO[sw.dept ?? 0] || DEPT_INFO[0];
+    const rawName = info.type;
+    const displayName = /^\[[A-Z]{2,3}\]/.test(rawName) ? rawName : `[${deptCfg.badge}] ${short(rawName, 22)}`;
+    sw.setName(displayName);
+  }
+  subs.set(newId, sw);
+  return sw;
+}
+
+function releaseSubWorkerImmediate(w) {
+  if (!w) return;
+  leaving.delete(w);
+  if (w.deptStaff && !w.isTempSupport) {
+    w.busySub = false; w.sub = false; w.isSub = false; w.parent = null; w.id = w.defaultId; w.desc = ''; w.want = null; w.reportingToBoss = false;
+    w.inBriefing = false; w.briefGuestOf = null; w.deferredSubAct = null; w.hurry = false;
+    w.tagEl.classList.remove('tag--sub');
+    w.setName(w.defaultName);
+    if (!npcs.includes(w)) npcs.push(w);
+    const seat = w.subDesk >= 0 ? DESK_SPOTS[w.subDesk] : null;
+    if (seat) {
+      if ('by' in seat) seat.by = w;
+      w.pos.set(seat.x, seat.z); w.spot = seat; w.face = w.faceTarget = seat.face; w.pose = 'sit'; w.station = 'desk'; w.anim = 'type';
+      deskKit[w.subDesk] = w;
+    }
+  } else {
+    w.remove();
+  }
+}
+
+function deferMainAction(w, a) {
+  if (!w || !a) return;
+  w.deferredWork ||= [];
+  const isStop = a.type === 'stop' || a.station === 'director';
+  const existingStopIdx = w.deferredWork.findIndex((x) => x.type === 'stop' || x.station === 'director');
+  if (isStop) {
+    if (existingStopIdx >= 0) w.deferredWork.splice(existingStopIdx, 1);
+    w.deferredWork.push(a);
+    return;
+  }
+  if (existingStopIdx >= 0) {
+    w.deferredWork.splice(existingStopIdx, 0, a);
+  } else {
+    w.deferredWork.push(a);
+  }
+  while (w.deferredWork.length > 5) w.deferredWork.shift();
+}
+
+function popDeferredMainAction(w) {
+  if (!w?.deferredWork?.length) return null;
+  const stopIdx = w.deferredWork.findIndex((x) => x.type === 'stop' || x.station === 'director');
+  if (stopIdx >= 0) {
+    const [stopAct] = w.deferredWork.splice(stopIdx, 1);
+    w.deferredWork.length = 0;
+    return stopAct;
+  }
+  const nextAct = w.deferredWork.pop();
+  w.deferredWork.length = 0;
+  return nextAct;
+}
+
+function checkBossSubsDone(boss) {
+  if (!boss) return;
+  const activeCount = [...subs.values()].filter((sw) => sw.parent === boss).length;
+  const reportingCount = [...npcs, ...leaving].filter((sw) => sw.reportingToBoss && sw.parent === boss).length;
+  const guestCount = deptWorkers.filter((dw) => dw.briefGuestOf === boss && dw.inBriefing).length;
+  boss.setTeam(activeCount);
+  if (activeCount === 0 && reportingCount === 0 && guestCount === 0 && !boss.inSubBrief && boss.waitingForSubs) {
+    boss.waitingForSubs = false;
+    boss.inSubBrief = false;
+    boss.briefRoomIdx = null;
+    if (boss.deferredWork?.length) {
+      const nextAct = popDeferredMainAction(boss);
+      if (nextAct && !boss.want) boss.push(nextAct);
+    }
+    if (!boss.want && !boss.leaving && (boss.station === 'phone' || boss.station === 'meeting')) {
+      const s = sessions.get(boss.id);
+      if (s?.status === 'rest') {
+        boss.goHomeAndRest();
+      } else {
+        const home = boss.homeSpot();
+        const d = s?.desk ?? -1;
+        boss.goTo(home, () => {
+          boss.station = 'desk';
+          boss.pose = home.sit ? 'sit' : 'stand';
+          boss.anim = 'type';
+          if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = boss;
+        });
+      }
+    }
+  }
+}
+
+function pickBriefRoom(parent) {
+  if (parent.briefRoomIdx != null && MEET_SEATS_BY_ROOM[parent.briefRoomIdx]) return parent.briefRoomIdx;
+  const usedRooms = new Set();
+  for (const w of workers.values()) if (w !== parent && w.briefRoomIdx != null) usedRooms.add(w.briefRoomIdx);
+  for (let r = 0; r < MEET_ROOMS.length; r++) {
+    if (!usedRooms.has(r)) return r;
+  }
+  return hash(parent.id || '0') % Math.max(1, MEET_ROOMS.length);
+}
+
+function scheduleSubBriefing(parent) {
+  if (!parent || parent.leaving || parent.callingPhone || replay.on || reduceMotion || document.hidden) return;
+  parent.waitingForSubs = true;
+  if (parent.briefTimer) clearTimeout(parent.briefTimer);
+  parent.briefTimer = setTimeout(() => {
+    parent.briefTimer = null;
+    runSubBriefing(parent);
+  }, 80);
+}
+
+function runSubBriefing(parent) {
+  if (!parent || parent.leaving || parent.callingPhone || !workers.has(parent.id)) return;
+  const teamSubs = [...subs.values()].filter((sw) => sw.parent === parent && !sw.leaving && !sw.callingPhoneWait);
+  const participants = teamSubs.slice(0, 6);
+  if (participants.length === 0) {
+    parent.inSubBrief = false;
+    parent.hurry = false;
+    for (const sw of [...subs.values()].filter((x) => x.parent === parent)) {
+      sw.callingPhoneWait = false;
+      sw.inBriefing = false;
+      sw.offstage = false;
+      if (sw.pendingDropReport != null) {
+        const rep = sw.pendingDropReport;
+        sw.pendingDropReport = null;
+        dropSub(sw.id, rep);
+      }
+    }
+    checkBossSubsDone(parent);
+    if (parent.station !== 'desk' && !parent.want && !parent.leaving) {
+      const home = parent.homeSpot();
+      const d = sessions.get(parent.id)?.desk ?? -1;
+      parent.goTo(home, () => {
+        parent.station = 'desk';
+        parent.pose = home.sit ? 'sit' : 'stand';
+        parent.anim = 'type';
+        if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = parent;
+      });
+    }
+    return;
+  }
+  const roomIdx = pickBriefRoom(parent);
+  parent.briefRoomIdx = roomIdx;
+  parent.waitingForSubs = true;
+  parent.inSubBrief = true;
+  parent.hurry = true;
+  const rm = MEET_ROOMS[roomIdx] || MEET_ROOMS[0];
+  const seats = MEET_SEATS_BY_ROOM[roomIdx] || MEET_SEATS_BY_ROOM[0] || STATIONS.meeting;
+  const bossSeat = seats[0] || STATIONS.brief?.[roomIdx] || parent.homeSpot();
+  const promptText = short(sessions.get(parent.id)?.lastPrompt || tr('people.newTask'), 38);
+
+  const totalAttendees = 1 + participants.length;
+  let arrivedCount = 0;
+  let meetingStarted = false;
+
+  const finishBriefing = () => {
+    if (parent.briefWalkTimer) { clearTimeout(parent.briefWalkTimer); parent.briefWalkTimer = null; }
+    if (parent.briefEndTimer) { clearTimeout(parent.briefEndTimer); parent.briefEndTimer = null; }
+    parent.inSubBrief = false;
+    parent.hurry = false;
+    const stillHasSubs = [...subs.values()].some((sw) => sw.parent === parent && !sw.leaving);
+    if (!stillHasSubs) {
+      parent.waitingForSubs = false;
+      parent.briefRoomIdx = null;
+    }
+    // Main Agent returns straight to sit at its own workspace desk after everyone finishes the meeting briefing
+    if (workers.get(parent.id) === parent && !parent.leaving) {
+      const home = parent.homeSpot();
+      const d = sessions.get(parent.id)?.desk ?? -1;
+      parent.goTo(home, () => {
+        parent.station = 'desk';
+        parent.pose = home.sit ? 'sit' : 'stand';
+        parent.anim = 'type';
+        if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = parent;
+        if (!parent.waitingForSubs && parent.deferredWork?.length) {
+          const nextAct = popDeferredMainAction(parent);
+          if (nextAct && !parent.want) parent.push(nextAct);
+        }
+      });
+    }
+    // Each Subagent starts its subsequent task/action after the meeting finishes
+    for (const sw of [...subs.values()].filter((x) => x.parent === parent)) {
+      sw.inBriefing = false;
+      sw.hurry = false;
+      sw.dress(false);
+      if (sw.deferredSubAct) {
+        const act = sw.deferredSubAct;
+        sw.deferredSubAct = null;
+        sw.push(act);
+        if (sw.pendingDropReport != null) {
+          const rep = sw.pendingDropReport;
+          sw.pendingDropReport = null;
+          setTimeout(() => { if (subs.has(sw.id)) dropSub(sw.id, rep); }, 1400);
+        }
+      } else if (sw.pendingDropReport != null) {
+        const rep = sw.pendingDropReport;
+        sw.pendingDropReport = null;
+        setTimeout(() => { if (subs.has(sw.id)) dropSub(sw.id, rep); }, 600);
+      } else if (!sw.want) {
+        const seat = sw.homeSpot();
+        sw.goTo(seat, () => {
+          sw.station = 'meeting';
+          sw.pose = seat.sit ? 'sit' : 'stand';
+          sw.anim = 'type';
+          sw.say('agent', sw.desc || tr('people.subThinking'));
+        });
+      }
+    }
+  };
+
+  const startMeetingHold = () => {
+    if (meetingStarted) return;
+    meetingStarted = true;
+    if (parent.briefWalkTimer) { clearTimeout(parent.briefWalkTimer); parent.briefWalkTimer = null; }
+    if (parent.briefEndTimer) clearTimeout(parent.briefEndTimer);
+    const holdMs = sessions.get(parent.id)?.status === 'rest' ? 500 : 1100;
+    parent.briefEndTimer = setTimeout(finishBriefing, holdMs);
+  };
+
+  const onMemberArrived = () => {
+    arrivedCount++;
+    if (arrivedCount >= totalAttendees) startMeetingHold();
+  };
+
+  if (parent.briefWalkTimer) clearTimeout(parent.briefWalkTimer);
+  if (parent.briefEndTimer) { clearTimeout(parent.briefEndTimer); parent.briefEndTimer = null; }
+  parent.briefWalkTimer = setTimeout(startMeetingHold, 2400);
+
+  if (parent.want) {
+    deferMainAction(parent, parent.want);
+    parent.want = null;
+  }
+  parent.goTo(bossSeat, () => {
+    if (!parent.waitingForSubs) return;
+    parent.station = 'meeting';
+    parent.pose = bossSeat.sit ? 'sit' : 'stand';
+    parent.faceTarget = faceTo(parent.pos.x, parent.pos.y, rm.x, rm.z);
+    parent.anim = 'board';
+    parent.say('agent', tr('people.handOver', { what: promptText }));
+    onMemberArrived();
+  });
+
+  participants.forEach((sw, idx) => {
+    const seat = seats[Math.min(idx + 1, seats.length - 1)] || bossSeat;
+    sw.meetSeat = seat;
+    sw.inBriefing = true;
+    sw.hurry = true;
+    const walkToSeat = () => {
+      sw.dress(false);
+      sw.goTo(seat, () => {
+        sw.station = 'meeting';
+        sw.pose = seat.sit ? 'sit' : 'stand';
+        sw.faceTarget = faceTo(sw.pos.x, sw.pos.y, rm.x, rm.z);
+        sw.anim = idx % 2 === 0 ? 'idle' : 'read';
+        sw.say('agent', tr('people.subOnIt', { task: short(sw.desc || sw.subType || promptText || tr('people.subagent'), 44) }));
+        onMemberArrived();
+      });
+    };
+    if (sw.enteringFromLift) {
+      sw.enteringFromLift = false;
+      sw.goTo(DOOR_IN, walkToSeat);
+    } else {
+      walkToSeat();
+    }
+  });
+}
 export function addWorker(s, walkIn) {
   const w = new Worker({ name: s.name, ...lookOf(s) }, { id: s.id });
   if (s.desk >= 0 && s.desk < chairs.length && chairs[s.desk]) chairs[s.desk].color.set(colorOf(s));
@@ -80,6 +378,7 @@ export function addWorker(s, walkIn) {
     viaClock('in', w, () => w.goTo(home, () => { w.station = 'desk'; w.anim = 'type'; if (home === DESK_SPOTS[s.desk]) w.unpack(s.desk); else w.dress(false); }));
   } else if (w.lateRest(s)) {   // opened late at night: those who went home are not here
     w.away = true; w.station = 'away'; w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.spot = DOOR_OUT; w.dress(true); w.hush();
+    awayHooks.change?.(w);
   } else {
     if (home && 'by' in home) home.by = w;
     w.pos.set(home.x, home.z); w.spot = home; w.face = w.faceTarget = home.face; w.pose = home.sit ? 'sit' : 'stand'; w.station = 'desk';
@@ -93,7 +392,18 @@ export function addWorker(s, walkIn) {
   return w;
 }
 export function spawnSub(parent, agentId, type, instant = false, info = null) {
-  if (!agentId || subs.has(agentId)) return subs.get(agentId);
+  if (!agentId) return null;
+  if (info?.prevId && subs.has(info.prevId)) {
+    return rekeySub(info.prevId, agentId, { type, desc: info.desc });
+  }
+  if (!String(agentId).startsWith('prov-')) {
+    for (const [k, sw] of subs) {
+      if (sw.parent === parent && String(k).startsWith('prov-')) {
+        return rekeySub(k, agentId, { type, desc: info?.desc });
+      }
+    }
+  }
+  if (subs.has(agentId)) return subs.get(agentId);
   const h = hash(agentId);
   const x = () => info || sessions.get(parent.id)?.subs?.find((y) => y.id === agentId);
   const initInfo = x();
@@ -101,6 +411,7 @@ export function spawnSub(parent, agentId, type, instant = false, info = null) {
   const deptCfg = DEPT_INFO[deptIdx] || DEPT_INFO[0];
   const rawName = type || 'agent';
   const displayName = /^\[[A-Z]{2,3}\]/.test(rawName) ? rawName : `[${deptCfg.badge}] ${short(rawName, 22)}`;
+
   const w = new Worker({
     name: displayName,
     shirt: deptCfg.shirt || tint(parent.cfg.shirt, 0.3),
@@ -108,53 +419,110 @@ export function spawnSub(parent, agentId, type, instant = false, info = null) {
     style: deptCfg.style || STYLES[(h >>> 3) % STYLES.length],
     acc: deptCfg.acc ?? ((h >>> 6) % 3 === 0 ? 'glasses' : null),
     pants: deptCfg.pants || '#4C566A',
-  }, { sub: true, scale: 0.8, parent, id: agentId });
+    coat: COATS[(h >>> 9) % COATS.length],
+    bag: BAGS[(h >>> 12) % BAGS.length],
+  }, { sub: true, scale: 0.84, parent, id: agentId });
   w.dept = deptIdx;
   w.deptBadge = deptCfg.badge;
+  w.subType = type || 'agent';
+  w.desc = initInfo?.desc || '';
+  w.isTempSupport = true;
+  w.subDesk = -1;
   if (w.tagDot) w.tagDot.style.background = deptCfg.color;
   subs.set(agentId, w);
-  const d = claimSubDesk(deptIdx, w);
-  w.subDesk = d;
-  if (d >= 0 && d < chairs.length && chairs[d]) chairs[d].color.set(deptCfg.color);
+  const teamSubs = [...subs.values()].filter((sw) => sw.parent === parent);
+  parent.setTeam(teamSubs.length);
+
+  const roomIdx = pickBriefRoom(parent);
+  parent.briefRoomIdx = roomIdx;
+  const roomSeats = MEET_SEATS_BY_ROOM[roomIdx] || MEET_SEATS_BY_ROOM[0] || STATIONS.meeting || [];
+  if (roomSeats.length > 0) {
+    const seatIdx = Math.min(teamSubs.length, roomSeats.length - 1);
+    w.meetSeat = roomSeats[seatIdx] || roomSeats[0];
+  }
+
   const seated = () => {
-    w.station = w.subDesk >= 0 ? 'desk' : 'meeting';
-    w.anim = w.subDesk >= 0 ? 'type' : 'think';
-    if (w.subDesk >= 0) deskKit[w.subDesk] = w;
+    w.station = 'meeting';
+    w.anim = 'type';
     const i = x();
     if (i?.last) w.say(i.last.type, i.last.label || verb(i.last)); else w.say('agent', i?.desc || type || 'agent');
   };
-  if (instant || document.hidden) {   // already working when the page opened: straight to where its last step happens
+  if (instant || document.hidden) {
     const seat = w.homeSpot();
     if (seat && 'by' in seat) seat.by = w;
     w.pos.set(seat.x, seat.z); w.spot = seat; w.face = w.faceTarget = seat.face; w.pose = seat.sit ? 'sit' : 'stand'; seated();
     const last = x()?.last; if (last && ACT[last.type]) w.push(subAct({ type: last.type, label: last.label }));
     return w;
   }
-  // new on the team: in through the door (up in the lift), to the boss for the brief, then off to work at their department desk
-  w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT; liftArrive(w);
-  w.goTo(DOOR_IN, () => w.goTo(nearBoss(parent, w), () => {
-    w.faceTarget = Math.atan2(parent.pos.x - w.pos.x, parent.pos.y - w.pos.y);
-    w.anim = 'idle'; w.say('agent', tr('people.subOnIt', { task: short(x()?.desc || type || tr('people.subagent'), 48) })); w.dwellUntil = state.sim + 1.6;
-    if (!parent.leaving && parent.phase !== 'walk') parent.faceTarget = Math.atan2(w.pos.x - parent.pos.x, w.pos.y - parent.pos.y);
-    if (!w.want) w.push({
-      station: 'desk',
-      anim: w.subDesk >= 0 ? 'type' : 'think',
-      type: 'agent',
-      text: x()?.desc || tr('people.subThinking'),
-      dwell: 1.2,
-      after: () => { if (w.subDesk >= 0) deskKit[w.subDesk] = w; },
-    });
-  }));
+
+  // Every time Main Agent assigns a task to a Subagent:
+  // 1) Main Agent walks to the Reception 3D Telephone to call support
+  // 2) Subagent(s) arrive via the elevator
+  // 3) Main Agent and all Subagents walk into the Meeting Room and hold a briefing before starting subsequent tasks
+  parent.waitingForSubs = true;
+  w.callingPhoneWait = true;
+  w.inBriefing = true;
+  w.offstage = true;
+  w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT;
+  (parent.pendingPhoneSubs ||= []).push(w);
+
+  const summonQueuedSubs = () => {
+    const batch = (parent.pendingPhoneSubs || []).splice(0);
+    for (const sw of batch) {
+      if (!subs.has(sw.id) || sw.leaving) continue;
+      sw.callingPhoneWait = false;
+      sw.offstage = false;
+      sw.enteringFromLift = true;
+      sw.inBriefing = true;
+      sw.hurry = true;
+      sw.dress(true);
+      liftArrive(sw);
+      sw.say('agent', pickList('people.phoneSupport.arrive'));
+    }
+    scheduleSubBriefing(parent);
+  };
+
+  const phoneSpot = STATIONS.phone?.[0];
+  if (PRO && phoneSpot && !parent.leaving) {
+    liftCall(4.0);
+    if (!parent.callingPhone) {
+      if (parent.briefTimer) { clearTimeout(parent.briefTimer); parent.briefTimer = null; }
+      if (parent.briefWalkTimer) { clearTimeout(parent.briefWalkTimer); parent.briefWalkTimer = null; }
+      if (parent.briefEndTimer) { clearTimeout(parent.briefEndTimer); parent.briefEndTimer = null; }
+      if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
+      parent.inSubBrief = false;
+      parent.callingPhone = true;
+      parent.hurry = true;
+      if (parent.want) {
+        deferMainAction(parent, parent.want);
+        parent.want = null;
+      }
+      const finishPhoneCall = () => {
+        if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
+        if (parent.phoneTimer) { clearTimeout(parent.phoneTimer); parent.phoneTimer = null; }
+        if (PRO_FX.phoneHandset) PRO_FX.phoneHandset.position.y = 0.036;
+        parent.callingPhone = false;
+        parent.hurry = false;
+        if (!parent.leaving) summonQueuedSubs();
+      };
+      parent.phoneWalkTimer = setTimeout(finishPhoneCall, 2800);
+      parent.goTo(phoneSpot, () => {
+        if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
+        if (parent.leaving || !parent.callingPhone) return;
+        parent.station = 'phone';
+        parent.anim = 'hand';
+        if (PRO_FX.phoneHandset) PRO_FX.phoneHandset.position.y = 0.085;
+        sfx.play('beep');
+        parent.say('agent', pickList('people.phoneSupport.call'));
+        if (parent.phoneTimer) clearTimeout(parent.phoneTimer);
+        parent.phoneTimer = setTimeout(finishPhoneCall, 320);
+      });
+    }
+  } else {
+    summonQueuedSubs();
+  }
   return w;
 }
-// 4 phòng ban chuyên môn trong trụ sở HQ:
-// 0: UI · Front-end (#0EA5E9), 1: Back-end · API (#F97316), 2: BA · Research (#8B5CF6), 3: QA · Kiểm thử (#10B981)
-export const DEPT_INFO = [
-  { idx: 0, badge: 'UI', color: '#0EA5E9', shirt: '#0EA5E9', pants: '#1E3A5F', acc: 'headphones', style: 'bob' },
-  { idx: 1, badge: 'BE', color: '#F97316', shirt: '#F97316', pants: '#27272A', acc: 'glasses', style: 'spiky' },
-  { idx: 2, badge: 'BA', color: '#8B5CF6', shirt: '#8B5CF6', pants: '#312E81', acc: 'glasses', style: 'bun' },
-  { idx: 3, badge: 'QA', color: '#10B981', shirt: '#10B981', pants: '#064E3B', acc: 'cap', style: 'ponytail' },
-];
 export function classifyDept(roleOrType = '', desc = '') {
   const s = `${roleOrType} ${desc}`.toLowerCase();
   if (/ui-chat|world-3d|frontend|front-end|\bui\b|\bcss\b|three|webgl|design|layout|landing|mobile|hero|style|component/.test(s)) return 0;
@@ -162,24 +530,6 @@ export function classifyDept(roleOrType = '', desc = '') {
   if (/research|explore|\bba\b|plan|doc|spec|search|architecture|analyst|investigat|pipeline|data/.test(s)) return 2;
   if (/backend|back-end|server|\bapi\b|sql|db|auth|infra|deploy|general|agent|worker|shop/.test(s)) return 1;
   return hash(s || 'agent') % 4;
-}
-const SUB_SEAT_ORDER = [0, 3, 1, 2, 4, 7, 5, 6];
-function claimSubDesk(deptIdx, w) {
-  if (!HQ || deptIdx < 0 || deptIdx > 3) return -1;
-  const busy = new Set();
-  for (const s of sessions.values()) if (s.desk >= 0) busy.add(s.desk);
-  for (const sw of subs.values()) if (sw !== w && sw.subDesk >= 0) busy.add(sw.subDesk);
-  const depts = [deptIdx, 0, 1, 2, 3].filter((v, i, a) => a.indexOf(v) === i);
-  for (const dp of depts) {
-    const base = 12 + dp * 8;
-    for (const off of SUB_SEAT_ORDER) {
-      const d = base + off;
-      if (d < DESK_SPOTS.length && !busy.has(d) && (!DESK_SPOTS[d].by || DESK_SPOTS[d].by === w)) {
-        return d;
-      }
-    }
-  }
-  return -1;
 }
 // What a subagent does for one of its steps: the same places as everyone (library, server room, window), its "desk"
 // is the meeting table; it stays at least 2.5 s somewhere before moving on, so a burst of steps doesn't make it run.
@@ -197,24 +547,91 @@ export function nearBoss(boss, me) {
   }
   return allocate('meeting', me);
 }
+function calcPace(w) {
+  if (!w) return 1.0;
+  const idStr = String(w.id || '');
+  const isDirectorOrExec = idStr === '__director' || idStr.startsWith('__team_');
+  let activeWork = false;
+  if (isDirectorOrExec) {
+    activeWork = Boolean(w.job) || (w.queue?.length > 0);
+  } else if (w.sub || w.isSub) {
+    activeWork = !w.leaving || Boolean(w.reportingToBoss);
+  } else if (!w.deptStaff && !w.staff && w.id && sessions.has(w.id)) {
+    const s = sessions.get(w.id);
+    const personalTrip = Boolean(w.chore || w.outing || w.homeBound || w.wcBusy || w.inStall);
+    const sessionActive = s?.status === 'work' || Boolean(s?.busy || w.callingPhone || w.inSubBrief || w.waitingForSubs || (w.deferredWork?.length > 0));
+    activeWork = sessionActive && !personalTrip;
+  } else {
+    activeWork = Boolean(w.hurry || w.inBriefing || w.inSubBrief || w.reportingToBoss || w.callingPhone);
+  }
+  if (!activeWork) return 1.0;
+
+  const urgentWork = Boolean(
+    w.callingPhone ||
+    w.inSubBrief ||
+    w.inBriefing ||
+    w.reportingToBoss ||
+    (w.deferredWork?.length > 0) ||
+    w.deferredSubAct
+  );
+  let pace = urgentWork
+    ? 1.75 + Math.min(0.3, (w.deferredWork?.length || 0) * 0.1)
+    : 1.55;
+
+  if (w.path?.length > 0) {
+    const lastPt = w.path[w.path.length - 1];
+    const remDist = Math.hypot((lastPt.x ?? w.pos.x) - w.pos.x, (lastPt.y ?? w.pos.y) - w.pos.y) + w.path.length * 1.2;
+    if (remDist > 8) pace += Math.min(0.2, (remDist - 8) * 0.025);
+  }
+  return Math.min(2.05, pace);
+}
 // Workers walking out of the office: no longer in workers/subs, but still animated until they reach the door.
 export const leaving = new Set();
 export const leavingIds = new Set();
 export function dropSub(agentId, report = true) {
   const w = subs.get(agentId); if (!w) return;
-  if (document.hidden) { subs.delete(agentId); leaving.delete(w); w.remove(); return; }
-  subs.delete(agentId); leaving.add(w);
   const boss = w.parent;
-  if (!report || reduceMotion || !boss || workers.get(boss.id) !== boss || boss.leaving || replay.on) { w.leave(); return; }
+  if (report && !document.hidden && !reduceMotion && !replay.on && boss && workers.get(boss.id) === boss && !boss.leaving) {
+    if (w.callingPhoneWait || w.inBriefing || boss.callingPhone || boss.inSubBrief) {
+      w.pendingDropReport = report;
+      return;
+    }
+  }
+  subs.delete(agentId);
+  if (document.hidden || reduceMotion || !report || !boss || workers.get(boss.id) !== boss || boss.leaving || replay.on) {
+    if (w.deptStaff && !w.isTempSupport) {
+      releaseSubWorkerImmediate(w);
+    } else if (document.hidden) {
+      leaving.delete(w); w.remove();
+    } else {
+      leaving.add(w); w.leave();
+    }
+    checkBossSubsDone(boss);
+    return;
+  }
+  if (w.deptStaff && !w.isTempSupport) {
+    if (!npcs.includes(w)) npcs.push(w);
+  } else {
+    leaving.add(w);
+  }
+  w.reportingToBoss = true;
   const desc = w.desc || '';
-  w.want = null; w.hush();
+  w.want = null; w.inBriefing = false; w.briefGuestOf = null; w.deferredSubAct = null; w.hurry = true; w.hush();
+  if (boss) boss.setTeam([...subs.values()].filter((sw) => sw.parent === boss).length);
   w.goTo(nearBoss(boss, w), () => {
-    w.faceTarget = Math.atan2(boss.pos.x - w.pos.x, boss.pos.y - w.pos.y); w.anim = 'read';   // holds out the report
+    w.faceTarget = Math.atan2(boss.pos.x - w.pos.x, boss.pos.y - w.pos.y); w.anim = 'read';
     w.say('substop', tr('people.subReport', { what: desc ? short(desc, 44) : tr('people.subReportDone') }));
     const prev = boss.lastSay, text = tr('people.bossThanks');
     boss.say('substop', text);
-    setTimeout(() => { if (boss.lastSay?.text === text && prev) boss.say(prev.type, prev.text, prev.kind); }, 2200);
-    setTimeout(() => w.leave(), 1800);
+    setTimeout(() => { if (boss.lastSay?.text === text && prev) boss.say(prev.type, prev.text, prev.kind); }, 1400);
+    setTimeout(() => {
+      w.reportingToBoss = false;
+      w.hurry = false;
+      w.say('idle', pickList('people.phoneSupport.bye'));
+      w.dress(true);
+      w.leave();
+      checkBossSubsDone(boss);
+    }, 900);
   });
 }
 
@@ -229,7 +646,7 @@ export function setup() {
   state.sim = 0;
   Worker = class Worker {
     constructor(cfg, opt = {}) {
-      this.cfg = cfg; this.sub = !!opt.sub; this.parent = opt.parent || null; this.id = opt.id;
+      this.cfg = cfg; this.sub = !!opt.sub; this.isSub = this.sub; this.parent = opt.parent || null; this.id = opt.id;
       this.scale = opt.scale || 1;
       const { root, P } = makeChibi({ ...cfg, look: state.LOOK }, this.scale);
       this.root = root; this.P = P;
@@ -245,10 +662,11 @@ export function setup() {
       this.tagDot = el('i'); this.tagDot.style.background = cfg.shirt;
       this.tagText = document.createTextNode(cfg.name);
       this.tagEl.append(this.tagDot, this.tagText);
-      this.tagObj = new CSS2DObject(this.tagEl); this.tagObj.position.set(0, 2.0, 0); root.add(this.tagObj);
+      this.tagObj = new CSS2DObject(this.tagEl); this.tagObj.position.set(0, 2.05, 0); root.add(this.tagObj);
+      this.labelObj = this.tagObj;
       this.zT = rand(0, 1.5);
       const bw = el('div', 'bubble-wrap'); this.bubbleEl = el('div', 'bubble'); bw.append(this.bubbleEl);
-      this.bubbleObj = new CSS2DObject(bw); this.bubbleObj.position.set(0, 2.0, 0); this.bubbleObj.visible = false; root.add(this.bubbleObj);
+      this.bubbleObj = new CSS2DObject(bw); this.bubbleObj.position.set(0, 2.05, 0); this.bubbleObj.visible = false; root.add(this.bubbleObj);
     }
     setName(n) { if (this.tagText.data !== n) this.tagText.data = n; }
     // the height they stand at: the office floor, or down on the street (the pavement, or the road on a crossing)
@@ -265,11 +683,13 @@ export function setup() {
       this.teamEl.hidden = !n; this.teamEl.textContent = n ? tr('people.team', { n }) : '';
     }
     rebuild() {
+      const oldRoot = this.root;
       const { root, P } = makeChibi({ ...this.cfg, look: state.LOOK }, this.scale);
       if (SEASON === 'noel') wearHat(P);
-      root.position.copy(this.root.position); root.rotation.copy(this.root.rotation);
+      root.position.copy(oldRoot.position); root.rotation.copy(oldRoot.rotation);
       root.add(this.tagObj, this.bubbleObj);
-      const parent = this.root.parent; if (parent) parent.remove(this.root);
+      const parent = oldRoot.parent; if (parent) parent.remove(oldRoot);
+      disposeChibi(oldRoot);
       this.root = root; this.P = P;
       root.traverse((o) => { o.userData.worker = this; });
       if (parent) parent.add(root);
@@ -286,6 +706,10 @@ export function setup() {
     say(type, text, kind = '') {
       this.lastSay = { type, text, kind };
       if (kind !== 'rest') this.pokeHushAt = 0;
+      if ((type === 'idle' || type === 'party' || type === 'coffee') && kind !== 'wait' && kind !== 'fail') {
+        this.bubbleObj.visible = false;
+        return;
+      }
       const key = `${type}|${text}|${kind}`;
       if (this.sayKey !== key) {
         this.sayKey = key;
@@ -293,11 +717,16 @@ export function setup() {
         this.bubbleEl.replaceChildren(ic, el('span', 'b-txt', short(text, this.sub ? 60 : 80)));
         this.bubbleEl.className = 'bubble' + (kind ? ' bubble--' + kind : '') + (this.sub ? ' bubble--sub' : '');
       }
+      if (state.showWorkSteps === false && TOOL_STEP_TYPES.has(type) && kind !== 'wait' && kind !== 'fail') {
+        this.bubbleObj.visible = false;
+        return;
+      }
       this.bubbleObj.visible = true;
     }
     hush() { this.bubbleObj.visible = false; }
     homeSpot() {
-      if (this.sub) {
+      if (this.sub || this.deptStaff) {
+        if (this.meetSeat) return this.meetSeat;
         if (this.subDesk >= 0 && this.subDesk < DESK_SPOTS.length) return DESK_SPOTS[this.subDesk];
         return allocate('meeting', this);
       }
@@ -326,44 +755,115 @@ export function setup() {
       else this.path = [...out, ...route(atPrev && prev.node ? prev.node : nearestNode(this.pos), targetNode).map(N), ...(spot.via || []).map(V), target];
       this.pose = 'stand'; this.phase = 'walk'; this.onArrive = cb;
     }
-    push(a) { this.want = a; }
+    push(a) {
+      if (!a) return;
+      if (this.sub && (this.inBriefing || this.callingPhoneWait)) {
+        this.deferredSubAct = a;
+        return;
+      }
+      if (!this.sub && !this.deptStaff && !this.staff && (a.station === 'meeting' || a.station === 'brief') && (a.type === 'plan' || a.type === 'agent') && !this.inSubBrief && !this.callingPhone) {
+        this.say(a.type || 'other', a.text, a.kind || '');
+        scheduleSubBriefing(this);
+        return;
+      }
+      if ((this.waitingForSubs || this.callingPhone || this.inSubBrief) && !this.sub && !this.deptStaff && !this.staff) {
+        if (a.type === 'stop' || a.station === 'director' || (a.station && a.station !== 'desk' && !a.priority)) {
+          deferMainAction(this, a);
+          if (!this.inSubBrief && !this.callingPhone && a.type !== 'stop') {
+            this.say(a.type || 'other', a.text, a.kind || '');
+            if (this.station === 'desk') this.anim = 'type';
+          }
+          return;
+        }
+      }
+      this.want = a;
+    }
     apply(a) {
       this.anim = a.anim; this.phase = 'idle';
       this.say(a.type || 'other', a.text, a.kind || ''); if (a.e) this.lastSay.e = a.e;
-      this.dwellUntil = state.sim + (a.dwell ?? 1.4);
+      const fastDwell = this.deferredWork?.length > 0 || sessions.get(this.id)?.status === 'rest';
+      const dwell = fastDwell ? Math.min(a.dwell || 1.2, 0.45) : (a.dwell ?? 1.4);
+      this.dwellUntil = state.sim + dwell;
       this.restAt = a.rest ? state.sim + a.rest : Infinity;
       if (a.after) a.after();
     }
     tick() {
-      if (this.leaving || this.phase === 'walk' || this.after || this.liftWait || this.liftRide || this.homeBound) return;
+      if (this.leaving || this.phase === 'walk' || this.after || this.liftWait || this.liftRide || this.homeBound || this.callingPhone || this.inSubBrief || this.inBriefing || this.reportingToBoss) return;
       if (this.away) {
-        const s = sessions.get(this.id), d = officeNow(), m = (d.getHours() - 8) * 60 + d.getMinutes();
-        // (offDay: gone home for the day from the quán nhậu, people/nhau.js: back for work, or in the morning)
-        if (this.want || (s && (s.status !== 'rest' || s.bg?.length)) || (m >= hash(this.id) % 40 && d.getHours() < 21 && this.offDay !== d.toDateString())) this.comeBack();
+        const s = sessions.get(this.id);
+        if (this.want || (s && (s.status !== 'rest' || s.bg?.length || !this.lateRest(s)))) this.comeBack();
         return;
       }
       if (this.inStall || this.wcBusy) { this.wcTick(); return; }
       if (this.carry && this.anim !== 'coffee' && this.phase !== 'walk') this.carry = null;   // (the drink finished, or work)
       if (this.queued && this.want) leaveCoffee(this);
       const s = sessions.get(this.id);
-      if (this.anim === 'sleep' && !this.sub && (this.want || (s && (s.status !== 'rest' || s.bg?.length)))) { this.anim = 'wake'; this.wakeUntil = state.sim + (reduceMotion ? 0.3 : 1.6); this.hush(); return; }
+      if (this.waitingForSubs && !this.sub) {
+        let hasActive = false, hasReporting = false;
+        for (const sw of subs.values()) if (sw.parent === this) { hasActive = true; break; }
+        if (!hasActive) {
+          for (const sw of npcs) if (sw.reportingToBoss && sw.parent === this) { hasReporting = true; break; }
+          if (!hasReporting) for (const sw of leaving) if (sw.reportingToBoss && sw.parent === this) { hasReporting = true; break; }
+        }
+        const hasGuests = !hasActive && !hasReporting && deptWorkers.some((dw) => dw.briefGuestOf === this && dw.inBriefing);
+        if (!hasActive && !hasReporting && !hasGuests && !this.inSubBrief) checkBossSubsDone(this);
+      }
+      if (!this.sub && !this.deptStaff && !this.staff && !this.callingPhone && !this.inSubBrief && !this.waitingForSubs) {
+        if (this.deferredWork?.length > 0 && !this.want) {
+          const nextAct = popDeferredMainAction(this);
+          if (nextAct) this.push(nextAct);
+        }
+        if (!this.want && (this.station === 'phone' || (this.station === 'meeting' && !this.inSubBrief))) {
+          if (s?.status === 'rest') {
+            this.goHomeAndRest();
+          } else {
+            const home = this.homeSpot();
+            const d = s?.desk ?? -1;
+            this.goTo(home, () => {
+              this.station = 'desk';
+              this.pose = home.sit ? 'sit' : 'stand';
+              this.anim = 'type';
+              if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = this;
+            });
+          }
+          return;
+        }
+      }
+      if (this.anim === 'sleep' && !this.sub && !this.deptStaff && (this.want || (s && (s.status !== 'rest' || s.bg?.length)))) { this.anim = 'wake'; this.wakeUntil = state.sim + (reduceMotion ? 0.3 : 1.6); this.hush(); return; }
       if (this.anim === 'wake') { if (state.sim < this.wakeUntil) return; this.anim = s?.status === 'work' && !this.want ? ANIM_AT[this.station] || 'type' : 'idle'; }
       if (this.want && (this.want.priority || state.sim >= this.dwellUntil)) {
         const a = this.want; this.want = null;
-        if (!a.station || a.station === this.station) { this.apply(a); return; }
-        let spot = a.station === 'desk' ? this.homeSpot() : allocate(a.station, this, true);
+        if (!a.spot && (!a.station || a.station === this.station)) { this.apply(a); return; }
+        let spot = a.spot || (a.station === 'desk' ? this.homeSpot() : allocate(a.station, this, true));
         if (!spot) { if (a.anim === ANIM_AT[a.station]) a.anim = ANIM_AT.desk; a.station = 'desk'; spot = this.homeSpot(); }   // (that room is full: from their own desk)
-        this.goTo(spot, () => { this.station = a.station; if (this.sub && a.station === 'desk' && this.subDesk >= 0) deskKit[this.subDesk] = this; this.apply(a); });
+        this.goTo(spot, () => { this.station = a.station || 'desk'; if ((this.sub || this.deptStaff) && this.station === 'desk' && this.subDesk >= 0) deskKit[this.subDesk] = this; this.apply(a); });
         a.go?.(this);   // (on the way: something in hand, say; life/post.js)
         return;
       }
       if (this.sub) {
-        if (this.subDesk >= 0 && this.station !== 'desk' && state.sim > this.dwellUntil + 2.5) {
+        if (this.station !== 'meeting' && this.station !== 'desk' && state.sim > this.dwellUntil + 2.5) {
+          this.goTo(this.homeSpot(), () => {
+            this.station = 'meeting';
+            this.anim = 'type';
+          });
+        }
+        return;
+      }
+      if (this.deptStaff && !this.busySub) {
+        if (this.station !== 'desk') {
           this.goTo(this.homeSpot(), () => {
             this.station = 'desk';
-            this.anim = 'type';
-            deskKit[this.subDesk] = this;
+            this.pose = 'sit';
+            this.anim = 'idle';
+            if (this.subDesk >= 0) deskKit[this.subDesk] = this;
+            this.hush();
           });
+          return;
+        }
+        this.pose = 'sit';
+        if (state.sim > (this.deptNextAt || 0)) {
+          this.deptNextAt = state.sim + rand(90, 180);
+          this.anim = Math.random() < 0.5 ? 'idle' : 'type';
         }
         return;
       }
@@ -377,7 +877,7 @@ export function setup() {
     }
     // lunch and the afternoon coffee: from a nap, once a day each, at a slightly different minute for everyone
     dailyLife(s) {
-      if (!PRO || s.status !== 'rest' || this.want || this.anim !== 'sleep' || this.phase === 'walk' || replay.on) return false;
+      if (!PRO || s.status !== 'rest' || this.want || (!this.deptStaff && this.anim !== 'sleep') || this.phase === 'walk' || replay.on) return false;
       if (state.sim < (this.lifeAt || 0)) return false;
       this.lifeAt = state.sim + 4;
       const d = officeNow(), m = d.getHours() * 60 + d.getMinutes(), day = d.toDateString(), off = hash(this.id) % 18;
@@ -517,33 +1017,34 @@ export function setup() {
         this.anim = 'idle'; this.faceTarget = DOOR_IN.face;   // press the button, wait for the car
         this.liftWait = () => this.goTo(DOOR_OUT, () => { this.faceTarget = Math.PI / 2; this.liftRide = down; });
       }));
-      const d = deskKit.indexOf(this);
-      if (d < 0 || this.sub) { if (d >= 0) deskKit[d] = null; out(); return; }
+      const d = this.sub ? -1 : (deskKit.indexOf(this) >= 0 ? deskKit.indexOf(this) : (sessions.get(this.id)?.desk ?? -1));
+      if (d < 0 || d >= DESK_SPOTS.length || this.sub) { if (d >= 0 && deskKit[d] === this) deskKit[d] = null; out(); return; }
       const pack = () => {   // back at the desk: coat on, bag on the back
-        this.anim = 'tidy'; this.afterAt = state.sim + (reduceMotion ? 0.2 : 1.1);
-        this.after = () => { deskKit[d] = null; this.dress(true); this.anim = 'idle'; out(); };
+        this.pose = 'stand'; this.anim = 'tidy'; this.say('end', tr('people.goingHome'), 'rest');
+        this.afterAt = state.sim + (reduceMotion ? 0.2 : 1.1);
+        this.after = () => { if (d >= 0 && deskKit[d] === this) deskKit[d] = null; this.dress(true); this.anim = 'idle'; this.hush(); out(); };
       };
       const spot = DESK_SPOTS[d];
       if (Math.hypot(this.pos.x - spot.x, this.pos.y - spot.z) < 0.15 && this.phase !== 'walk') pack(); else this.goTo(spot, pack);
     }
-    /* Late at night, after a long rest: home by the lift, the desk left empty. Back as soon as there is work, or in the
-       morning (from 8:00, a few minutes apart). */
-    lateRest(s) {   // from 21:00 (each at their own minute, up to 21:25) to 6:00, resting for half an hour or more
-      if (this.sub || !s || s.status !== 'rest' || s.bg?.length || replay.on) return false;
-      const d = officeNow(), h = d.getHours();
-      return (h > 21 || h < 6 || (h === 21 && d.getMinutes() >= hash(this.id) % 25)) && nowMs() - (s.doneAt || s.lastAt || nowMs()) >= 30 * 60e3;
+    /* Inactive for >= 8 hours: put on backpack/coat and go home by the lift. Back as soon as a task is assigned. */
+    lateRest(s) {
+      if (this.sub || this.deptStaff || !s || s.status !== 'rest' || s.bg?.length || replay.on) return false;
+      const last = Math.max(s.doneAt || 0, s.lastAt || 0);
+      return last > 0 && nowMs() - last >= 8 * 3600e3;
     }
     nightOut(s) {
-      if (this.anim !== 'sleep' || this.want || this.chore || !this.lateRest(s)) return false;
+      if (this.want || this.chore || !this.lateRest(s)) return false;
       this.goHomeNow();
       return true;
     }
     goHomeNow() {
       this.homeBound = true; this.hush(); this.restAt = Infinity; this.station = 'out';
-      this.walkOut(() => { this.homeBound = false; this.away = true; this.station = 'away'; this.hush(); if (this.spot?.by === this) this.spot.by = null; });
+      this.walkOut(() => { this.homeBound = false; this.away = true; this.station = 'away'; this.hush(); if (this.spot?.by === this) this.spot.by = null; awayHooks.change?.(this); });
     }
     comeBack() {
       this.away = false; this.station = 'arriving';
+      awayHooks.change?.(this);
       if (streetHooks.arrive?.(this)) return;   // (by the street, with the city outside)
       this.pos.set(DOOR_OUT.x, DOOR_OUT.z); this.face = this.faceTarget = Math.PI / 2; this.spot = DOOR_OUT;
       this.dress(true); liftArrive(this);
@@ -551,6 +1052,11 @@ export function setup() {
       viaClock('in', this, () => this.goTo(home, () => { this.station = 'desk'; this.anim = 'type'; if (home === DESK_SPOTS[d]) this.unpack(d); else this.dress(false); }));
     }
     remove() {
+      if (this.phoneWalkTimer) { clearTimeout(this.phoneWalkTimer); this.phoneWalkTimer = null; }
+      if (this.phoneTimer) { clearTimeout(this.phoneTimer); this.phoneTimer = null; }
+      if (this.briefTimer) { clearTimeout(this.briefTimer); this.briefTimer = null; }
+      if (this.briefWalkTimer) { clearTimeout(this.briefWalkTimer); this.briefWalkTimer = null; }
+      if (this.briefEndTimer) { clearTimeout(this.briefEndTimer); this.briefEndTimer = null; }
       { const k = deskKit.indexOf(this); if (k >= 0) deskKit[k] = null; }
       if (this.subDesk >= 0) {
         if (deskKit[this.subDesk] === this) deskKit[this.subDesk] = null;
@@ -562,15 +1068,19 @@ export function setup() {
       if (this.mealBox) hideMeal(this);
       if (this.spot && this.spot.by === this) this.spot.by = null;
       scene.remove(this.root);
+      this.tagEl?.remove();
+      this.bubbleEl?.remove();
       this.root.traverse((o) => { if (o.element) o.element.remove(); });
+      disposeChibi(this.root);
     }
     update(dt, t) {
       if (this.after && state.sim >= this.afterAt) { const f = this.after; this.after = null; f(); }
       if (this.pokeHushAt && state.sim > this.pokeHushAt) { this.pokeHushAt = 0; if (this.lastSay?.kind === 'rest') this.hush(); }
       this.held = false;
+      const pace = (this._pace = calcPace(this));
       if (this.phase === 'walk' && !this.liftHold) {
         const tgt = this.path[0];
-        const dx = tgt.x - this.pos.x, dz = tgt.y - this.pos.y, d = Math.hypot(dx, dz), step = (this.hurry ? 4.2 : 2.7) * dt;
+        const dx = tgt.x - this.pos.x, dz = tgt.y - this.pos.y, d = Math.hypot(dx, dz), step = 1.85 * pace * dt;
         // out on the street (outings.js): a crossing waits at the kerb for the green man, and is walked at road level
         if (tgt.gate) { if (tgt.gate()) tgt.gate = null; else this.held = true; }
         if (tgt.y0 != null && !this.held) this.ground = tgt.y0;
@@ -585,25 +1095,65 @@ export function setup() {
         } else { this.pos.x += (dx / d) * step; this.pos.y += (dz / d) * step; this.faceTarget = Math.atan2(dx, dz); }
       }
       if (!this.chore) this.tick();
+      if (this.deptStaff && !this.busySub && !this.inBriefing && !this.reportingToBoss && this.phase !== 'walk' && this.station === 'desk') {
+        this._idleAnimAcc = (this._idleAnimAcc || 0) + dt;
+        if (this._idleAnimAcc < 0.25 && this._poseInit) return;
+        const stepDt = this._poseInit ? this._idleAnimAcc : Math.max(this._idleAnimAcc, 1);
+        this._idleAnimAcc = 0;
+        this._poseInit = true;
+        this.animate(stepDt, t);
+        return;
+      }
       this.animate(dt, t);
     }
     animate(dt, t) {
       const walking = this.phase === 'walk' && !this.held, stomping = this.anim === 'stomp' && !walking, sit = this.pose === 'sit' && !walking && !stomping;
+      const pace = this._pace || 1;
+      const animDt = pace <= 1.05 ? dt : dt * Math.min(1.6, 1 + (pace - 1) * 0.65);
+      if (walking) this.walkPh = (this.walkPh ?? (t + this.seed)) + animDt;
+      else this.walkPh = null;
       this.stompShift = (this.stompShift || 0) + ((stomping && this.station === 'desk' ? 0.36 : 0) - (this.stompShift || 0)) * Math.min(1, dt * 6);
-      const idleish = !walking && !['type', 'console', 'read', 'board', 'globe', 'tidy', 'sleep', 'wake'].includes(this.anim);
+      const idleish = !walking && !BUSY_ANIMS.has(this.anim);
       this.lookT = (this.lookT ?? 0) - dt;
       if (this.lookT < 0) { this.lookT = rand(1.8, 4.5); this.lookY = rand(-0.55, 0.55); }
       this.blinkAt -= dt; if (this.blinkAt < 0) this.blinkAt = rand(2.5, 5);
       const napping = this.anim === 'sleep' && !walking;
       if (napping && (this.zT -= dt) < 0) { this.zT = 1.4; puffZ(this); }
-      const pose = chibiPose(this.P, walking ? 'walk' : this.anim, t + this.seed,
+      const pose = chibiPose(this.P, walking ? 'walk' : this.anim, walking ? this.walkPh : t + this.seed,
         { sit, scale: this.scale, look: idleish ? this.lookY : 0, wave: !walking && this.waveUntil > t, blink: this.blinkAt < 0.12, carry: this.carry, doze: this.doze });
-      const y = applyChibiPose(this.P, pose, dt) * this.scale;
+      const y = applyChibiPose(this.P, pose, walking ? animDt : dt) * this.scale;
       this.root.position.set(this.pos.x + this.stompShift, y + this.gy(), this.pos.y);
       const hid = (!!this.inStall && !walking) || !!this.away || !!this.offstage;   // behind a shut stall door, gone home, inside a shop or the lift
-      if (this.root.visible === hid) { this.root.visible = !hid; this.root.matrixWorldAutoUpdate = !hid; if (hid) { this.tagObj.visible = false; this.bubbleObj.visible = false; } }   // (out of sight: no matrices to keep up)
-      this.face += wrapAngle(this.faceTarget - this.face) * Math.min(1, dt * 10);
+      if (this.root.visible === hid) {
+        this.root.visible = !hid;
+        this.root.matrixWorldAutoUpdate = !hid;
+        if (hid) {
+          this.tagObj.visible = false;
+          this.bubbleObj.visible = false;
+        } else if (this.sub || this.isSub) {
+          this.tagObj.visible = state.showSubNames !== false;
+        } else if (this.deptStaff || this.isDeptAmbient || this.staff) {
+          this.tagObj.visible = state.showStaffNames !== false;
+        } else {
+          this.tagObj.visible = state.showChibiNames !== false;
+        }
+      }   // (out of sight: no matrices to keep up)
+      const dRig = this.P?.D;
+      const headTop = dRig ? dRig.hipY + dRig.headY + dRig.R : 1.86;
+      const invScale = 1 / (this.scale || 1);
+      const rootLift = sit ? Math.max(0, pose.y || 0) : 0;
+      const lblY = napping
+        ? (headTop - rootLift) + 0.02 * invScale
+        : sit
+          ? (headTop - rootLift) + (this.id === '__director' ? 0.04 : 0.08) * invScale
+          : headTop + 0.36 * invScale;
+      this.tagObj.position.y = lblY;
+      this.bubbleObj.position.y = this.tagObj.visible ? lblY : lblY - 0.16 * invScale;
+      this.face += wrapAngle(this.faceTarget - this.face) * Math.min(1, animDt * 10);
       this.root.rotation.y = this.face; this.root.rotation.z = pose.tilt;
     }
   };
+  if (HQ) {
+    deptWorkers.length = 0;
+  }
 }

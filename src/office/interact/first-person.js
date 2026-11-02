@@ -18,7 +18,7 @@ import { closeSession, openSession } from '../ui/session-drawer.js';
 import { PROPS, activateProp, propHint } from './props.js';
 import { t as tr } from '../../i18n/index.js';
 
-export let fp;
+export let fp = { on: false };
 let FPB;
 const CELL = 0.1, SIT_H = 0.49;   // (the chair seat the rig sits on: on a stool its feet hang this far below the seat)
 export function buildGrid() {
@@ -153,6 +153,7 @@ function interact() {
   if (w.sub) { if (w.parent) openSession(w.parent.id, { tab: 'subs', agent: w.id }); } else openSession(w.id);
 }
 const typing = (e) => e.target.closest?.('input, textarea, select, [contenteditable="true"]');
+const _fpDir = new THREE.Vector3(), _fpTgt = new THREE.Vector3(), _fpPt = [0, 0];
 export function fpUpdate(dt) {
   const k = fp.keys;
   let f = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
@@ -172,10 +173,11 @@ export function fpUpdate(dt) {
   if (stuck || !hit(fp.pos.x + vx, fp.pos.y)) fp.pos.x += vx;
   if (stuck || !hit(fp.pos.x, fp.pos.y + vz)) fp.pos.y += vz;
   fp.moving = Math.hypot(vx, vz) > 1e-5; fp.t += dt;
-  S?.shop?.feel([fp.pos.x, fp.pos.y]);
+  _fpPt[0] = fp.pos.x; _fpPt[1] = fp.pos.y;
+  S?.shop?.feel(_fpPt);
   // the ground: the office floor, or the street (the pavement, a step down onto the road); on the road the traffic stops
   const ground = S ? S.groundAt(fp.pos.x, fp.pos.y) : 0;
-  S?.setWalker(S && ground < S.pavement - 0.05 ? [fp.pos.x, fp.pos.y] : null);
+  S?.setWalker(S && ground < S.pavement - 0.05 ? _fpPt : null);
   if (fp.carry && fp.t > fp.carryUntil) fp.carry = null;   // (finished it)
   // own body
   const P = fp.P, D = P.D;
@@ -184,9 +186,9 @@ export function fpUpdate(dt) {
   fp.avatar.rotation.y += wrapAngle(fp.yaw - fp.avatar.rotation.y) * Math.min(1, dt * 12);
   // camera: eyes of the character, or over the shoulder
   const eyeY = (fp.seat ? fp.seat.y - SIT_H + D.hipY + D.sitY + D.headY : ground + D.hipY + D.headY) + (fp.moving ? Math.sin(fp.t * 9) * 0.025 : 0);
-  const dir = new THREE.Vector3(Math.sin(fp.yaw) * Math.cos(fp.pitch), Math.sin(fp.pitch), Math.cos(fp.yaw) * Math.cos(fp.pitch));
+  const dir = _fpDir.set(Math.sin(fp.yaw) * Math.cos(fp.pitch), Math.sin(fp.pitch), Math.cos(fp.yaw) * Math.cos(fp.pitch));
   if (fp.third) {
-    const tgt = new THREE.Vector3(fp.pos.x, eyeY - 0.1, fp.pos.y);
+    const tgt = _fpTgt.set(fp.pos.x, eyeY - 0.1, fp.pos.y);
     let back = 3.2;
     for (let d = 0.6; d <= 3.2; d += 0.2) if (S ? S.blockedAt(tgt.x - dir.x * d, tgt.z - dir.z * d, 0) : cellBlocked(tgt.x - dir.x * d, tgt.z - dir.z * d)) { back = Math.max(0.6, d - 0.3); break; }
     fpCam.position.copy(tgt).addScaledVector(dir, -back); fpCam.position.y += 0.55;
@@ -197,12 +199,14 @@ export function fpUpdate(dt) {
   }
   // the agent in front of you, within reach (out on the street: someone from the office out there, else what is at hand)
   let best = null, bd = 2.6;
-  for (const w of [...workers.values(), ...subs.values()]) {
-    if (!!w.street !== !!S || !w.root.visible) continue;
+  const checkAgent = (w) => {
+    if (!!w.street !== !!S || !w.root.visible) return;
     const dx = w.pos.x - fp.pos.x, dz = w.pos.y - fp.pos.y, d = Math.hypot(dx, dz);
-    if (d > bd || (dx * fx + dz * fz) / (d || 1) < 0.5) continue;
+    if (d > bd || (dx * fx + dz * fz) / (d || 1) < 0.5) return;
     best = w; bd = d;
-  }
+  };
+  for (const w of workers.values()) checkAgent(w);
+  for (const w of subs.values()) checkAgent(w);
   if (S) { setNear(best || streetNear(S)); return; }
   { const dx = cat.pos.x - fp.pos.x, dz = cat.pos.y - fp.pos.y, d = Math.hypot(dx, dz); if (d < Math.min(bd, 2.0) && (dx * fx + dz * fz) / (d || 1) > 0.4) { best = cat; bd = d; } }
   if (!best) {   // furniture within arm's reach, measured to its nearest edge
@@ -225,7 +229,7 @@ export function setup() {
   fp = { on: false, third: false, yaw: Math.PI / 2, pitch: -0.06, pos: new V2(DOOR_IN.x + 0.7, DOOR_IN.z), keys: new Set(),
     drag: null, joy: null, grid: null, avatar: null, P: null, near: null, moving: false, t: 0, street: false, carry: null, carryUntil: 0, basket: [], seat: null };
   fade = el('div', 'fp-fade'); $('stage-wrap').append(fade);
-  FPB = HQ ? { x0: -7.85, x1: 15.3, z0: -7.85, z1: 28.3 } : PRO ? { x0: -7.85, x1: 15.3, z0: -7.85, z1: 11.3 } : { x0: -7.85, x1: 11.7, z0: -5.85, z1: 10.3 };
+  FPB = HQ ? { x0: -7.85, x1: 15.3, z0: -7.85, z1: 18.0 } : PRO ? { x0: -7.85, x1: 15.3, z0: -7.85, z1: 11.3 } : { x0: -7.85, x1: 11.7, z0: -5.85, z1: 10.3 };
   $('btn-fp').addEventListener('click', () => (fp.on ? exitFp() : enterFp()));
   $('fp-exit').addEventListener('click', exitFp);
   $('fp-near').addEventListener('click', interact);

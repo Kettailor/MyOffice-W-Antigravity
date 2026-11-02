@@ -3,7 +3,7 @@
 .modal { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(5, 8, 12, .6); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); padding: 16px; z-index: 6; }
 .modal-card { width: min(380px, 100%); padding: 22px; display: flex; flex-direction: column; gap: 12px; align-items: center; text-align: center; background: var(--side); border: 1px solid var(--line-2); border-radius: 16px; }
 .modal-card h2 { margin: 0; font-size: 1.15rem; }
-#pm-body { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+#pm-body { display: flex; flex-direction: column; gap: 12px; align-self: stretch; align-items: stretch; text-align: left; }
 #pm-body > p { margin: 0; }
 .qr { width: fit-content; margin: 0 auto; background: #fff; padding: 10px; border-radius: 12px; }
 .qr img, .qr canvas { display: block; }
@@ -53,7 +53,7 @@
 .pm-qacts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .pm-btn-danger { color: #FF9494; border-color: rgba(255, 95, 95, .4); }
 /* the phone window: the two ways in as tabs, the code beside the address, the PIN, what phones may do as switches */
-#pm-body { align-self: stretch; align-items: stretch; text-align: left; }
+
 .pm-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; }
 .pm-tab { display: grid; justify-items: center; gap: 2px; padding: 8px 6px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font: 600 .86rem/1.25 inherit; cursor: pointer; }
 .pm-tab:hover { color: var(--ink); }

@@ -6,7 +6,7 @@ import { HOME, SOFTWARE_GL, camera, controls, fpCam, labels, renderer, resize, r
 import { updateExtras } from '../world/props/update.js';
 import { leaving, npcs, subs, updateZs, workers } from '../people/workers.js';
 import { updateTeam } from '../people/team-lines.js';
-import { flights, updateFlights } from '../people/director.js';
+import { director, flights, updateFlights } from '../people/director.js';
 import { updateWeather } from '../life/weather.js';
 import { updateNap } from '../life/nap.js';
 import { updateQuota } from '../life/quota.js';
@@ -59,17 +59,26 @@ let lastFrame = 0, lastInput = 0, frameNo = 0;
 const _camDelta = new THREE.Vector3(), _lastFocus = new THREE.Vector3(), _panFwd = new THREE.Vector3(), _panRight = new THREE.Vector3();
 let camGliding = false;
 const panKeys = new Set();
-const walkingNow = () => { for (const w of workers.values()) if (w.phase === 'walk') return true; for (const w of subs.values()) if (w.phase === 'walk') return true; for (const w of npcs) if (w.phase === 'walk') return true; return leaving.size > 0 || flights.length > 0; };
+const activeWorkWalking = () => {
+  for (const w of workers.values()) if (w.phase === 'walk') return true;
+  for (const w of subs.values()) if (w.phase === 'walk') return true;
+  if (director?.phase === 'walk') return true;
+  return leaving.size > 0 || flights.length > 0;
+};
 function frameGap(now) {
   if (SOFTWARE_GL) return 1000 / 5;
   if (document.hidden) return 1000 / 4;
   if (recorder || state.clip) return 1000 / 30;
+  const activeMoving = activeWorkWalking() || rocketState.t >= 0 || (replay.on && replay.playing);
   if (phoneLike()) {
-    const moving = walkingNow() || particles.length || rocketState.t >= 0 || (replay.on && replay.playing);
-    return moving || now - lastInput < 1500 ? 1000 / 30 : 1000 / 15;
+    return activeMoving || now - lastInput < 1200 ? 1000 / 30 : 1000 / 12;
   }
-  // Desktop with GPU: lock to smooth native 60+ FPS continuously (even while Antigravity IDE is focused side-by-side)
-  return 0;
+  const interacting = fp.on || camGliding || panKeys.size > 0 || state.zoomGoal !== null || (now - lastInput < 1200);
+  if (interacting) return 1000 / 60;
+  if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    return activeMoving ? 1000 / 24 : 1000 / 12;
+  }
+  return activeMoving ? 1000 / 30 : 1000 / 18;
 }
 /* World matrices, once a frame, for what is drawn. Left to three, the whole scene is updated twice a frame (the 3D pass
    and the label pass each do it), hidden things included: ~3,600 objects, a tenth of the frame's script time. Here a
@@ -89,8 +98,9 @@ function labelsIn(o) { const ch = o.children; for (let i = 0; i < ch.length; i++
 let PR_STEPS;
 let prIdx = 0, prSlow = 0, prFast = 0, prHoldUntil = 0;
 function adaptResolution(gap, target, dt) {
-  if (quality.choice === 'high' || target > 1000 / 55 || !PR_STEPS.length) { prSlow = prFast = 0; return; }   // keep 100% sharp resolution on High quality
-  if (gap > target * 1.3) { prSlow += dt; prFast = 0; } else if (gap < target * 1.1) { prFast += dt; prSlow = Math.max(0, prSlow - dt); }
+  if (quality.choice !== 'auto' || target > 1000 / 28 || !PR_STEPS.length) { prSlow = prFast = 0; return; }   // keep 100% sharp resolution on manual High/Medium/Low quality
+  const budget = Math.max(target, 1000 / 60);
+  if (gap > budget * 1.35) { prSlow += dt; prFast = 0; } else if (gap < budget * 1.1) { prFast += dt; prSlow = Math.max(0, prSlow - dt); }
   let next = prIdx;
   if (prSlow > 1.2 && prIdx < PR_STEPS.length - 1) { next = prIdx + 1; prHoldUntil = performance.now() + 60e3; }
   else if (prFast > 15 && prIdx > 0 && performance.now() > prHoldUntil) next = prIdx - 1;
@@ -134,9 +144,9 @@ export function loop(now = 0) {
   if (now - lastFrame < gap - 2) return;
   if (lastFrame && !fp.on && !state.clip) adaptResolution(now - lastFrame, gap, Math.min(0.1, (now - lastFrame) / 1000));
   lastFrame = now; frameNo++;
-  // the shadow map is redrawn every other frame while someone walks (30 a second at 60 fps), every fourth otherwise:
+  // the shadow map is redrawn every other frame while active work chibis walk, every sixth otherwise:
   // furniture never moves, and the shadow pass costs as many draw calls again as the picture
-  if (frameNo % (fp.on || walkingNow() ? 2 : 4) === 0) renderer.shadowMap.needsUpdate = true;
+  if (frameNo % (fp.on || activeWorkWalking() ? 2 : 6) === 0) renderer.shadowMap.needsUpdate = true;
   const dt0 = Math.min(clock.getDelta(), 0.1) * (reduceMotion ? 0.7 : 1);
   replayTick();
   const dt = dt0 * (replay.on && replay.playing ? REPLAY_MOTION : 1) * (state.speed || 1);   // (state.speed: a timelapse clip)
@@ -175,7 +185,7 @@ export function loop(now = 0) {
   updatePost(dt);
   updateIncident(state.sim);
   if (PERF) lap('life');
-  if (THEME.live) THEME.live.update(dt, state.sim);
+  if (!lite && THEME.live && THEME.group?.visible !== false) THEME.live.update(dt, state.sim);
   if (PERF) lap('street');
   updateZs(dt);
   updateMarkers(state.sim);
@@ -243,6 +253,7 @@ export function setup() {
   });
   addEventListener('keyup', (e) => { panKeys.delete(e.code); });
   addEventListener('blur', () => { panKeys.clear(); });
+  addEventListener('focus', () => { lastInput = performance.now(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       panKeys.clear();

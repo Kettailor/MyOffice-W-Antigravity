@@ -1,7 +1,7 @@
 // List mode: the sessions as cards, no 3D.
 import { $, el, fmtClock, nowMs, short } from '../core/env.js';
 import { colorOf, dn, sessions } from '../people/workers.js';
-import { doingOf } from './activity.js';
+import { doingOf, uiStatusOf } from './activity.js';
 import { openSession } from './session-drawer.js';
 import { closePlace } from '../interact/place-cards.js';
 import { exitFp, fp } from '../interact/first-person.js';
@@ -18,7 +18,12 @@ export function setLite(on) {
 export function renderLite() {
   if (!lite) return;
   const box = $('lite'), list = [...sessions.values()];
-  const groups = [['wait', tr('lite.wait'), (s) => s.status === 'wait'], ['work', tr('lite.work'), (s) => s.status === 'work'], ['rest', tr('lite.rest'), (s) => s.status === 'rest']];
+  const groups = [
+    ['wait', tr('lite.wait'), (s) => uiStatusOf(s) === 'wait'],
+    ['work', tr('lite.work'), (s) => uiStatusOf(s) === 'work'],
+    ['rest', tr('lite.rest'), (s) => uiStatusOf(s) === 'rest'],
+    ['home', tr('lite.home'), (s) => uiStatusOf(s) === 'home'],
+  ];
   const frag = document.createDocumentFragment();
   if (!list.length) frag.append(el('p', 'lite-empty', tr('lite.empty')));
   for (const [key, title, f] of groups) {

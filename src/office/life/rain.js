@@ -10,18 +10,18 @@ import { t as tr } from '../../i18n/index.js';
 
 let RAIN_AT;
 export const rainKit = new THREE.Group();
+const _batM = new THREE.Matrix4(), _batW = new THREE.Matrix4(), _batQ = new THREE.Quaternion(), _batE = new THREE.Euler(), _batP = new THREE.Vector3(), _batOne = new THREE.Vector3(1, 1, 1);
 export function updateSeason(dt, t) {
   const B = seasonFx.bats;
   if (B) {
-    const M = new THREE.Matrix4(), W = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), p = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
     B.list.forEach((b, i) => {
       const a = b.ph + t * b.sp, x = b.x + Math.cos(a) * b.r, z = b.z + Math.sin(a) * b.r * 0.7, y = b.y + Math.sin(t * 1.7 + b.ph) * 0.18;
       const yaw = Math.atan2(-Math.sin(a) * b.r * b.sp, Math.cos(a) * b.r * 0.7 * b.sp), flap = Math.sin(t * 17 + b.ph * 3) * 0.85;
-      M.compose(p.set(x, y, z), q.setFromEuler(e.set(0, yaw, 0)), one); B.body.setMatrixAt(i, M);
-      W.makeRotationZ(flap).premultiply(M); B.wingR.setMatrixAt(i, W);
-      W.makeRotationZ(-flap).premultiply(M); B.wingL.setMatrixAt(i, W);
+      _batM.compose(_batP.set(x, y, z), _batQ.setFromEuler(_batE.set(0, yaw, 0)), _batOne); B.body.setMatrixAt(i, _batM);
+      _batW.makeRotationZ(flap).premultiply(_batM); B.wingR.setMatrixAt(i, _batW);
+      _batW.makeRotationZ(-flap).premultiply(_batM); B.wingL.setMatrixAt(i, _batW);
     });
-    for (const m of [B.body, B.wingR, B.wingL]) m.instanceMatrix.needsUpdate = true;
+    B.body.instanceMatrix.needsUpdate = B.wingR.instanceMatrix.needsUpdate = B.wingL.instanceMatrix.needsUpdate = true;
   }
   const G = seasonFx.ghost;
   if (G) { G.g.position.y = G.y + Math.sin(t * 1.4) * 0.09; G.g.rotation.y = Math.PI / 4 + Math.sin(t * 0.45) * 0.5; G.g.rotation.z = Math.sin(t * 1.1) * 0.08; }

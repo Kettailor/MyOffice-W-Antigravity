@@ -57,20 +57,27 @@ function urlRow(url) {
   row.append(el('b', 'url pm-url', url), copy);
   return row;
 }
+let lastViewerSig = '';
 export function renderViewerBadge() {
   const restricted = isAssistantRestricted();
-  if ($('btn-mac')) $('btn-mac').hidden = restricted;
-  if (restricted && $('dr-mac')) $('dr-mac').hidden = true;
-  if ($('btn-look')) $('btn-look').hidden = false;
-  if ($('btn-replay')) $('btn-replay').hidden = false;
+  const btnMac = $('btn-mac');
+  if (btnMac && btnMac.hidden !== restricted) btnMac.hidden = restricted;
+  if (restricted) { const drMac = $('dr-mac'); if (drMac && !drMac.hidden) drMac.hidden = true; }
+  const btnLook = $('btn-look');
+  if (btnLook && btnLook.hidden) btnLook.hidden = false;
+  const btnReplay = $('btn-replay');
+  if (btnReplay && btnReplay.hidden) btnReplay.hidden = false;
   const btnTop = $('btn-phone-top');
   if (btnTop) {
-    btnTop.hidden = false;
-    let badge = $('phone-top-badge');
+    if (btnTop.hidden) btnTop.hidden = false;
     if (state.isLocal) {
       const pendMembers = (state.access?.members || []).filter((m) => m.status === 'pending').length;
       const pendTasks = (state.access?.pendingTasks || []).length;
       const total = pendMembers + pendTasks;
+      const sig = `local:${total}`;
+      if (sig === lastViewerSig) return;
+      lastViewerSig = sig;
+      let badge = $('phone-top-badge');
       if (!badge) {
         badge = el('i', 'tb-badge');
         badge.id = 'phone-top-badge';
@@ -81,6 +88,9 @@ export function renderViewerBadge() {
       btnTop.title = total > 0 ? `Từ xa & Phân quyền (${total} yêu cầu chờ duyệt)` : tr('ui.topBar.phoneTitle');
     } else if (state.viewer) {
       const isDirDev = state.viewer.isDirectorDevice || state.viewer.role === 'Phó Giám đốc';
+      const sig = `remote:${isDirDev ? 1 : 0}:${state.viewer.role || ''}:${state.viewer.name || ''}:${state.requireTaskApproval ? 1 : 0}`;
+      if (sig === lastViewerSig) return;
+      lastViewerSig = sig;
       btnTop.classList.remove('tb-icon');
       btnTop.replaceChildren(
         el('span', null, `${isDirDev ? '👔' : '💼'} ${state.viewer.role || 'Trợ lý Giám đốc'}: ${state.viewer.name || 'Từ xa'}`),

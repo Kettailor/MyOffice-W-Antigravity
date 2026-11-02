@@ -56,6 +56,12 @@ export default {
     done: 'Renamed session to "{name}".',
     reset: 'Restored default session name.',
   },
+  stop: {
+    button: '⏹️ Stop',
+    title: 'Stop executing this session immediately',
+    stopping: '⏳ Stopping…',
+    stopped: '⏹️ Session execution stopped.',
+  },
   loadingChat: 'Loading conversation…',
   chatUnreadable: "Couldn't read this session's conversation.",
   copy: 'Copy',

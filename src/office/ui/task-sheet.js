@@ -14,11 +14,186 @@ import { sfx } from '../audio/sfx.js';
 import { t as tr, locale } from '../../i18n/index.js';
 
 const q = () => (TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : '');
-export const MAX_TASK_IMAGES = 5;
+export const MAX_TASK_IMAGES = 20;
 const PIN_KEY = 'office-pinned-tasks';
 const MODEL_KEY = 'office-task-model';
 const SESS_MODELS_KEY = 'office-session-models';
+const DRAFTS_KEY = 'office-task-drafts-v1';
+const LAST_PICK_KEY = 'office-task-last-pick';
+const IDB_NAME = 'office-task-drafts-db';
+const IDB_STORE = 'drafts';
 let sheet = null;
+let activeSheetCleanup = null;
+const memoryDrafts = new Map();
+let lastPick = null;
+
+function loadLocalStorageDrafts() {
+  try {
+    if (!lastPick) {
+      const rawPick = JSON.parse(localStorage.getItem(LAST_PICK_KEY) || 'null');
+      if (rawPick && (rawPick.sid || rawPick.dir)) lastPick = rawPick;
+    }
+  } catch { /* storage blocked */ }
+  try {
+    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}');
+    if (raw && typeof raw === 'object') {
+      for (const [k, v] of Object.entries(raw)) {
+        if (!k || !v || typeof v !== 'object') continue;
+        const existing = memoryDrafts.get(k);
+        if (!existing) {
+          memoryDrafts.set(k, {
+            text: String(v.text || ''),
+            photos: Array.isArray(v.photos) ? v.photos.slice(0, MAX_TASK_IMAGES) : [],
+          });
+        }
+      }
+    }
+  } catch { /* storage blocked */ }
+}
+
+function saveLocalStorageDrafts() {
+  const all = {};
+  for (const [k, v] of memoryDrafts.entries()) {
+    if (!k || (!v?.text && !v?.photos?.length)) continue;
+    all[k] = {
+      text: String(v.text || ''),
+      photos: Array.isArray(v.photos) ? v.photos.slice(0, MAX_TASK_IMAGES) : [],
+    };
+  }
+  try {
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+  } catch {
+    const textOnly = {};
+    for (const [k, v] of Object.entries(all)) {
+      textOnly[k] = { text: v.text || '', photos: [] };
+    }
+    try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(textOnly)); } catch { /* storage blocked */ }
+  }
+}
+
+function openDraftsIdb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE, { keyPath: 'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function idbSaveDraft(key, draft) {
+  const db = await openDraftsIdb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put({
+      key,
+      text: String(draft?.text || ''),
+      photos: Array.isArray(draft?.photos) ? draft.photos.slice(0, MAX_TASK_IMAGES) : [],
+      updatedAt: Date.now(),
+    });
+  } catch { /* ignore */ }
+}
+
+async function idbDeleteDraft(key) {
+  const db = await openDraftsIdb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+  } catch { /* ignore */ }
+}
+
+let idbHydratePromise = null;
+function hydrateDrafts() {
+  loadLocalStorageDrafts();
+  if (idbHydratePromise) return idbHydratePromise;
+  idbHydratePromise = (async () => {
+    const db = await openDraftsIdb();
+    if (!db) return;
+    await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).getAll();
+        req.onsuccess = () => {
+          const rows = Array.isArray(req.result) ? req.result : [];
+          for (const row of rows) {
+            if (!row?.key) continue;
+            const cur = memoryDrafts.get(row.key);
+            if (!cur || (!cur.photos?.length && row.photos?.length)) {
+              memoryDrafts.set(row.key, {
+                text: cur?.text || String(row.text || ''),
+                photos: Array.isArray(row.photos) ? row.photos.slice(0, MAX_TASK_IMAGES) : [],
+              });
+            }
+          }
+          resolve();
+        };
+        req.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  })();
+  return idbHydratePromise;
+}
+
+if (typeof window !== 'undefined') {
+  hydrateDrafts();
+}
+
+function getDraft(key) {
+  if (!key) return { text: '', photos: [] };
+  loadLocalStorageDrafts();
+  const d = memoryDrafts.get(key);
+  return {
+    text: String(d?.text || ''),
+    photos: Array.isArray(d?.photos) ? [...d.photos.slice(0, MAX_TASK_IMAGES)] : [],
+  };
+}
+
+function setDraft(key, { text = '', photos = [] } = {}) {
+  if (!key) return;
+  const cleanText = String(text || '');
+  const cleanPhotos = Array.isArray(photos) ? photos.slice(0, MAX_TASK_IMAGES) : [];
+  if (!cleanText.trim() && !cleanPhotos.length) {
+    memoryDrafts.delete(key);
+    saveLocalStorageDrafts();
+    idbDeleteDraft(key);
+    return;
+  }
+  const entry = { text: cleanText, photos: [...cleanPhotos] };
+  memoryDrafts.set(key, entry);
+  saveLocalStorageDrafts();
+  idbSaveDraft(key, entry);
+}
+
+function clearDraft(key) {
+  if (!key) return;
+  memoryDrafts.delete(key);
+  saveLocalStorageDrafts();
+  idbDeleteDraft(key);
+}
+
+function saveLastPick(p) {
+  lastPick = p ? (p.sid ? { sid: p.sid } : p.dir ? { dir: p.dir } : null) : null;
+  try {
+    if (lastPick) localStorage.setItem(LAST_PICK_KEY, JSON.stringify(lastPick));
+    else localStorage.removeItem(LAST_PICK_KEY);
+  } catch { /* storage blocked */ }
+}
+
+function getLastPick() {
+  loadLocalStorageDrafts();
+  return lastPick;
+}
 
 const defaultModels = () => [
   { id: '', label: tr('chat.task.modelAuto') },
@@ -77,24 +252,43 @@ export function dictate(btn, field, onChange) {
   return () => { try { rec.stop(); } catch { /* stopped */ } end(); };
 }
 
-/* ---------- photos: made smaller here (1600 px, JPEG) so they go quickly over a phone's connection ---------- */
+/* ---------- photos: made smaller here (2560 px, JPEG) so they go quickly over a phone's connection ---------- */
 export async function shrink(file) {
-  const bmp = await createImageBitmap(file), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const bmp = await createImageBitmap(file), k = Math.min(1, 2560 / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close?.();
-  let url = c.toDataURL('image/jpeg', 0.82);
-  if (url.length > 480_000) url = c.toDataURL('image/jpeg', 0.6);   // (under what the group chat shows too)
+  let url = c.toDataURL('image/jpeg', 0.90);
+  if (url.length > 2_500_000) url = c.toDataURL('image/jpeg', 0.78);
   return url;
 }
 
 /** Opens the sheet inside the chat window; to: { sid } (a conversation) or { dir } (a folder) to start with; text. */
 export async function openTaskSheet(host, { to = null, text = '', images: initImages = [] } = {}) {
+  activeSheetCleanup?.();
+  activeSheetCleanup = null;
   sheet?.remove();
   let stopMic = null;
-  const r = await fetch(`/api/tasks${q()}`).then((x) => x.json()).catch(() => null);
+  const [r] = await Promise.all([
+    fetch(`/api/tasks${q()}`).then((x) => x.json()).catch(() => null),
+    hydrateDrafts(),
+  ]);
   sheet = el('div', 'zc-task'); sheet.setAttribute('role', 'dialog'); sheet.setAttribute('aria-label', tr('chat.task.title'));
   const head = el('div', 'zc-task-head'), close = el('button', 'zc-ib'); close.type = 'button'; close.title = tr('chat.close'); close.append(icon('x'));
-  close.addEventListener('click', () => { stopMic?.(); sheet.remove(); sheet = null; });
+  let saveCurrentDraft = () => {};
+  const closeSheet = () => {
+    saveCurrentDraft();
+    stopMic?.();
+    stopMic = null;
+    activeSheetCleanup = null;
+    sheet?.remove();
+    sheet = null;
+  };
+  activeSheetCleanup = () => {
+    saveCurrentDraft();
+    stopMic?.();
+    stopMic = null;
+  };
+  close.addEventListener('click', closeSheet);
   head.append(el('b', null, `📋 ${tr('chat.task.title')}`), close);
   sheet.append(head);
   if (!r?.ok) { sheet.append(el('p', 'zc-task-note', tr('drawer.unreachable'))); host.append(sheet); return; }
@@ -137,35 +331,98 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   // who it goes to: the conversations (their folder), then "a new one in…" each folder (pinned items float to top)
   const visibleSessions = () => (r.sessions || []).filter((s) => !s.masked && !sessions.get(s.id)?.masked);
   const visibleProjects = () => (r.projects || []).filter((p) => !p.masked);
-  const sortSessions = () => [...visibleSessions()].sort((a, b) => (pins.has(`s:${b.sid}`) ? 1 : 0) - (pins.has(`s:${a.sid}`) ? 1 : 0));
+  const isSessBusy = (s) => {
+    const live = sessions.get(s.id) || s;
+    return live?.status === 'work' || live?.status === 'wait' || Boolean(live?.busy) || Boolean(s?.busy);
+  };
+  const sortSessions = () => [...visibleSessions()].sort((a, b) => {
+    const pa = pins.has(`s:${a.sid}`) ? 1 : 0;
+    const pb = pins.has(`s:${b.sid}`) ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    const ba = isSessBusy(a) ? 1 : 0;
+    const bb = isSessBusy(b) ? 1 : 0;
+    if (ba !== bb) return ba - bb;
+    return 0;
+  });
   const sortProjects = () => [...visibleProjects()].sort((a, b) => (pins.has(`d:${b.dir}`) ? 1 : 0) - (pins.has(`d:${a.dir}`) ? 1 : 0));
   const initS = sortSessions(), initP = sortProjects();
   const toSid = to?.id ? visibleSessions().find((s) => s.id === to.id)?.sid : to?.sid;
-  let pick = toSid ? { sid: toSid } : to?.dir ? { dir: to.dir } : initS[0] ? { sid: initS[0].sid } : initP[0] ? { dir: initP[0].dir } : null;
+  const savedPick = getLastPick();
+  const savedMatch = savedPick?.sid && initS.some((s) => s.sid === savedPick.sid)
+    ? { sid: savedPick.sid }
+    : savedPick?.dir && initP.some((p) => p.dir === savedPick.dir)
+      ? { dir: savedPick.dir }
+      : null;
+  let pick = toSid ? { sid: toSid } : to?.dir ? { dir: to.dir } : savedMatch || (initS[0] ? { sid: initS[0].sid } : initP[0] ? { dir: initP[0].dir } : null);
+  if (pick) saveLastPick(pick);
+  let showNewIn = initS.length === 0 || Boolean(to?.dir && !to?.sid);
+  let savedShowNewIn = null;
+  try {
+    savedShowNewIn = localStorage.getItem('zc_task_show_new_in');
+    if (savedShowNewIn === '1' || savedShowNewIn === 'true') showNewIn = true;
+    else if (savedShowNewIn === '0' || savedShowNewIn === 'false') showNewIn = false;
+  } catch { /* storage blocked */ }
+  if (to?.dir && !to?.sid) showNewIn = true;
+  if (initS.length === 0 && savedShowNewIn == null) showNewIn = true;
   const list = el('div', 'zc-task-list');
   const modelSelect = el('select', 'zc-task-model-select');
   const syncModelSelect = () => {
     const want = getModelForPick(pick);
     modelSelect.value = models.some((m) => m.id === want) ? want : '';
   };
+  const initDraft = getDraft(keyOfPick(pick));
+  const initialText = text ? text : (initDraft.text || '');
+  const initialPhotos = (Array.isArray(initImages) && initImages.length ? initImages : (initDraft.photos || [])).slice(0, MAX_TASK_IMAGES);
+  const field = el('textarea', 'zc-task-in'); field.rows = 4; field.maxLength = 4000; field.placeholder = `${tr('chat.task.placeholder')} · ${tr('chat.task.pasteHint', { max: MAX_TASK_IMAGES })}`; field.value = initialText;
+  const photos = [...initialPhotos], thumbs = el('div', 'zc-task-thumbs');
+  const camSpan = el('span', null, `${tr('chat.task.photo')} (${photos.length}/${MAX_TASK_IMAGES})`);
+  saveCurrentDraft = () => {
+    const k = keyOfPick(pick);
+    if (k) setDraft(k, { text: field.value, photos });
+    if (pick) saveLastPick(pick);
+  };
+  saveCurrentDraft();
+  let sync = () => {};
+  const drawThumbs = () => {
+    camSpan.textContent = `${tr('chat.task.photo')} (${photos.length}/${MAX_TASK_IMAGES})`;
+    thumbs.replaceChildren(...photos.map((u, i) => {
+      const t = el('span', 'zc-task-thumb'), img = el('img'), x = el('button', null, '✕');
+      img.src = u; x.type = 'button';
+      x.addEventListener('click', () => { photos.splice(i, 1); drawThumbs(); saveCurrentDraft(); sync(); });
+      t.append(img, x);
+      return t;
+    }));
+  };
+  if (photos.length) drawThumbs();
   const option = (key, pinKey, label, sub, face, sel, sessObj = null) => {
     const isPinned = pins.has(pinKey);
     const wrap = el('div', `zc-task-row${sel ? ' is-on' : ''}${isPinned ? ' is-pinned' : ''}`);
     const b = el('button', `zc-task-o${sel ? ' is-on' : ''}`); b.type = 'button';
     const t = el('span', 'zc-men-t');
     const titleEl = el('b', null, isPinned ? `📌 ${label}` : label);
+    if (sessObj && isSessBusy(sessObj)) {
+      const dot = el('span', 'zc-task-live-dot');
+      dot.title = tr('chat.task.activeWorking');
+      titleEl.append(' ', dot);
+    }
     t.append(titleEl, el('small', null, sub));
     b.append(face, t);
     b.addEventListener('click', () => {
+      saveCurrentDraft();
       pick = key;
+      saveLastPick(pick);
       for (const x of list.querySelectorAll('.zc-task-o')) x.classList.toggle('is-on', x === b);
       for (const x of list.querySelectorAll('.zc-task-row')) x.classList.toggle('is-on', x === wrap);
+      const nextDraft = getDraft(keyOfPick(pick));
+      field.value = nextDraft.text || '';
+      photos.splice(0, photos.length, ...(nextDraft.photos || []).slice(0, MAX_TASK_IMAGES));
+      drawThumbs();
       syncModelSelect();
       sync();
     });
     const pinBtn = el('button', `zc-task-pin${isPinned ? ' is-on' : ''}`, '📌');
     pinBtn.type = 'button';
-    pinBtn.title = isPinned ? 'Bỏ ghim' : 'Ghim lên đầu danh sách';
+    pinBtn.title = isPinned ? tr('chat.task.unpin') : tr('chat.task.pin');
     pinBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (pins.has(pinKey)) pins.delete(pinKey);
@@ -237,11 +494,17 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
           delBtn.textContent = '🗑️';
           return;
         }
+        clearDraft(`s:${sessObj.sid}`);
         r.sessions = (r.sessions || []).filter((x) => x.sid !== sessObj.sid && x.id !== sessObj.id);
         if (pick?.sid === sessObj.sid) {
           const nextS = sortSessions()[0];
           const nextP = sortProjects()[0];
           pick = nextS ? { sid: nextS.sid } : nextP ? { dir: nextP.dir } : null;
+          saveLastPick(pick);
+          const nextDraft = getDraft(keyOfPick(pick));
+          field.value = nextDraft.text || '';
+          photos.splice(0, photos.length, ...(nextDraft.photos || []).slice(0, MAX_TASK_IMAGES));
+          drawThumbs();
         }
         drawList();
         syncModelSelect();
@@ -262,13 +525,29 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
       const subText = mText ? `📁 ${s.dir} · ${mText}` : `📁 ${s.dir}`;
       items.push(option({ sid: s.sid }, `s:${s.sid}`, s.name, subText, avatar({ ...(who(s.id) || {}), key: s.id, name: s.name }, 30), pick?.sid === s.sid, s));
     }
-    if (projList.length) items.push(el('small', 'zc-task-h', tr('chat.task.newIn')));
-    for (const p of projList) {
-      const f = el('span', 'zc-task-folder', '📁');
-      const mId = getModelForPick({ dir: p.dir });
-      const mText = labelOfModel(mId);
-      const subText = mText ? `${p.dir} · ${mText}` : p.dir;
-      items.push(option({ dir: p.dir }, `d:${p.dir}`, p.name, subText, f, pick?.dir === p.dir && !pick?.sid));
+    if (projList.length) {
+      const projHead = el('div', 'zc-task-h zc-task-h-toggle');
+      const toggleBtn = el('button', 'zc-task-toggle-btn', showNewIn ? `${tr('chat.task.hideNewIn')} ▲` : `${tr('chat.task.showNewIn')} (${projList.length}) ▼`);
+      toggleBtn.type = 'button';
+      toggleBtn.setAttribute('aria-expanded', String(showNewIn));
+      const toggleNewIn = (ev) => {
+        ev.stopPropagation();
+        showNewIn = !showNewIn;
+        try { localStorage.setItem('zc_task_show_new_in', showNewIn ? '1' : '0'); } catch { /* storage blocked */ }
+        drawList();
+      };
+      projHead.addEventListener('click', toggleNewIn);
+      projHead.append(el('span', null, tr('chat.task.newIn')), toggleBtn);
+      items.push(projHead);
+      if (showNewIn) {
+        for (const p of projList) {
+          const f = el('span', 'zc-task-folder', '📁');
+          const mId = getModelForPick({ dir: p.dir });
+          const mText = labelOfModel(mId);
+          const subText = mText ? `${p.dir} · ${mText}` : p.dir;
+          items.push(option({ dir: p.dir }, `d:${p.dir}`, p.name, subText, f, pick?.dir === p.dir && !pick?.sid));
+        }
+      }
     }
     list.replaceChildren(...items);
   };
@@ -301,35 +580,25 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     }
   });
   modelRow.append(modelLabel, modelSelect);
-  // what to do: typed or spoken, and photos (up to 5 images via button or Ctrl+V)
-  const field = el('textarea', 'zc-task-in'); field.rows = 4; field.maxLength = 4000; field.placeholder = `${tr('chat.task.placeholder')} · Ctrl+V dán ảnh (tối đa ${MAX_TASK_IMAGES} ảnh)`; field.value = text;
-  field.addEventListener('keydown', (e) => e.stopPropagation());
-  const photos = [...initImages.slice(0, MAX_TASK_IMAGES)], thumbs = el('div', 'zc-task-thumbs');
-  const camSpan = el('span', null, `${tr('chat.task.photo')} (${photos.length}/${MAX_TASK_IMAGES})`);
-  const drawThumbs = () => {
-    camSpan.textContent = `${tr('chat.task.photo')} (${photos.length}/${MAX_TASK_IMAGES})`;
-    thumbs.replaceChildren(...photos.map((u, i) => {
-      const t = el('span', 'zc-task-thumb'), img = el('img'), x = el('button', null, '✕');
-      img.src = u; x.type = 'button';
-      x.addEventListener('click', () => { photos.splice(i, 1); drawThumbs(); sync(); });
-      t.append(img, x);
-      return t;
-    }));
-  };
-  if (photos.length) drawThumbs();
+  // what to do: typed or spoken, and photos (up to 20 images via button or Ctrl+V)
+  field.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); closeSheet(); }
+  });
   const addImageFiles = async (fileList) => {
     const imgs = [...(fileList || [])].filter((f) => f && (!f.type || f.type.startsWith('image/')));
     if (!imgs.length) return;
     const slots = MAX_TASK_IMAGES - photos.length;
     if (slots <= 0) {
-      toast(`Đã đạt giới hạn tối đa ${MAX_TASK_IMAGES} ảnh cho Antigravity.`, 3500);
+      toast(tr('chat.task.photoLimit', { max: MAX_TASK_IMAGES }), 3500);
       return;
     }
     for (const f of imgs.slice(0, slots)) {
       try { photos.push(await shrink(f)); } catch { /* not an image it can read */ }
     }
-    if (imgs.length > slots) toast(`Chỉ gửi tối đa ${MAX_TASK_IMAGES} ảnh (đã thêm ${slots} ảnh).`, 3500);
+    if (imgs.length > slots) toast(tr('chat.task.photoAddedMax', { max: MAX_TASK_IMAGES, added: slots }), 3500);
     drawThumbs();
+    saveCurrentDraft();
     sync();
   };
   const file = el('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.hidden = true;
@@ -350,14 +619,14 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     }
   });
   const mic = el('button', 'zc-task-tool'); mic.type = 'button'; mic.title = tr('chat.task.mic'); mic.append(icon('mic'), el('span', null, tr('chat.task.mic')));
-  mic.addEventListener('click', () => { if (stopMic) { stopMic(); stopMic = null; } else stopMic = dictate(mic, field, sync); });
-  const cam = el('button', 'zc-task-tool'); cam.type = 'button'; cam.title = `${tr('chat.task.photo')} (Ctrl+V · tối đa ${MAX_TASK_IMAGES} ảnh)`; cam.append(icon('image'), camSpan);
+  mic.addEventListener('click', () => { if (stopMic) { stopMic(); stopMic = null; } else stopMic = dictate(mic, field, () => { saveCurrentDraft(); sync(); }); });
+  const cam = el('button', 'zc-task-tool'); cam.type = 'button'; cam.title = `${tr('chat.task.photo')} (${tr('chat.task.pasteHint', { max: MAX_TASK_IMAGES })})`; cam.append(icon('image'), camSpan);
   cam.addEventListener('click', () => file.click());
   const tools = el('div', 'zc-task-tools'); tools.append(mic, cam, file);
-  const sendLabel = r.requireTaskApproval ? '⏳ Gửi Giám đốc duyệt & Giao việc' : tr('chat.task.send');
+  const sendLabel = r.requireTaskApproval ? tr('chat.task.sendApprove') : tr('chat.task.send');
   const go = el('button', 'zc-task-go', sendLabel); go.type = 'button';
-  const sync = () => { go.disabled = !pick || (!field.value.trim() && !photos.length); };
-  field.addEventListener('input', sync);
+  sync = () => { go.disabled = !pick || (!field.value.trim() && !photos.length); };
+  field.addEventListener('input', () => { saveCurrentDraft(); sync(); });
   go.addEventListener('click', async () => {
     stopMic?.(); stopMic = null; go.disabled = true; go.textContent = tr('chat.task.sending');
     const k = keyOfPick(pick);
@@ -365,11 +634,13 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
       sessModels[k] = modelSelect.value;
       saveSessionModels(sessModels);
     }
-    const promptText = field.value.trim() || (photos.length ? 'Hãy phân tích hình ảnh đính kèm và xử lý yêu cầu.' : '');
+    const promptText = field.value.trim() || (photos.length ? tr('chat.task.defaultImagePrompt') : '');
     const res = await fetch(`/api/tasks${q()}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...pick, text: promptText, images: photos, model: modelSelect.value }) }).then((x) => x.json()).catch(() => null);
     if (res?.ok) {
       sfx?.play('task');
-      toast(res.pendingApproval ? (res.message || '⏳ Đã gửi yêu cầu công việc tới Giám đốc để phê duyệt!') : tr('chat.task.started'), 5500);
+      toast(res.pendingApproval ? (res.message || tr('chat.task.sentForApproval')) : tr('chat.task.started'), 5500);
+      clearDraft(k);
+      activeSheetCleanup = null;
       sheet.remove(); sheet = null; return;
     }
     toast(res?.message || tr('drawer.unreachable'), 6000); go.textContent = sendLabel; sync();

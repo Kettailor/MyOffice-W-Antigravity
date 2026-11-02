@@ -10,7 +10,7 @@ export let reduceMotion;
 export let LAYOUT;
 export let PRO;
 export let HQ;
-export const PLANS = ['cozy', 'pro', 'hq'];
+export const PLANS = ['hq'];
 export let small;
 export const V2 = THREE.Vector2;
 export const rand = (a, b) => a + Math.random() * (b - a);
@@ -43,29 +43,19 @@ export const fmtClock = (s) => { s = Math.max(0, Math.floor(s)); return s >= 360
 export function setup() {
   stage = $('stage');
   reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // Floor plan, each viewer's own choice: 'pro' (a company floor, the default), 'cozy' (one open room)
-  // or 'hq' (headquarters: the company floor plus a wing of department rooms). Switching reloads the page;
-  // ?layout=cozy|pro|hq overrides it for one visit.
-  LAYOUT = (() => {
+  // Floor plan locked to 'hq' (headquarters: the company floor plus a wing of department rooms and meeting rooms).
+  LAYOUT = 'hq';
+  PRO = true;
+  HQ = true;
+  try {
     const params = new URLSearchParams(location.search);
-    const q = params.get('layout');
-    if (PLANS.includes(q)) return q;
-    const def = 'hq';
-    try {
-      const devKey = 'office-layout-v2:' + (params.get('k') || 'local');
-      const v = localStorage.getItem(devKey) || localStorage.getItem('office-layout-v2');
-      if (PLANS.includes(v)) return v;
-      localStorage.setItem(devKey, def);
-      localStorage.setItem('office-layout-v2', def);
-      localStorage.setItem('office-layout', def);
-      return def;
-    } catch {
-      return def;
-    }
-  })();
-  // the company floor's rooms, people and habits; headquarters is the company floor plus a wing of departments
-  PRO = LAYOUT === 'pro' || LAYOUT === 'hq';
-  HQ = LAYOUT === 'hq';
+    const devKey = 'office-layout-v2:' + (params.get('k') || 'local');
+    localStorage.setItem(devKey, 'hq');
+    localStorage.setItem('office-layout-v2', 'hq');
+    localStorage.setItem('office-layout', 'hq');
+  } catch {
+    /* storage blocked */
+  }
   small = matchMedia('(max-width: 720px)');
   // The office's wall clock (lunch, the afternoon coffee, the season's decorations). ?at=12:10 or ?at=2026-12-24T20:00
   // pretends it is that time, for screenshots and for trying a season out.

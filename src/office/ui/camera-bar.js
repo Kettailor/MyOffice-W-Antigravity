@@ -2,6 +2,8 @@
 import { state } from '../core/state.js';
 import { $, HQ, PRO } from '../core/env.js';
 import { BASE_ZOOM, camera, controls, fpCam } from '../scene/renderer.js';
+import { MEET_WING_ROOMS } from '../world/layout.js';
+import { subs, workers } from '../people/workers.js';
 import { queueUi, toast } from './activity.js';
 import { drS } from './session-drawer.js';
 import { exitFp, fp } from '../interact/first-person.js';
@@ -9,7 +11,13 @@ import { focusTarget } from '../core/loop.js';
 import { t as tr } from '../../i18n/index.js';
 
 let VIEWS;
-export function setView(v) { for (const b of document.querySelectorAll('.seg-btn')) b.setAttribute('aria-pressed', String(b.dataset.view === v)); }
+let currentView = 'home';
+let meetCycleIdx = -1;
+export function setView(v) {
+  currentView = v;
+  if (v !== 'meeting') meetCycleIdx = -1;
+  for (const b of document.querySelectorAll('.seg-btn')) b.setAttribute('aria-pressed', String(b.dataset.view === v));
+}
 let panBack = null;
 let panTimer = 0;
 export const autoCam = () => state.camAuto && !fp.on && !state.photo && !state.selectedId && performance.now() - state.lastUserCam > 30000;
@@ -18,15 +26,62 @@ export function panTo(w) {
   focusTarget.set(w.pos.x, 0.9, w.pos.y);
   clearTimeout(panTimer); panTimer = setTimeout(() => { if (panBack && !state.selectedId) focusTarget.copy(panBack); panBack = null; }, 7000);
 }
-export function goView(v) { const V = VIEWS[v]; if (!V) return; focusTarget.set(...V.t); state.zoomGoal = V.z * BASE_ZOOM; setView(v); }
+function findBusyMeetingRoom() {
+  if (!HQ || !MEET_WING_ROOMS.length) return null;
+  const busyRooms = [];
+  for (const rm of MEET_WING_ROOMS) {
+    let count = 0;
+    for (const w of workers.values()) {
+      if (w.root?.parent && !w.away && w.pos.x >= rm.x0 && w.pos.x <= rm.x1 && w.pos.y >= rm.z0 && w.pos.y <= rm.z1) count++;
+    }
+    for (const sw of subs.values()) {
+      if (sw.root?.parent && sw.pos.x >= rm.x0 && sw.pos.x <= rm.x1 && sw.pos.y >= rm.z0 && sw.pos.y <= rm.z1) count++;
+    }
+    if (count > 0) busyRooms.push({ rm, count });
+  }
+  if (busyRooms.length === 1) return busyRooms[0].rm;
+  return null;
+}
+export function goView(v) {
+  const V = VIEWS[v];
+  if (!V) return;
+  const camOff = HQ ? [19, 23, 19] : PRO ? [17, 20, 17] : [18, 16, 18];
+  camera.position.set(
+    controls.target.x + camOff[0],
+    controls.target.y + camOff[1],
+    controls.target.z + camOff[2],
+  );
+  if (v === 'meeting' && HQ && MEET_WING_ROOMS.length) {
+    const busyRm = findBusyMeetingRoom();
+    if (currentView === 'meeting') {
+      meetCycleIdx = (meetCycleIdx + 1) % (MEET_WING_ROOMS.length + 1);
+    } else {
+      meetCycleIdx = busyRm ? MEET_WING_ROOMS.indexOf(busyRm) : -1;
+    }
+    if (meetCycleIdx >= 0 && MEET_WING_ROOMS[meetCycleIdx]) {
+      const rm = MEET_WING_ROOMS[meetCycleIdx];
+      focusTarget.set(rm.cx, 0.8, rm.cz);
+      state.zoomGoal = 1.95 * BASE_ZOOM;
+    } else {
+      focusTarget.set(...V.t);
+      state.zoomGoal = V.z * BASE_ZOOM;
+    }
+    setView(v);
+    currentView = 'meeting';
+    return;
+  }
+  focusTarget.set(...V.t);
+  state.zoomGoal = V.z * BASE_ZOOM;
+  setView(v);
+}
 
 export function setup() {
   /* ---------- camera toolbar ---------- */
   VIEWS = HQ ? {
-    home: { t: [3, 0.3, 8.5], z: 1 },
+    home: { t: [3, 0.3, 3.8], z: 1 },
     desks: { t: [2.5, 0.6, 3.2], z: 1.85 },
-    wing: { t: [3, 0.6, 18.2], z: 1.45 },
-    meeting: { t: [-1.2, 0.6, -5.4], z: 2.5 },
+    wing: { t: [1.5, 0.8, 13.3], z: 1.58 },
+    meeting: { t: [1.5, 0.8, 13.3], z: 1.58 },
     server: { t: [-5.6, 1.0, -0.6], z: 2.8 },
     lounge: { t: [11.2, 0.6, 2.5], z: 2.1 },
   } : PRO ? {

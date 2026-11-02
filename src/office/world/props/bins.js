@@ -9,10 +9,12 @@ export let binM;
 export let paperBallM;
 export let bins;
 let binAt = -1;
+const _byDesk = new Map();
 export function updateBins(dt, t) {
-  const byDesk = new Map(); for (const s of sessions.values()) if (s.desk >= 0) byDesk.set(s.desk, s);
+  _byDesk.clear();
+  for (const s of sessions.values()) if (s.desk >= 0) _byDesk.set(s.desk, s);
   for (const b of bins) {
-    const s = byDesk.get(b.desk), w = s && workers.get(s.id), stomping = w && w.anim === 'stomp' && w.phase !== 'walk';
+    const s = _byDesk.get(b.desk), w = s && workers.get(s.id), stomping = w && w.anim === 'stomp' && w.phase !== 'walk';
     if (t - binAt > 1 || stomping) {
       const f = stomping || w?.shred ? 0 : s?.usage ? Math.min(1, s.usage.ctx / s.usage.ctxMax) : 0, n = Math.round(f * b.balls.length);
       b.balls.forEach((x, k) => { x.visible = k < n; }); b.spill.forEach((x) => { x.visible = f > 0.85; });

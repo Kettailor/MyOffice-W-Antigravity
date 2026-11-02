@@ -7,18 +7,18 @@
 // even at the lowest resolution step, it goes down one level and remembers that for this device. A remembered level is
 // tried one step higher again after three days, so a busy afternoon does not cap the office for good.
 import * as THREE from 'three';
-import { SOFTWARE_GL, camera, composer, renderer, scene } from './renderer.js';
+import { SOFTWARE_GL, bloom, camera, composer, renderer, scene } from './renderer.js';
 import { sun } from './lights.js';
 
 export const LEVELS = ['low', 'medium', 'high'];
 const PRESET = {
-  high: { prMax: 2, shadows: true, soft: true, map: 2048, msaa: 4, plain: false, fps: 60 },
-  medium: { prMax: 1.5, shadows: true, soft: false, map: 1024, msaa: 2, plain: false, fps: 60 },
-  low: { prMax: 1, shadows: false, soft: false, map: 512, msaa: 0, plain: true, fps: 30 },
+  high: { prMax: 2, shadows: true, soft: true, map: 2048, msaa: 4, plain: false, bloom: true, fps: 60 },
+  medium: { prMax: 1.35, shadows: true, soft: false, map: 1024, msaa: 0, plain: true, bloom: false, fps: 60 },
+  low: { prMax: 1, shadows: false, soft: false, map: 512, msaa: 0, plain: true, bloom: false, fps: 30 },
 };
 const KEY = 'office-quality-v2';
 // choice: what the viewer picked ('auto' or a level); level: what is in use; plain: draw without post-processing
-export const quality = { choice: 'high', level: 'high', plain: false, fps: 60, prMax: 2 };
+export const quality = { choice: 'auto', level: 'medium', plain: true, bloom: false, fps: 60, prMax: 1.35 };
 const listeners = new Set();
 
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } } };
@@ -28,12 +28,14 @@ export const phoneLike = () => (phone ??= matchMedia('(pointer: coarse)').matche
 function autoStart() {
   if (SOFTWARE_GL) return 'low';
   if (phoneLike()) return 'low';
-  return 'high';
+  return 'medium';
 }
 
 function apply(level) {
   const p = PRESET[level];
-  Object.assign(quality, { level, plain: p.plain || SOFTWARE_GL, fps: p.fps, prMax: SOFTWARE_GL ? 0.5 : p.prMax });
+  const useBloom = !!p.bloom && quality.choice === 'high' && !SOFTWARE_GL;
+  Object.assign(quality, { level, bloom: useBloom, plain: p.plain || !useBloom || SOFTWARE_GL, fps: p.fps, prMax: SOFTWARE_GL ? 0.5 : p.prMax });
+  if (bloom) bloom.enabled = useBloom;
   if (!SOFTWARE_GL) {
     sun.castShadow = p.shadows;
     const type = p.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
@@ -47,7 +49,7 @@ function apply(level) {
 
 /** Draws one frame with the current quality: through the post-processing chain, or plainly when it is off. */
 export function drawFrame(cam = camera) {
-  if (quality.plain) renderer.render(scene, cam); else composer.render();
+  if (quality.plain || !quality.bloom || !bloom?.enabled) renderer.render(scene, cam); else composer.render();
 }
 /** The viewer picked a level (or 'auto') in Settings. */
 export function setQuality(choice) {
@@ -67,6 +69,6 @@ export function onQualityChange(fn) { listeners.add(fn); fn(quality); }
 
 export function setup() {
   const saved = store.get(KEY);
-  quality.choice = saved === 'auto' || LEVELS.includes(saved) ? saved : 'high';
+  quality.choice = saved === 'auto' || LEVELS.includes(saved) ? saved : 'auto';
   apply(quality.choice === 'auto' ? autoStart() : quality.choice);
 }

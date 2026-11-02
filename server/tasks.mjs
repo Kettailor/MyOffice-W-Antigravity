@@ -5,11 +5,159 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const MAX_TEXT = 4000, MAX_IMAGES = 5, MAX_IMAGE = 4_500_000;
-const IMG_KEEP_MS = 30 * 86400_000; // 30 days retention for task images
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_DATA_DIR = process.env.OFFICE_DATA_DIR ? path.resolve(process.env.OFFICE_DATA_DIR) : path.join(ROOT, 'data');
+const MAX_TEXT = 4000, MAX_IMAGES = 20, MAX_IMAGE = 12_000_000;
+const IMG_KEEP_MS = 7 * 86400_000; // 7 days retention for task images
 const projectIdByDir = new Map();
 const projectIdBySid = new Map();
+
+export function requestHostBridgeWakeup(dataDir = DEFAULT_DATA_DIR, reason = 'task-dispatch') {
+  const targetDataDir = dataDir ? path.resolve(dataDir) : DEFAULT_DATA_DIR;
+  try {
+    fs.mkdirSync(targetDataDir, { recursive: true });
+    const stopFlag = path.join(targetDataDir, '.bridge-stopped');
+    if (fs.existsSync(stopFlag)) {
+      try { fs.unlinkSync(stopFlag); } catch { /* ignore */ }
+    }
+    const wakeupFile = path.join(targetDataDir, 'bridge-wakeup.json');
+    fs.writeFileSync(wakeupFile, JSON.stringify({
+      requestedAt: Date.now(),
+      reason: String(reason || 'task-dispatch'),
+      pid: process.pid,
+    }));
+  } catch { /* ignore */ }
+
+  if (process.platform === 'win32') {
+    try {
+      const bridgeScript = path.join(ROOT, 'server', 'host-bridge.mjs');
+      if (fs.existsSync(bridgeScript)) {
+        const child = spawn(process.execPath, [bridgeScript, '--on-demand'], {
+          cwd: ROOT,
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        child.unref();
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+async function probeBridgeHealth(bridgeBase, headers = {}, timeoutMs = 900) {
+  const urls = Array.isArray(bridgeBase)
+    ? bridgeBase.map((u) => String(u || '').replace(/\/+$/, '')).filter(Boolean)
+    : [String(bridgeBase || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311').replace(/\/+$/, '')];
+  for (const baseUrl of urls) {
+    try {
+      const res = await fetch(`${baseUrl}/health`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.ok) return baseUrl;
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
+export async function ensureHostBridgeReady(bridgeBase, headers = {}, timeoutMs = 6500, dataDir = DEFAULT_DATA_DIR) {
+  const initialHit = await probeBridgeHealth(bridgeBase, headers, 900);
+  if (initialHit) return true;
+
+  requestHostBridgeWakeup(dataDir, 'task-dispatch');
+
+  const deadline = Date.now() + Math.max(500, Number(timeoutMs) || 6500);
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 220));
+    const hit = await probeBridgeHealth(bridgeBase, headers, 900);
+    if (hit) return true;
+  }
+  return false;
+}
+
+export async function dispatchViaHostBridge({
+  bridgeBase,
+  candidateUrls,
+  headers = {},
+  payload = {},
+  signal,
+  timeoutMs = 6500,
+  dataDir = DEFAULT_DATA_DIR,
+} = {}) {
+  const urls = Array.isArray(candidateUrls) && candidateUrls.length
+    ? candidateUrls
+    : [String(bridgeBase || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311').replace(/\/+$/, '')];
+  await ensureHostBridgeReady(urls, headers, timeoutMs, dataDir);
+  let res = null;
+  let activeUrl = urls[0];
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3 && !res; attempt++) {
+    if (attempt > 0) {
+      await ensureHostBridgeReady(urls, headers, 3200, dataDir);
+    }
+    for (const baseUrl of urls) {
+      try {
+        const candidateRes = await fetch(`${baseUrl}/task/start`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal,
+        });
+        if (candidateRes.ok && candidateRes.body) {
+          res = candidateRes;
+          activeUrl = baseUrl;
+          break;
+        }
+        lastErr = new Error(`Host bridge HTTP ${candidateRes.status}`);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+  }
+  if (!res || !res.body) {
+    throw lastErr || new Error('Không kết nối được Host Bridge (cổng 4311)');
+  }
+  return { res, bridgeUrl: activeUrl };
+}
+
+export async function stopViaHostBridge(sessionKeyOrOpts = {}, { bridgeBase, headers = {} } = {}) {
+  const payload = typeof sessionKeyOrOpts === 'string'
+    ? { id: sessionKeyOrOpts, sid: sessionKeyOrOpts, dir: '' }
+    : {
+        id: String(sessionKeyOrOpts?.id || ''),
+        sid: String(sessionKeyOrOpts?.sid || ''),
+        dir: String(sessionKeyOrOpts?.dir || ''),
+      };
+  const targetBase = bridgeBase || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311';
+  // Do NOT wake up the Host Bridge if it is already stopped (no tasks are running when bridge is off)
+  const healthyUrl = await probeBridgeHealth(targetBase, headers, 700);
+  if (!healthyUrl) return { ok: true, stopped: 0, bridgeSleeping: true };
+  try {
+    const res = await fetch(`${healthyUrl}/task/stop`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.ok) {
+      const j = await res.json().catch(() => null);
+      return { ok: true, stopped: Number(j?.stopped) || 0 };
+    }
+  } catch { /* ignore bridge error */ }
+  return { ok: false, stopped: 0 };
+}
+
+function setBounded(map, key, val, max = 300) {
+  if (!key || !val) return;
+  if (map.size >= max && !map.has(key)) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, val);
+}
 
 function normDirKey(p = '') {
   const s = String(p || '').trim().replace(/^file:\/\/\/?/i, '').replace(/[\\/]+$/, '');
@@ -50,7 +198,7 @@ function lookupProjectIdFromConfigProjects(targetDir) {
           uri = uri.replace(/^file:\/\/\/?/i, '');
           try { uri = decodeURIComponent(uri); } catch { /* keep raw */ }
           const dKey = normDirKey(uri);
-          if (pid && dKey) projectIdByDir.set(dKey, pid);
+          if (pid && dKey) setBounded(projectIdByDir, dKey, pid);
         }
       } catch { /* ignore */ }
     }
@@ -80,7 +228,7 @@ function lookupProjectIdFromSummariesProto(targetDir) {
         let decoded = m[1];
         try { decoded = decodeURIComponent(m[1]); } catch { /* keep raw */ }
         const dKey = normDirKey(decoded);
-        if (dKey) projectIdByDir.set(dKey, m[2]);
+        if (dKey) setBounded(projectIdByDir, dKey, m[2]);
       }
     }
     return projectIdByDir.get(key) || '';
@@ -144,8 +292,8 @@ function resolveAgyProjectId(binFile, dir, sid, baseEnv) {
       const parsed = JSON.parse(raw.trim());
       const pid = parsed?.response?.conversationMetadata?.metadata?.projectId || '';
       if (pid) {
-        projectIdBySid.set(sid, pid);
-        if (dir) projectIdByDir.set(normDirKey(dir), pid);
+        setBounded(projectIdBySid, sid, pid);
+        if (dir) setBounded(projectIdByDir, normDirKey(dir), pid);
         return pid;
       }
     } catch { /* fallback to proto lookup */ }
@@ -161,10 +309,16 @@ function cleanAgyError(errStr = '') {
 }
 
 /** claude() -> { file, kind? } | null; env() -> the environment to run with; onStart(task), onDone(task) for the office. */
-export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, perHour = 12 }) {
+export function createTasks({ dataDir, claude, env, onStart, onDone, max = Number(process.env.OFFICE_MAX_CONCURRENT_TASKS) || 12, perHour = Number(process.env.OFFICE_TASKS_PER_HOUR) || 100 }) {
   const running = new Map(), recent = [];   // id -> task; when the last ones started (the hourly cap)
   const IMG_DIR = path.join(dataDir, 'task-images');
-  const imgDir = IMG_DIR;
+  function bridgeHeaders() {
+    let token = '';
+    try { token = fs.readFileSync(path.join(dataDir, 'token'), 'utf8').trim(); } catch { /* ignore */ }
+    return token
+      ? { 'Content-Type': 'application/json', 'X-Bridge-Token': token }
+      : { 'Content-Type': 'application/json' };
+  }
   function pruneTaskImages() {
     try {
       if (!fs.existsSync(IMG_DIR)) return;
@@ -196,38 +350,35 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
 
     if (bin.kind === 'docker-bridge') {
       const primaryUrl = String(bin.url || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311').replace(/\/+$/, '');
-      const candidateUrls = [...new Set([primaryUrl, 'http://host.docker.internal:4311', 'http://192.168.65.254:4311'])];
+      const extraBridgeUrls = [];
+      try {
+        const netInfo = JSON.parse(fs.readFileSync(path.join(dataDir, 'host-net.json'), 'utf8'));
+        if (netInfo?.wifiIp) extraBridgeUrls.push(`http://${netInfo.wifiIp}:4311`);
+        if (netInfo?.tsIp) extraBridgeUrls.push(`http://${netInfo.tsIp}:4311`);
+      } catch { /* ignore */ }
+      const candidateUrls = [...new Set([
+        primaryUrl,
+        'http://host.docker.internal:4311',
+        'http://192.168.65.254:4311',
+        ...extraBridgeUrls,
+        'http://172.17.0.1:4311',
+        'http://172.22.0.1:4311',
+      ])];
       const ac = new AbortController();
       const t = { id, pid: 0, proc: { kill: () => ac.abort() }, bridgeId: null, bridgeUrl: primaryUrl, dir, text, at: now, from, by, model: chosenModel, account, sid: from?.sid || null, result: '', error: '', buf: '', isAgyCli: true };
       running.set(id, t); recent.push(now);
       (async () => {
         try {
-          let res = null;
-          let lastErr = null;
-          for (let attempt = 0; attempt < 3 && !res; attempt++) {
-            if (attempt > 0) await new Promise((r) => setTimeout(r, 1200));
-            for (const baseUrl of candidateUrls) {
-              try {
-                const candidateRes = await fetch(`${baseUrl}/task/start`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ dir, text, images: images.slice(0, MAX_IMAGES), from, by, model: chosenModel, account }),
-                  signal: ac.signal,
-                });
-                if (candidateRes.ok && candidateRes.body) {
-                  res = candidateRes;
-                  t.bridgeUrl = baseUrl;
-                  break;
-                }
-                lastErr = new Error(`Host bridge HTTP ${candidateRes.status}`);
-              } catch (e) {
-                lastErr = e;
-              }
-            }
-          }
-          if (!res || !res.body) {
-            throw lastErr || new Error('Không kết nối được Host Bridge (cổng 4311)');
-          }
+          const { res, bridgeUrl } = await dispatchViaHostBridge({
+            bridgeBase: primaryUrl,
+            candidateUrls,
+            headers: bridgeHeaders(),
+            payload: { dir, text, images: images.slice(0, MAX_IMAGES), from, by, model: chosenModel, account },
+            signal: ac.signal,
+            timeoutMs: 6500,
+            dataDir,
+          });
+          t.bridgeUrl = bridgeUrl;
           const dec = new TextDecoder();
           for await (const chunk of res.body) {
             t.buf += dec.decode(chunk, { stream: true });
@@ -249,7 +400,12 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
             }
           }
         } catch (err) {
-          if (!ac.signal.aborted) t.error = String(err?.message || err).slice(0, 240);
+          if (!ac.signal.aborted) {
+            const rawErr = String(err?.message || err).trim();
+            t.error = /^fetch failed$/i.test(rawErr)
+              ? 'Không kết nối được Host Bridge (cổng 4311 trên máy chủ Windows). Hãy kiểm tra tiến trình server/host-bridge.mjs.'
+              : rawErr.slice(0, 240);
+          }
         } finally {
           running.delete(id);
           if (!t.error && !t.result) {
@@ -265,8 +421,8 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
     for (const [i, d] of images.slice(0, MAX_IMAGES).entries()) {
       const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(d || ''));
       if (!m || d.length > MAX_IMAGE) continue;
-      fs.mkdirSync(imgDir, { recursive: true });
-      const f = path.join(imgDir, `${id}-${i + 1}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
+      fs.mkdirSync(IMG_DIR, { recursive: true });
+      const f = path.join(IMG_DIR, `${id}-${i + 1}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
       fs.writeFileSync(f, Buffer.from(m[2], 'base64'), { mode: 0o600 }); files.push(f);
     }
     const prompt = files.length ? `${text}\n\n${files.length > 1 ? 'Attached images' : 'Attached image'} (read ${files.length > 1 ? 'them' : 'it'} with read_file):\n${files.join('\n')}` : text;
@@ -369,7 +525,7 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
       childProc.on('exit', (code) => {
         // First retry: if resuming an existing Desktop conversation in standalone CLI fails due to a retired model key in its DB,
         // retry WITH the same conversation ID and an explicit active model so the conversation history is preserved!
-        if (t.isAgyCli && from?.sid && !t.retriedWithModel && (code !== 0 || t.error) && /unknown model key|failed to construct executor/i.test(t.error || t.buf)) {
+        if (!t.stopped && t.isAgyCli && from?.sid && !t.retriedWithModel && (code !== 0 || t.error) && /unknown model key|failed to construct executor/i.test(t.error || t.buf)) {
           t.retriedWithModel = true;
           t.error = '';
           t.result = '';
@@ -384,7 +540,7 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
           } catch { /* fall through */ }
         }
         // Second fallback: if the conversation DB is missing/corrupt on CLI, start a fresh session in the same workspace
-        if (t.isAgyCli && from?.sid && !t.retriedFresh && (code !== 0 || t.error) && /unknown model key|not found|failed to construct executor/i.test(t.error || t.buf)) {
+        if (!t.stopped && t.isAgyCli && from?.sid && !t.retriedFresh && (code !== 0 || t.error) && /unknown model key|not found|failed to construct executor/i.test(t.error || t.buf)) {
           t.retriedFresh = true;
           t.error = '';
           t.result = '';
@@ -451,11 +607,68 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = 3, pe
   /** Stops a task (its whole process group: the commands it started too). */
   function stop(id) {
     const t = running.get(id); if (!t) return false;
-    if (t.bridgeUrl && t.bridgeId) {
-      fetch(`${t.bridgeUrl}/task/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: t.bridgeId }) }).catch(() => {});
+    t.stopped = true;
+    running.delete(id);
+    if (t.bridgeUrl && (t.bridgeId || t.sid || t.dir)) {
+      stopViaHostBridge(
+        { id: t.bridgeId || t.id, sid: t.sid || '', dir: t.dir || '' },
+        { bridgeBase: t.bridgeUrl, headers: bridgeHeaders() },
+      ).catch(() => {});
     }
-    try { if (process.platform === 'win32' || !t.pid) t.proc.kill(); else process.kill(-t.pid, 'SIGTERM'); } catch { try { t.proc.kill(); } catch { /* gone */ } }
+    try {
+      if (process.platform === 'win32' && t.pid) {
+        try { execFileSync('taskkill', ['/T', '/F', '/PID', String(t.pid)], { timeout: 3000, windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ }
+      }
+      if (process.platform === 'win32' || !t.pid) t.proc.kill();
+      else process.kill(-t.pid, 'SIGTERM');
+    } catch {
+      try { t.proc.kill(); } catch { /* gone */ }
+    }
     return true;
   }
-  return { start, stop, list: () => [...running.values()].map(pub) };
+  async function stopBySession({ id = '', sid = '', dir = '' } = {}) {
+    let stopped = 0;
+    const matchDir = normDirKey(dir);
+    for (const r of [...running.values()]) {
+      const hitSid = Boolean(sid && (r.sid === sid || r.from?.sid === sid || r.from?.orig === sid));
+      const hitId = Boolean(id && (r.id === id || r.from?.id === id || r.bridgeId === id));
+      const hitDir = Boolean(!sid && dir && (r.dir === dir || (matchDir && normDirKey(r.dir) === matchDir)));
+      if (hitSid || hitId || hitDir) {
+        if (stop(r.id)) stopped++;
+      }
+    }
+    const bin = typeof claude === 'function' ? claude() : null;
+    if (bin?.kind === 'docker-bridge' || process.env.OFFICE_DOCKER === '1') {
+      const bridgeUrl = String(bin?.url || process.env.OFFICE_HOST_BRIDGE || 'http://host.docker.internal:4311').replace(/\/+$/, '');
+      const r = await stopViaHostBridge(
+        { id, sid, dir },
+        { bridgeBase: bridgeUrl, headers: bridgeHeaders() },
+      );
+      if (typeof r?.stopped === 'number') stopped += r.stopped;
+    }
+    return { ok: true, stopped };
+  }
+  const api = { start, stop, stopBySession, list: () => [...running.values()].map(pub) };
+  activeTasksInstance = api;
+  return api;
 }
+
+let activeTasksInstance = null;
+
+export async function stopBySession(opts = {}) {
+  if (activeTasksInstance && typeof activeTasksInstance.stopBySession === 'function') {
+    return activeTasksInstance.stopBySession(opts);
+  }
+  return { ok: true, stopped: 0 };
+}
+
+const tasksModule = {
+  createTasks,
+  resolveContainerDir,
+  stopBySession,
+  requestHostBridgeWakeup,
+  ensureHostBridgeReady,
+  dispatchViaHostBridge,
+  stopViaHostBridge,
+};
+export default tasksModule;

@@ -6,8 +6,8 @@ import { ACT, bubbleText } from '../ui/event-text.js';
 import { scene } from '../scene/renderer.js';
 import { printPage } from '../world/props/printer.js';
 import { STATIONS } from '../people/navigation.js';
-import { dn, dropSub, sessions, spawnSub, subAct, subs, workers } from '../people/workers.js';
-import { director, wasDeliveredByTeam } from '../people/director.js';
+import { dn, dropSub, rekeySub, sessions, spawnSub, subAct, subs, workers } from '../people/workers.js';
+import { director, getAssigner, reportSpotForAssigner, wasDeliveredByTeam } from '../people/director.js';
 import { launchRocket, pulseRocketPad } from '../world/room-update.js';
 import { addFeed, toast } from '../ui/activity.js';
 import { scheduleLog } from '../ui/session-drawer.js';
@@ -60,10 +60,15 @@ export function onEvent(e) {
   if (!e.quiet && e.type !== 'start' && !s?.masked) addFeed(e);
   if (state.selectedId === e.sess) scheduleLog();
   if (!w || !s) return;
-  if (e.type === 'substart') { spawnSub(w, e.agent, s.masked ? 'Hỗ trợ' : e.label); return; }
+  if (e.type === 'substart') {
+    if (e.prevAgent && subs.has(e.prevAgent)) rekeySub(e.prevAgent, e.agent, { type: s.masked ? 'Hỗ trợ' : e.label, desc: e.desc });
+    spawnSub(w, e.agent, s.masked ? 'Hỗ trợ' : e.label, false, { prevId: e.prevAgent, desc: e.desc });
+    return;
+  }
   if (e.type === 'substop') { const sw = subs.get(e.agent); if (sw && e.desc && !s.masked) sw.desc = e.desc; dropSub(e.agent); return; }
   if (e.agent) {
-    const sw = subs.get(e.agent) || spawnSub(w, e.agent, s.masked ? 'Hỗ trợ' : (e.agentType || 'agent'));
+    if (e.prevAgent && subs.has(e.prevAgent)) rekeySub(e.prevAgent, e.agent, { type: s.masked ? 'Hỗ trợ' : (e.agentType || 'agent'), desc: e.desc });
+    const sw = subs.get(e.agent) || spawnSub(w, e.agent, s.masked ? 'Hỗ trợ' : (e.agentType || 'agent'), false, { prevId: e.prevAgent, desc: e.desc });
     if (e.desc && !s.masked) sw.desc = e.desc;
     sw.push(subAct(e));
     if (sw.phase === 'walk' || sw.station === (ACT[e.type]?.station || 'desk')) { sw.say(e.type, s.masked ? 'Đang làm việc...' : bubbleText(e), e.type === 'fail' ? 'fail' : ''); sw.lastSay.e = e; }
@@ -77,13 +82,25 @@ export function onEvent(e) {
   }
   if (e.type === 'prompt') {
     sfx.play('task');
+    if (w.away) w.comeBack();
     a.after = () => { state.boardPulse = { id: e.sess, until: state.sim + 2.6 }; state.boardDirty = true; };
   }
-  if (director && e.type === 'prompt' && !wasDeliveredByTeam(e.sess)) director.deliver(e.sess, s.masked ? 'Công việc nội bộ' : (e.label || ''));
-  if (director && e.type === 'stop' && director.station === 'home' && STATIONS.director.some((x) => !x.by)) {   // pro plan: report to the director first, then the pantry
+  if (director && e.type === 'prompt' && !wasDeliveredByTeam(e.sess, e.label, s?.dir)) director.deliver(e.sess, s.masked ? 'Công việc nội bộ' : (e.label || ''));
+  if (director && e.type === 'stop') {   // pro plan: report to the task assigner's desk first, then rest
+    const assigner = getAssigner(e?.ownerId || s?.taskOwnerId);
+    const customSpot = reportSpotForAssigner(assigner, w);
+    const fallbackSpot = !customSpot && STATIONS.director.every((x) => x.by && x.by !== w) ? STATIONS.director[0] : null;
     const rest = a, done = s.lastPrompt || e.label || '';
-    a = { station: 'director', anim: 'think', type: 'stop', text: s.masked ? 'Đã xong việc!' : (!done ? tr('incident.reportNoTask') : state.streamer ? tr('incident.reportHidden') : tr('incident.report', { task: short(done, 40) })), e, dwell: 2.4,
-      after: () => { if (!director.ack(w)) w.say('stop', tr('incident.reportLeft')); w.push(rest); } };
+    a = {
+      station: 'director',
+      spot: customSpot || fallbackSpot || undefined,
+      anim: 'think',
+      type: 'stop',
+      text: s.masked ? 'Đã xong việc!' : (!done ? tr('incident.reportNoTask') : state.streamer ? tr('incident.reportHidden') : tr('incident.report', { task: short(done, 40) })),
+      e,
+      dwell: 2.4,
+      after: () => { if (!assigner?.ack(w)) w.say('stop', tr('incident.reportLeft')); w.push(rest); },
+    };
   }
   if (e.type === 'deploy') { pulseRocketPad('deploy'); launchRocket(); toast(tr('incident.deployed', { name: dn(s), label: e.label })); a = { ...a, station: 'rocket', anim: 'celebrate', dwell: 2.4 }; }
   if (e.type === 'push') { a = { ...a, station: 'rocket', anim: 'celebrate', dwell: 2.4 }; }

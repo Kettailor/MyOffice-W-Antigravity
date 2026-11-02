@@ -25,7 +25,11 @@ let ME = null;     // first person in the box: { pick, keys }
 let nextAt = 0, drawAt = 0, notes = [];
 const pick = (key) => { const l = tr(key, null, 'list'); return Array.isArray(l) ? l[Math.floor(Math.random() * l.length)] : l; };
 const nameOf = (w) => { const n = sessions.get(w.id)?.name || w.cfg.name || ''; return n.length > 11 ? `${n.slice(0, 10)}…` : n; };
-const called = (w) => { const s = sessions.get(w.id); return !s || s.status !== 'rest' || !!s.bg?.length || !!w.want; };
+const called = (w) => {
+  if (w.deptStaff) return !!w.busySub || !!w.want;
+  const s = sessions.get(w.id);
+  return !s || s.status !== 'rest' || !!s.bg?.length || !!w.want;
+};
 const titleOf = (i) => SONGS[i].title[lang()] || SONGS[i].title.en;
 const wordsOf = (i, line) => (lang() === 'vi' ? SONGS[i].vi : SONGS[i].en)[line].split(/\s+/);
 // who could sing: resting, nothing else on (not out, not on a break, not carrying anything, not at tea)

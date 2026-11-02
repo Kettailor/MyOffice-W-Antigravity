@@ -49,32 +49,56 @@ export function pulseRocketPad(kind = 'commit') {
 }
 export let night = false;
 let ledMood = 'normal';
-let roomCheckAt = 0;
+let roomCheckAt = 0, clockAt = 0;
+const _sessByDesk = [], _subByDesk = [];
+function isRoomBusy(r) {
+  const inBox = (w) => w.root.parent && !w.away && w.pos.x > r.x0 && w.pos.x < r.x1 && w.pos.y > r.z0 && w.pos.y < r.z1;
+  for (const w of workers.values()) if (inBox(w)) return true;
+  for (const w of subs.values()) if (inBox(w)) return true;
+  for (const w of leaving) if (inBox(w)) return true;
+  for (const w of npcs) if (inBox(w)) return true;
+  return false;
+}
+function hasWorkerAt(anim) {
+  for (const w of workers.values()) if (w.phase !== 'walk' && w.anim === anim) return true;
+  return false;
+}
+function isDoorBusy() {
+  const near = (w) => w.pos.x < -6.2 && Math.abs(w.pos.y - DZ) < 1.3;
+  for (const w of workers.values()) if (near(w)) return true;
+  for (const w of subs.values()) if (near(w)) return true;
+  for (const w of leaving) if (near(w)) return true;
+  return false;
+}
 function updateRoomLights(dt) {
   if (!ROOM_LAMPS.length) return;
   if (state.sim > roomCheckAt) {   // who is where, four times a second
     roomCheckAt = state.sim + 0.25;
-    const people = [...workers.values(), ...subs.values(), ...leaving, ...npcs];
-    for (const r of ROOM_LAMPS) r.busy = people.some((w) => w.root.parent && !w.away && w.pos.x > r.x0 && w.pos.x < r.x1 && w.pos.y > r.z0 && w.pos.y < r.z1);
+    for (const r of ROOM_LAMPS) r.busy = isRoomBusy(r);
   }
   for (const r of ROOM_LAMPS) { const goal = night && !r.off ? (r.busy ? 4.5 : r.low) : 0;   // (r.off: the switch by the door)
     r.l.intensity += (goal - r.l.intensity) * Math.min(1, dt * (goal > r.l.intensity ? 6 : 1.5)); }
 }
 export function updateRoom(dt, t) {
   updateRoomLights(dt);
-  const all = [...workers.values()];
-  const at = (anim) => all.some((w) => w.phase !== 'walk' && w.anim === anim);
-  globe.rotation.y += dt * (at('globe') ? 3 : 0.15);
+  globe.rotation.y += dt * (hasWorkerAt('globe') ? 3 : 0.15);
   state.cpuLoad += ((macSnap?.cpu?.percent ?? 20) / 100 - state.cpuLoad) * Math.min(1, dt * 0.8);
   state.fanSpin += (3 + state.cpuLoad * 30) * dt; for (const f of fans) f.rotation.y = state.fanSpin;
-  const ledRate = Math.max(at('console') ? 14 : 0, 1.5 + state.cpuLoad * 12);
+  const ledRate = Math.max(hasWorkerAt('console') ? 14 : 0, 1.5 + state.cpuLoad * 12);
   if (PRO_FX.cooler) drawCooler(PRO_FX.cooler);
   for (const m of leds) if (Math.random() < (ledRate * dt) / 3) m.emissiveIntensity = m.emissiveIntensity > 0.5 ? 0.12 : 1.6;
   syncLeds();
+  _sessByDesk.length = 0; _subByDesk.length = 0;
+  for (const s of sessions.values()) if (s.desk >= 0) _sessByDesk[s.desk] = s;
+  for (const sw of subs.values()) if (sw.subDesk >= 0 && !_subByDesk[sw.subDesk]) _subByDesk[sw.subDesk] = sw;
   screens.forEach((scr, i) => {
-    const s = [...sessions.values()].find((x) => x.desk === i);
-    const sw = !s && [...subs.values()].find((x) => x.subDesk === i);
+    const s = _sessByDesk[i];
+    const sw = !s && _subByDesk[i];
     const w = (s && workers.get(s.id)) || sw;
+    if (!s && !sw && !w && DESKS[i].bed.state === 'off') {
+      const idleTarget = night ? 0.06 : 0.04;
+      if (scr.userData.idleClean && Math.abs(scr.emissiveIntensity - idleTarget) < 0.002 && ((i + Math.round(t * 60)) & 3) !== 0) return;
+    }
     const sForScreen = s || (sw ? { status: 'work', last: sw.lastSay } : null);
     updateBedding(DESKS[i], s, w, dt); syncKit(i); syncMess(i, w && s ? s.git?.dirty : 0);
     { const g = DESKS[i].g, hit = w && w.anim === 'slam' && w.slamUntil > t && w.station === 'desk';   // the desk jumps under the fists
@@ -85,15 +109,15 @@ export function updateRoom(dt, t) {
     if (w) target = w.anim === 'sleep' ? 0.3 : busy ? 0.85 + Math.sin(t * 30 + i) * 0.06 : 0.55;
     if (night) target *= 1.5;
     scr.emissiveIntensity += (target - scr.emissiveIntensity) * Math.min(1, dt * 8);
+    scr.userData.idleClean = !w && DESKS[i].bed.state === 'off';
   });
   updateCoffeeQueue();
   updateSeason(dt, t);
   if (lift) updateLift(dt);
   else {
-    const busyDoor = [...all, ...subs.values(), ...leaving].some((w) => w.pos.x < -6.2 && Math.abs(w.pos.y - DZ) < 1.3);
-    doorPivot.rotation.y += ((busyDoor || doorKick > t ? 1.25 : 0) - doorPivot.rotation.y) * Math.min(1, dt * 5);
+    doorPivot.rotation.y += ((isDoorBusy() || doorKick > t ? 1.25 : 0) - doorPivot.rotation.y) * Math.min(1, dt * 5);
   }
-  coffeeLed.color.set(at('coffee') ? '#5BE37D' : '#FF6B4A');
+  coffeeLed.color.set(hasWorkerAt('coffee') ? '#5BE37D' : '#FF6B4A');
   if (rocketState.t >= 0) {
     rocketState.t += dt; const tt = rocketState.t;
     if (tt < 0.6) rocket.position.set(ROCKET_HOME.x + Math.sin(tt * 70) * 0.025, ROCKET_HOME.y, ROCKET_HOME.z);
@@ -127,8 +151,11 @@ export function updateRoom(dt, t) {
     st.open += ((inUse ? 0 : 1) - st.open) * Math.min(1, dt * 5); st.pivot.rotation.y = st.open * 1.25;
     st.sign.color.set(inUse ? '#FF4D4D' : '#3DDC84');
   });
-  const d = new Date(), sec = d.getSeconds(), min = d.getMinutes() + sec / 60, hr = (d.getHours() % 12) + min / 60;
-  secHand.rotation.z = -(sec / 60) * Math.PI * 2; minHand.rotation.z = -(min / 60) * Math.PI * 2; hourHand.rotation.z = -(hr / 12) * Math.PI * 2;
+  if (state.sim > clockAt) {
+    clockAt = state.sim + 0.5;
+    const d = new Date(), sec = d.getSeconds(), min = d.getMinutes() + sec / 60, hr = (d.getHours() % 12) + min / 60;
+    secHand.rotation.z = -(sec / 60) * Math.PI * 2; minHand.rotation.z = -(min / 60) * Math.PI * 2; hourHand.rotation.z = -(hr / 12) * Math.PI * 2;
+  }
 }
 // the cooler's little screen: CPU load as a number and a bar, the room temperature it would read
 function drawCooler(c) {
@@ -181,16 +208,17 @@ export function setNight(on) {
   hemi.intensity = on ? 0.18 : 0.25; hemi.color.set(on ? '#8FA3D9' : '#FFF4DC'); hemi.groundColor.set(on ? '#2E3654' : '#A9B98A');
   sun.intensity = on ? 0.55 : 1.35; sun.color.set(on ? '#9DB2FF' : '#FFE6C7');
   for (const l of lamps) if (!ROOM_LAMPS.some((r) => r.l === l)) l.intensity = on ? 4.5 : 0;
-  glassM.map = THEME.wins[on ? 1 : 0]; glassM.color.setScalar(on ? 1.35 : 0.95);
+  if (THEME?.wins) glassM.map = THEME.wins[on ? 1 : 0];
+  glassM.color.setScalar(on ? 1.35 : 0.95);
   for (const b of lampBulbs) b.color.copy(on ? BULB_ON : BULB_OFF);
   for (const b of bollards) b.color.copy(on ? BULB_ON : BULB_OFF);
   renderer.toneMappingExposure = on ? 1.0 : 0.78;
   bloom.strength = on ? 0.55 : 0.12; bloom.enabled = on;   // by day nothing reaches the threshold: skip its passes
   bloom.threshold = on ? 0.9 : 1.6;
   bloom.highPassUniforms.luminosityThreshold.value = bloom.threshold;
-  scene.background = on ? skyNight : THEME.sky || skyDay;
-  scene.fog.color.set(THEME.fog[on ? 1 : 0]);
-  for (const t of Object.values(THEMES)) if (t.live) t.live.night(on);
+  scene.background = on ? skyNight : THEME?.sky || skyDay;
+  if (THEME?.fog) scene.fog.color.set(THEME.fog[on ? 1 : 0]);
+  if (THEMES) for (const t of Object.values(THEMES)) if (t.live) t.live.night(on);
   for (const f of nightHooks) f(on);
   syncTimeBtns();
   applyWeather();

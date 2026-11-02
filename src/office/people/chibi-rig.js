@@ -42,6 +42,10 @@ function getShadowTex() {
 const lighten = (c, k) => new THREE.Color(c).lerp(new THREE.Color('#ffffff'), k);
 const darken = (c, k) => new THREE.Color(c).multiplyScalar(k);
 const plainMat = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, ...o });
+const matPool = new Map();
+const getPooledMat = (key, fn) => { let m = matPool.get(key); if (!m) { m = fn(); m.userData.pooled = true; matPool.set(key, m); } return m; };
+const geoPool = new Map();
+const getPooledGeo = (key, fn) => { let g = geoPool.get(key); if (!g) { g = fn(); g.userData.pooled = true; geoPool.set(key, g); } return g; };
 // a wisp of steam over a hot mì ly (one, shared)
 let steam = null;
 function steamTex() {
@@ -58,7 +62,7 @@ function steamTex() {
 // the crown like a cowlick, and the rim tucks in so the tips rest on the skin.
 function hairShell(R, line, o = {}) {
   const { locks = 9, tip = 0.15, bulge = 0.03, phase = 0, sweep = 0, tuck = 0.08, round = 1, bumps = 0, twist = 0.4 } = o;
-  const NI = 160, NJ = 40, pos = [], idx = [];
+  const NI = 64, NJ = 18, pos = [], idx = [];
   const smooth = (x) => x * x * (3 - 2 * x);
   for (let j = 0; j <= NJ; j++) for (let i = 0; i <= NI; i++) {
     const u = j / NJ, ph = -Math.PI + (2 * Math.PI * i) / NI, a = Math.abs(ph) / Math.PI;
@@ -102,20 +106,21 @@ export function makeChibi(cfg = {}, scale = 1) {
   const root = new THREE.Group(); root.scale.setScalar(scale);
   const seed = [...String(cfg.name || cfg.shirt || 'x')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
   const skinC = cfg.skin || SKINS[seed % SKINS.length], shirtC = cfg.shirt || '#5F8FD8', hairC = cfg.hair || '#3B2618';
-  const skin = new THREE.MeshPhysicalMaterial(toy
+  const skin = getPooledMat(`skin:${look}:${skinC}`, () => new THREE.MeshPhysicalMaterial(toy
     ? { color: skinC, roughness: 0.55, clearcoat: 0.12, clearcoatRoughness: 0.6, sheen: 0.25, sheenColor: new THREE.Color('#FFB496') }
-    : { color: skinC, roughness: 0.5, sheen: 0.45, sheenRoughness: 0.6, sheenColor: new THREE.Color('#FF9E80') });
-  const fabric = (c, k = 1) => new THREE.MeshPhysicalMaterial({ color: darken(c, k), roughness: toy ? 0.7 : 0.85, sheen: toy ? 0.3 : 0.7, sheenRoughness: 0.8, sheenColor: lighten(c, 0.55) });
+    : { color: skinC, roughness: 0.5, sheen: 0.45, sheenRoughness: 0.6, sheenColor: new THREE.Color('#FF9E80') }));
+  const fabric = (c, k = 1) => getPooledMat(`fab:${look}:${c}:${k}`, () => new THREE.MeshPhysicalMaterial({ color: darken(c, k), roughness: toy ? 0.7 : 0.85, sheen: toy ? 0.3 : 0.7, sheenRoughness: 0.8, sheenColor: lighten(c, 0.55) }));
   const top = fabric(shirtC), topDark = fabric(shirtC, 0.74), pants = fabric(cfg.pants || '#3A4150');
-  const hair = new THREE.MeshPhysicalMaterial({ color: hairC, side: THREE.DoubleSide, roughness: toy ? 0.5 : 0.42, clearcoat: toy ? 0.15 : 0.3, clearcoatRoughness: 0.45, sheen: 0.6, sheenRoughness: 0.3, sheenColor: lighten(hairC, 0.4) });
-  const shoeM = plainMat(cfg.shoes || '#2D2A2E', { roughness: 0.45 }), soleM = plainMat('#F4F1EA', { roughness: 0.7 });
-  const white = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
+  const hair = getPooledMat(`hair:${look}:${hairC}`, () => new THREE.MeshPhysicalMaterial({ color: hairC, side: THREE.DoubleSide, roughness: toy ? 0.5 : 0.42, clearcoat: toy ? 0.15 : 0.3, clearcoatRoughness: 0.45, sheen: 0.6, sheenRoughness: 0.3, sheenColor: lighten(hairC, 0.4) }));
+  const shoeC = cfg.shoes || '#2D2A2E';
+  const shoeM = getPooledMat(`shoe:${shoeC}`, () => plainMat(shoeC, { roughness: 0.45 })), soleM = getPooledMat('sole:#F4F1EA', () => plainMat('#F4F1EA', { roughness: 0.7 }));
+  const white = getPooledMat('basic:#FFFFFF', () => new THREE.MeshBasicMaterial({ color: '#FFFFFF' }));
   const P = { D, look, blink: [] };
   const add = (parent, geo, m, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) => {
     const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.scale.set(sx, sy, sz); o.castShadow = true; parent.add(o); return o;
   };
-  const cap = (r, l) => new THREE.CapsuleGeometry(r, Math.max(0.001, l), 6, 14);
-  const sph = (r, w = 22, h = 16) => new THREE.SphereGeometry(r, w, h);
+  const cap = (r, l) => { const len = Math.max(0.001, l); return getPooledGeo(`cap:${r.toFixed(4)}:${len.toFixed(4)}`, () => new THREE.CapsuleGeometry(r, len, 6, 14)); };
+  const sph = (r, w = 14, h = 10) => getPooledGeo(`sph:${r.toFixed(4)}:${w}:${h}`, () => new THREE.SphereGeometry(r, w, h));
 
   const sh = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.95), new THREE.MeshBasicMaterial({ map: getShadowTex(), transparent: true, depthWrite: false }));
   sh.rotation.x = -Math.PI / 2; sh.position.y = 0.012; sh.renderOrder = -1; root.add(sh); P.shadow = sh;
@@ -130,18 +135,18 @@ export function makeChibi(cfg = {}, scale = 1) {
     add(knee, new THREE.CylinderGeometry(D.legR * 1.08, D.legR * 1.08, toy ? 0.05 : 0.035, 18), toy ? fabric(cfg.pants || '#3A4150', 0.85) : pants, 0, -D.shin + 0.02, 0);
     const shoe = new THREE.Group(); shoe.position.set(0, -D.shin, 0.035); knee.add(shoe);
     const s = D.shoeR;
-    add(shoe, sph(s, 26, 18), shoeM, 0, 0, 0.02, 0.82, 0.58, 1.32);
-    add(shoe, new THREE.CylinderGeometry(s, s, 0.045, 30), soleM, 0, -s * 0.58 - 0.008, 0.02, 0.86, 1, 1.36);
+    add(shoe, sph(s, 18, 12), shoeM, 0, 0, 0.02, 0.82, 0.58, 1.32);
+    add(shoe, new THREE.CylinderGeometry(s, s, 0.045, 20), soleM, 0, -s * 0.58 - 0.008, 0.02, 0.86, 1, 1.36);
     add(shoe, new RoundedBoxGeometry(s * 0.7, 0.02, s * 0.75, 2, 0.008), soleM, 0, s * 0.42, s * 0.38).rotation.x = -0.35;
     return { hip, knee };
   };
   P.legL = leg(-1); P.legR = leg(1);
-  add(root, sph(D.torso[1][0] * 0.98, 24, 16), pants, 0, D.hipY, 0, 1, 0.62, 0.8);
+  add(root, sph(D.torso[1][0] * 0.98, 16, 12), pants, 0, D.hipY, 0, 1, 0.62, 0.8);
 
   /* spine: everything above the hips leans together */
   const spine = new THREE.Group(); spine.position.y = D.hipY; root.add(spine); P.spine = spine;
   const prof = D.torso.map(([x, y]) => new THREE.Vector2(x, y));
-  const torso = add(spine, new THREE.LatheGeometry(prof, 36), top, 0, 0, 0, 1, 1, 0.82); P.torso = torso;
+  const torso = add(spine, new THREE.LatheGeometry(prof, 22), top, 0, 0, 0, 1, 1, 0.82); P.torso = torso;
   const H = D.torso[D.torso.length - 1][1], tr = D.torso[2][0];
   const outfit = cfg.outfit || (seed % 2 ? 'hoodie' : 'shirt');
   if (outfit === 'hoodie') {
@@ -192,7 +197,7 @@ export function makeChibi(cfg = {}, scale = 1) {
   const cheek = toy ? 0.1 : 0.06, front = toy ? 0.07 : 0.06, chin = toy ? 0.05 : 0.2;
   const shapeX = (t) => { const lo = Math.max(0, -t); return 1 + cheek * Math.sin(Math.PI * Math.min(1, lo * 1.4)) - chin * lo ** 3; };
   const shapeZ = (t) => 1 + front * Math.sin(Math.PI * Math.max(0, -t));
-  const skull = new THREE.SphereGeometry(R, 56, 40), sp = skull.attributes.position;
+  const skull = new THREE.SphereGeometry(R, 28, 20), sp = skull.attributes.position;
   for (let i = 0; i < sp.count; i++) {
     const t = sp.getY(i) / R;
     sp.setX(i, sp.getX(i) * D.sx * shapeX(t)); sp.setY(i, sp.getY(i) * D.sy);
@@ -442,7 +447,7 @@ const standInSets = new Set();   // [root, meshes]
 let standInM;
 function standIns(root, P) {
   root.traverse((m) => { if (m.isMesh) m.castShadow = false; });
-  standInM ||= new THREE.MeshBasicMaterial();
+  if (!standInM) { standInM = new THREE.MeshBasicMaterial(); standInM.userData.pooled = true; }
   const D = P.D, R = D.R, H = D.torso[D.torso.length - 1][1], meshes = [];
   const part = (parent, geo, x, y, z, sz = 1) => { const m = new THREE.Mesh(geo, standInM); m.position.set(x, y, z); m.scale.z = sz; m.castShadow = true; m.visible = false; m.matrixAutoUpdate = true; parent.add(m); meshes.push(m); };
   const cyl = (r0, r1, h) => new THREE.CylinderGeometry(r0, r1, h, 7, 1);
@@ -451,6 +456,16 @@ function standIns(root, P) {
   for (const L of [P.legL, P.legR]) { part(L.hip, cyl(D.legR, D.legR, D.thigh), 0, -D.thigh / 2, 0); part(L.knee, cyl(D.legR, D.legR * 1.1, D.shin + 0.05), 0, -D.shin / 2 - 0.02, 0.02); }
   for (const A of [P.armL, P.armR]) { part(A.sh, cyl(D.armR, D.armR, D.upper), 0, -D.upper / 2, 0); part(A.el, cyl(D.armR, D.handR, D.fore + D.handR), 0, -D.fore / 2 - 0.02, 0); }
   standInSets.add([root, meshes]);
+}
+export function disposeChibi(root) {
+  if (!root) return;
+  for (const set of standInSets) if (set[0] === root) standInSets.delete(set);
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.geometry && !o.geometry.userData?.pooled) o.geometry.dispose();
+    const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of mats) if (m && !m.userData?.pooled) m.dispose();
+  });
 }
 /** Once, with the renderer: the stand-ins show for the shadow pass only (and a rig thrown away is forgotten). */
 export function shadowStandIns(renderer) {
@@ -490,11 +505,13 @@ function mergeRig(root, keep) {
         geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
         return geo;
       });
-      const geo = mergeGeometries(geos, false); if (!geo) continue;
+      const geo = mergeGeometries(geos, false);
+      for (const tg of geos) tg.dispose();
+      if (!geo) continue;
       const mat = list[0].material.clone(); mat.vertexColors = true; if (mat.color) mat.color.set(1, 1, 1);
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = list.some((m) => m.castShadow); mesh.receiveShadow = list.some((m) => m.receiveShadow); mesh.renderOrder = list[0].renderOrder;
-      for (const m of list) g.remove(m);
+      for (const m of list) { if (m.geometry && !m.geometry.userData?.pooled) m.geometry.dispose(); g.remove(m); }
       g.add(mesh);
     }
   }
@@ -520,7 +537,7 @@ export function wearOuter(P, on, o = {}) {
   const prof = D.torso.slice(1).filter(([, y]) => y <= H * 0.94).map(([x, y]) => new THREE.Vector2(x * 1.09 + 0.006, y));
   prof.unshift(new THREE.Vector2(D.torso[1][0] * 1.14 + 0.006, -0.17));
   const gap = 0.36;
-  add(P.torso, new THREE.LatheGeometry(prof, 36, gap, Math.PI * 2 - gap * 2), coatM);
+  add(P.torso, new THREE.LatheGeometry(prof, 22, gap, Math.PI * 2 - gap * 2), coatM);
   // lapels down the opening, a stand-up collar, two pocket flaps
   const r0 = D.torso[3][0] * 1.09 + 0.008;
   for (const sx of [-1, 1]) {

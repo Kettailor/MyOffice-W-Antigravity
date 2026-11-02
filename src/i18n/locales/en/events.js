@@ -3,11 +3,11 @@
 // heads, so keep them short.
 export default {
   // a session's state in the list and the drawer
-  status: { work: 'working', wait: 'needs approval', rest: 'resting' },
+  status: { work: 'working', wait: 'needs approval', rest: 'idle', home: 'off duty' },
   // where people go for each kind of work
   station: {
     dining: 'dining room', board: 'whiteboard', library: 'library', desk: 'desk', server: 'server room', globe: 'window',
-    coffee: 'coffee corner', meeting: 'meeting room', director: "director's office", wc: 'restroom', tests: 'test board', post: 'post box', rocket: 'launch pad',
+    coffee: 'coffee corner', meeting: 'meeting room', director: "director's office", wc: 'restroom', tests: 'test board', post: 'post box', rocket: 'launch pad', phone: 'reception phone',
   },
   // streamer mode: what a label becomes when it could show a path, command, prompt or URL
   generic: {

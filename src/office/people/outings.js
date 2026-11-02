@@ -455,15 +455,24 @@ export function whereabouts(w) {
 }
 
 /* ---------- each frame ---------- */
-let bikesAt = 0, shown = '';
+let bikesAt = 0, shown = '', dayAt = -1, cachedMin = 0, cachedDay = '';
+function hasRestingWorker() {
+  for (const w of workers.values()) if (resting(w)) return true;
+  return false;
+}
 export function updateOutings() {
   updateNhau();   // (an evening at the quán nhậu: people/nhau.js)
-  const S = street(), d = officeNow(), m = d.getHours() * 60 + d.getMinutes(), day = d.toDateString();
+  const S = street();
+  if (state.sim > dayAt) {
+    dayAt = state.sim + 1;
+    const d = officeNow(); cachedMin = d.getHours() * 60 + d.getMinutes(); cachedDay = d.toDateString();
+  }
+  const m = cachedMin, day = cachedDay;
   if (bags?.visible && (m >= 780 || bags.userData.day !== day)) bags.visible = false;
   // the comings and goings; the row of scooters; the session list when anyone's whereabouts change
   for (const T of trips) if (!S || replay.on) abort(T); else stepTrip(T, S);
   if (S && state.sim > bikesAt) { bikesAt = state.sim + 2; syncBikes(S); }
-  const sig = [run, ...trips].map((R) => R && `${R.w?.id}:${R.stage}:${R.recalled ? 1 : 0}`).join();
+  const sig = !run && !trips.size ? '' : [run, ...trips].map((R) => R && `${R.w?.id}:${R.stage}:${R.recalled ? 1 : 0}`).join();
   if (sig !== shown) { shown = sig; queueUi(); }
   if (run) {
     if (!S || replay.on) { abort(run); return; }
@@ -474,7 +483,7 @@ export function updateOutings() {
   }
   if (!S || replay.on || state.sim < 20) return;
   // the team's lunch, ordered between 11:15 and 11:40 once someone is resting to fetch it (the company floor eats in)
-  if (PRO && m >= 675 && m < 700 && lunchDay !== day && [...workers.values()].some(resting)) { lunchDay = day; orderLunch(S, day); return; }
+  if (PRO && m >= 675 && m < 700 && lunchDay !== day && hasRestingWorker()) { lunchDay = day; orderLunch(S, day); return; }
   if (state.sim < lookAt) return;
   lookAt = state.sim + 20;
   // a trip to the shop: in office hours, not over lunch, now and then, someone who has not been out for half an hour;

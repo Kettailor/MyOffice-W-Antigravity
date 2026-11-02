@@ -7,7 +7,7 @@ import { chatLife } from '../ui/group-chat.js';
 import { PRO, officeNow, rand, reduceMotion, replay, short } from '../core/env.js';
 import { scene } from '../scene/renderer.js';
 import { cyl, mat, put } from '../scene/blocks.js';
-import { MEET } from '../world/furniture/meeting.js';
+import { MEET, MEET_ROOMS, MEET_SEATS_BY_ROOM } from '../world/furniture/meeting.js';
 import { confetti } from '../world/room-update.js';
 import { allocate } from './navigation.js';
 import { dn, sessions, workers } from './workers.js';
@@ -40,20 +40,75 @@ function reportOf(w) {
    woman, people/hr.js), open (her first words), onStart(g) / onEnd(g). */
 function gather(kind, what = '', o = {}) {
   const lead = PRO && director && free(director) ? director : null;
-  const spots = 12;
-  const who = people().filter((w) => w !== director && (free(w) || asleep(w)))
-    .sort((a, b) => dist(a, MEET.x, MEET.z) - dist(b, MEET.x, MEET.z)).slice(0, spots);
+  const maxSpots = PRO ? 21 : 7;
+  // Bell meetings ('meet') include session Chibis and their active Subagents (seated in the same room as their parent)
+  const allPeople = people();
+  let who;
+  if (kind === 'meet') {
+    const bosses = allPeople
+      .filter((w) => w !== director && !w.sub && !w.deptStaff && (free(w) || asleep(w)))
+      .sort((a, b) => dist(a, MEET.x, MEET.z) - dist(b, MEET.x, MEET.z));
+    const activeSubs = allPeople.filter(
+      (w) => w.sub && w.parent && !w.leaving && !w.callingPhoneWait && !w.reportingToBoss && !w.inBriefing && (free(w) || asleep(w) || w.phase === 'walk'),
+    );
+    const ordered = [];
+    const added = new Set();
+    for (const b of bosses) {
+      ordered.push(b);
+      added.add(b);
+      for (const sw of activeSubs) {
+        if (sw.parent === b && !added.has(sw)) {
+          ordered.push(sw);
+          added.add(sw);
+        }
+      }
+    }
+    for (const sw of activeSubs) {
+      if (!added.has(sw)) {
+        ordered.push(sw);
+        added.add(sw);
+      }
+    }
+    who = ordered.slice(0, maxSpots);
+  } else {
+    who = allPeople
+      .filter((w) => w !== director && (free(w) || asleep(w)))
+      .sort((a, b) => dist(a, MEET.x, MEET.z) - dist(b, MEET.x, MEET.z))
+      .slice(0, maxSpots);
+  }
   if (!who.length && !lead) { if (kind === 'meet') toast(tr('people.meet.nobody')); return false; }
-  const far = Math.max(3, ...who.map((w) => 1.4 + (dist(w, MEET.x, MEET.z) * 1.4) / 2.7));
+  const far = Math.max(3, ...who.map((w) => 1.4 + (dist(w, MEET.x, MEET.z) * 1.4) / 3.8));
   const g = gathering = { kind, start: state.sim + Math.min(13, far), end: 0, members: [] };
   g.end = g.start + (kind === 'meet' ? 2 + who.length * 1.8 + 2.4 : o.long || 7);
   const T = kind === 'meet' ? 'meet' : 'party';
-  for (const w of who) {
-    const spot = allocate('meeting', w); if ('by' in spot) spot.by = w;
-    const e = w.errand({ gathering: g, spot, look: [MEET.x, MEET.z], type: T, anim: kind === 'party' ? 'clap' : 'idle', wait: rand(0.3, 1.2), hold: 0.3,
-      line: line(`people.${T}.coming`), at: () => line(`people.${T}.bye`) });
+  const roomCount = PRO ? Math.max(1, MEET_ROOMS.length) : 1;
+  const roomUsed = Array.from({ length: roomCount }, () => 0);
+  const bossRoom = new Map();
+  who.forEach((w, idx) => {
+    let roomIdx = 0;
+    if (PRO) {
+      if (w.sub && w.parent && bossRoom.has(w.parent)) {
+        const pref = bossRoom.get(w.parent);
+        const cap = MEET_SEATS_BY_ROOM[pref]?.length || 7;
+        roomIdx = roomUsed[pref] < cap ? pref : roomUsed.findIndex((u, r) => u < (MEET_SEATS_BY_ROOM[r]?.length || 7));
+        if (roomIdx < 0) roomIdx = pref;
+      } else {
+        roomIdx = roomUsed.findIndex((u, r) => u < (MEET_SEATS_BY_ROOM[r]?.length || 7));
+        if (roomIdx < 0) roomIdx = Math.min(roomCount - 1, Math.floor(idx / 7));
+        if (!w.sub) bossRoom.set(w, roomIdx);
+      }
+    }
+    const seatIdx = roomUsed[roomIdx]++;
+    const roomSeats = MEET_SEATS_BY_ROOM[roomIdx] || MEET_SEATS_BY_ROOM[0];
+    const rm = MEET_ROOMS[roomIdx] || MEET;
+    const spot = (roomSeats && roomSeats[seatIdx]) || allocate('meeting', w);
+    if (spot && 'by' in spot) spot.by = w;
+    if (w.sub) w.hurry = true;
+    const e = w.errand({ gathering: g, spot, look: [rm.x, rm.z], type: T, anim: kind === 'party' ? 'clap' : 'idle', wait: rand(0.2, 0.9), hold: 0.3,
+      line: line(`people.${T}.coming`), at: () => line(`people.${T}.bye`),
+      done: (mw) => { mw.hurry = false; } });
     e.until = g.end; g.members.push(w);
-  }
+  });
   if (lead) {
     const e = lead.errand({ gathering: g, spot: allocate('brief', lead), look: [MEET.x, MEET.z], type: T, anim: 'idle', wait: 0.4, hold: 0.3, at: () => null });
     e.until = g.end;
