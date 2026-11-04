@@ -19,7 +19,7 @@ import { MAX_TASK_IMAGES, openTaskSheet, dictate, shrink } from './task-sheet.js
 import { toast } from './activity.js';
 import { TOKEN } from '../net/live.js';
 import { sfx } from '../audio/sfx.js';
-import { CHAT_RETENTION_MS, REACTIONS, STAFF_FACES, byId, canSeeSession, channelOf, chat, chatPin, chatPoll, chatSend, chatSendPhoto, chatSendPhotoData, isMentioningMe, isMsgVisible, myViewerId, onChat, people, react, recall, rsvp, setChatChannel, setOpen, shouldNotifyForMsg, vote, who } from './group-chat.js';
+import { CHAT_RETENTION_MS, REACTIONS, STAFF_FACES, byId, canSeeSession, channelOf, chat, chatPin, chatPoll, chatSend, chatSendPhoto, chatSendPhotoData, isHumanSelf, isMentioningMe, isMsgVisible, myViewerId, onChat, people, react, recall, rsvp, setChatChannel, setOpen, shouldNotifyForMsg, vote, who } from './group-chat.js';
 import { t as tr, locale } from '../../i18n/index.js';
 
 let root, body, typingEl, pinEl, newBtn, input, bar, stickersEl, membersEl, mentionEl, moreEl, replyEl, headSub, headAv, toEl, pickEl, chatThumbsEl, tabsEl, tabWorkBtn, tabCasualBtn, tabWorkBadge, tabCasualBadge, channelSubEl;
@@ -336,10 +336,9 @@ const bigEmoji = (t) => !!t && t.length <= 24 && EMO_ONLY.test(t.trim());
 function row(m, prev, nextM) {
   if (m.kind === 'sys') return el('div', 'zc-sys', m.text);
   if (m.kind === 'poll' || m.kind === 'remind') { const r = el('div', 'zc-row zc-row--card is-first'); r.dataset.id = m.id; r.append(m.kind === 'poll' ? pollCard(m) : remindCard(m)); return r; }
-  const myId = myViewerId();
   const sameSender = (a, b) => a && b && a.from === b.from && (a.whoId || '') === (b.whoId || '') && (a.whoName || '') === (b.whoName || '');
   const run = (a, b) => sameSender(a, b) && a.kind !== 'sys' && a.kind !== 'poll' && a.kind !== 'remind' && Math.abs(b.at - a.at) <= RUN_MS;
-  const mine = m.whoId ? m.whoId === myId : m.from === 'me';
+  const mine = isHumanSelf(m);
   const first = !run(prev, m), last = !run(m, nextM);
   const mentionMe = isMentioningMe(m);
   const r = el('div', `zc-row${mine ? ' is-mine' : ''}${first ? ' is-first' : ''}${last ? ' is-last' : ''}${mentionMe ? ' is-mention-me' : ''}`); r.dataset.id = m.id;
@@ -452,14 +451,14 @@ function redraw() {
   for (let i = 0; i < list.length; i++) {
     if (i === 0 || list[i].at - list[i - 1].at > GAP_MS || new Date(list[i].at).toDateString() !== new Date(list[i - 1].at).toDateString()) frag.append(el('div', 'zc-day', timeLabel(list[i].at)));
     // where you stopped reading: "Tin nhắn mới"
-    if (!newDone && readTo && i > 0 && list[i - 1].id === readTo && list.slice(i).some((m) => m.kind !== 'sys' && m.from !== 'me')) { newDone = true; const line = el('div', 'zc-newline'); line.append(el('span', null, tr('chat.newLine'))); frag.append(line); }
+    if (!newDone && readTo && i > 0 && list[i - 1].id === readTo && list.slice(i).some((m) => m.kind !== 'sys' && !isHumanSelf(m))) { newDone = true; const line = el('div', 'zc-newline'); line.append(el('span', null, tr('chat.newLine'))); frag.append(line); }
     frag.append(row(list[i], list[i - 1], list[i + 1]));
   }
   // the latest message of others keeps its ♡ in view (the way the app shows it on the newest bubble)
   const rows = frag.querySelectorAll('.zc-row:not(.is-mine) .zc-like'); rows[rows.length - 1]?.classList.add('is-on');
   // under your last message: the faces of those who have seen it (the people in the office), or "Đã nhận"
   const lastMsg = [...list].reverse().find((m) => m.kind !== 'sys');
-  if (lastMsg?.from === 'me') {
+  if (lastMsg && isHumanSelf(lastMsg)) {
     const seen = el('div', 'zc-seen'), ppl = people(), st = el('span', 'zc-seen-st');
     st.append(icon('checks'), document.createTextNode(tr(ppl.length ? 'chat.seen' : 'chat.received')));
     seen.append(st);
@@ -481,8 +480,8 @@ function appendOne(m) {
   if (m.at - prev.at > GAP_MS || new Date(m.at).toDateString() !== new Date(prev.at).toDateString()) body.append(el('div', 'zc-day', timeLabel(m.at)));
   if (prev.kind !== 'sys') redrawOne(prev);
   body.append(row(m, prev, undefined));
-  if (m.from !== 'me' && m.kind !== 'sys') { for (const x of body.querySelectorAll('.zc-like.is-on')) x.classList.remove('is-on'); const likes = body.querySelectorAll('.zc-row:not(.is-mine) .zc-like'); likes[likes.length - 1]?.classList.add('is-on'); }
-  if (m.from === 'me') { const seen = el('div', 'zc-seen'), ppl = people(), st = el('span', 'zc-seen-st'); st.append(icon('checks'), document.createTextNode(tr(ppl.length ? 'chat.seen' : 'chat.received'))); seen.append(st); for (const id of ppl.slice(0, 4)) seen.append(avatar(who(id), 16)); body.append(seen); }
+  if (!isHumanSelf(m) && m.kind !== 'sys') { for (const x of body.querySelectorAll('.zc-like.is-on')) x.classList.remove('is-on'); const likes = body.querySelectorAll('.zc-row:not(.is-mine) .zc-like'); likes[likes.length - 1]?.classList.add('is-on'); }
+  if (isHumanSelf(m)) { const seen = el('div', 'zc-seen'), ppl = people(), st = el('span', 'zc-seen-st'); st.append(icon('checks'), document.createTextNode(tr(ppl.length ? 'chat.seen' : 'chat.received'))); seen.append(st); for (const id of ppl.slice(0, 4)) seen.append(avatar(who(id), 16)); body.append(seen); }
   drawPin(); drawHead();
 }
 function redrawOne(m) {
@@ -540,6 +539,7 @@ function groupAvatar(size = 40) {
 }
 // a small card by the button for a new message while the window is shut (like a conversation in the app's list)
 let peekTimer = 0;
+let chatSubscribed = false;
 function peek(m) {
   if (chat.open || !shouldNotifyForMsg(m) || photoOn()) return;
   let p = $('zc-peek'); if (!p) { p = el('button', 'zc-peek'); p.id = 'zc-peek'; p.type = 'button'; p.addEventListener('click', () => toggle(true)); document.body.append(p); }
@@ -549,7 +549,7 @@ function peek(m) {
   p.hidden = false; p.classList.remove('is-out'); clearTimeout(peekTimer);
   peekTimer = setTimeout(() => { p.classList.add('is-out'); setTimeout(() => { p.hidden = true; }, 300); }, 4200);
 }
-onChat((what, m) => {
+function handleChatEvent(what, m) {
   badge();
   if (what === 'badge') return;
   if (what === 'add') peek(m);
@@ -557,12 +557,12 @@ onChat((what, m) => {
   drawTabs();
   if (what === 'typing') { drawTyping(); return; }
   if (what === 'update') { redrawOne(m); drawPin(); return; }
-  const stick = atBottom() || m?.from === 'me';
+  const stick = atBottom() || isHumanSelf(m);
   if (what === 'add') appendOne(m); else redraw();
   if (what === 'add' && !inCurrentChannel(m)) return;
   if (stick) body.scrollTop = body.scrollHeight;
-  else if (what === 'add' && m.kind !== 'sys') { const n = (Number(newBtn.dataset.n) || 0) + 1; newBtn.dataset.n = String(n); newBtn.textContent = tr('chat.newMsgs', { n }); newBtn.hidden = false; }
-});
+  else if (what === 'add' && m.kind !== 'sys' && !isHumanSelf(m)) { const n = (Number(newBtn.dataset.n) || 0) + 1; newBtn.dataset.n = String(n); newBtn.textContent = tr('chat.newMsgs', { n }); newBtn.hidden = false; }
+}
 
 /* ---------- the input: text, a reply, @ someone, stickers and emoji, a poll, a photo; send once something is typed ---------- */
 function syncBar() {
@@ -615,12 +615,10 @@ async function addChatImageFiles(fileList) {
 }
 function setReply(m) {
   replyTo = m;
-  const s = m?.tag === 'claude' && sessions.get(m.from);   // (an answer from Claude: what you write back goes to it)
-  if (s?.sid) setTarget({ id: s.id, sid: s.sid, name: dn(s), folder: folderOf(s) });
   replyEl.hidden = !m;
   if (m) {
     const t = m.kind === 'text' || m.kind === 'perm' ? mask(m.text) : m.kind === 'poll' ? `📊 ${m.poll.q}` : m.kind === 'photo' ? tr('chat.photo') : tr('chat.sticker');
-    replyEl.querySelector('b').textContent = tr('chat.replyTo', { name: m.from === 'me' ? tr('chat.you') : m.name });
+    replyEl.querySelector('b').textContent = tr('chat.replyTo', { name: isHumanSelf(m) ? tr('chat.you') : (m.whoName || m.name) });
     replyEl.querySelector('.zc-reply-t').textContent = t;
     input.focus();
   }
@@ -681,12 +679,11 @@ function send() {
 /* ---------- who gets what you write: the whole group (people chatting), or one conversation, Claude for real (it goes to
    that conversation as work on its own branch, and the answer comes back here from its person: server, POST /api/tasks
    { chat }); chosen above the input, or by replying to one of Claude's answers ---------- */
-const DEMO_CHAT = STATIC || new URLSearchParams(location.search).has('demo');
+const DEMO_CHAT = STATIC || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('demo'));
 const tq = () => (TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : '');
-let target = null;   // { id, sid, name, folder }, or null: the whole group
-try { target = DEMO_CHAT ? null : JSON.parse(sessionStorage.getItem('office-chat-to') || 'null'); } catch { /* storage blocked */ }
+let target = null;   // { id, sid, name, folder }, or null: the whole group (default always whole group on load)
 function setTarget(t) {
-  target = t; try { sessionStorage.setItem('office-chat-to', JSON.stringify(t)); } catch { /* storage blocked */ }
+  target = t;
   if (pickEl) pickEl.hidden = true;
   drawTarget();
   drawChatThumbs();
@@ -923,7 +920,7 @@ function build() {
     taskToolbarBtn, ib('format', ''), ib('more', tr('chat.more'), openMore), chatFileIn);
   chatThumbsEl = el('div', 'zc-chat-thumbs'); chatThumbsEl.hidden = true;
   bar = el('form', 'zc-bar');
-  input = el('textarea', 'zc-in'); input.id = 'zc-input'; input.rows = 1; input.maxLength = 600;
+  input = el('textarea', 'zc-in'); input.id = 'zc-input'; input.rows = 1; input.maxLength = 200_000;
   input.placeholder = tr(matchMedia('(max-width: 640px)').matches ? 'chat.placeholder' : 'chat.placeholderPc', { group: tr('chat.group') });
   input.addEventListener('input', () => { syncBar(); mentions(); input.style.height = ''; input.style.height = `${Math.min(110, input.scrollHeight)}px`; });
   input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } if (e.key === 'Escape') { if (replyTo) setReply(null); else toggle(false); } });
@@ -1246,7 +1243,22 @@ export function closeLightbox() {
   lbEl.hidden = true;
 }
 
+export function openTaskWithFile(filePath, dir = '') {
+  if (!chat.open) toggle(true);
+  if (chat.channel === 'casual') switchChannel('work');
+  const promptText = filePath ? `Hãy kiểm tra và xử lý file: ${filePath}\n` : '';
+  openTaskSheet(root, {
+    to: dir ? { dir } : null,
+    text: promptText,
+  });
+}
+
 export function setup() {
+  try { sessionStorage.removeItem('office-chat-to'); } catch { /* storage blocked */ }
+  if (!chatSubscribed) {
+    chatSubscribed = true;
+    onChat(handleChatEvent);
+  }
   window.visualViewport?.addEventListener('resize', fitKeyboard); window.visualViewport?.addEventListener('scroll', fitKeyboard);
   $('btn-chat')?.addEventListener('click', () => toggle());
   $('btn-task')?.addEventListener('click', () => {

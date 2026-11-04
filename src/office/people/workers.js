@@ -62,13 +62,61 @@ export function agentMark(kind) {
 }
 let zTex;
 const zs = [];
+export function isProtectedChibi(w) {
+  if (!w) return false;
+  const idStr = String(w.id || '');
+  return idStr === '__director' || idStr.startsWith('__team_');
+}
+export function isChibiHiddenBySetting(w) {
+  return state.showSessionChibis === false && !isProtectedChibi(w);
+}
+export function applySessionChibisVisibility() {
+  const all = [...workers.values(), ...subs.values(), ...leaving, ...npcs];
+  for (const w of all) {
+    if (!w?.root) continue;
+    const walking = w.phase === 'walk' && !w.held;
+    const hid = (!!w.inStall && !walking) || !!w.away || !!w.offstage || isChibiHiddenBySetting(w);
+    w.root.visible = !hid;
+    w.root.matrixWorldAutoUpdate = !hid;
+    if (hid) {
+      if (w.tagObj) w.tagObj.visible = false;
+      if (w.bubbleObj) w.bubbleObj.visible = false;
+    } else {
+      if (w.tagObj) {
+        if (w.sub || w.isSub) w.tagObj.visible = state.showSubNames !== false;
+        else if (w.deptStaff || w.isDeptAmbient || w.staff) w.tagObj.visible = state.showStaffNames !== false;
+        else w.tagObj.visible = state.showChibiNames !== false;
+      }
+      if (w.bubbleObj) {
+        w.bubbleObj.visible = Boolean(w.lastSay && (w.sayHushAt > state.sim || w.lastSay.kind === 'wait'));
+      }
+    }
+  }
+  if (state.showSessionChibis === false) {
+    for (let i = zs.length - 1; i >= 0; i--) {
+      const z = zs[i];
+      scene.remove(z.s);
+      z.s.material.dispose();
+      zs.splice(i, 1);
+    }
+  }
+}
 function puffZ(w) {
-  if (reduceMotion) return;
+  if (reduceMotion || isChibiHiddenBySetting(w)) return;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: zTex, transparent: true, depthWrite: false }));
   s.position.set(w.pos.x + 0.25, 1.95, w.pos.y + 0.15); s.scale.setScalar(0.22);
   scene.add(s); zs.push({ s, life: 2.2 });
 }
 export function updateZs(dt) {
+  if (state.showSessionChibis === false && zs.length > 0) {
+    for (let i = zs.length - 1; i >= 0; i--) {
+      const z = zs[i];
+      scene.remove(z.s);
+      z.s.material.dispose();
+      zs.splice(i, 1);
+    }
+    return;
+  }
   for (let i = zs.length - 1; i >= 0; i--) {
     const z = zs[i]; z.life -= dt;
     z.s.position.y += dt * 0.35; z.s.position.x += Math.sin(z.life * 3) * dt * 0.15;
@@ -867,6 +915,12 @@ export function setup() {
       this.zT = rand(0, 1.5);
       const bw = el('div', 'bubble-wrap'); this.bubbleEl = el('div', 'bubble'); bw.append(this.bubbleEl);
       this.bubbleObj = new CSS2DObject(bw); this.bubbleObj.position.set(0, 2.05, 0); this.bubbleObj.visible = false; root.add(this.bubbleObj);
+      if (isChibiHiddenBySetting(this)) {
+        this.root.visible = false;
+        this.root.matrixWorldAutoUpdate = false;
+        this.tagObj.visible = false;
+        this.bubbleObj.visible = false;
+      }
     }
     setName(n) { if (this.tagText.data !== n) this.tagText.data = n; }
     // the height they stand at: the office floor, or down on the street (the pavement, or the road on a crossing)
@@ -911,7 +965,7 @@ export function setup() {
       }
       this.lastSay = { type, text, kind };
       if (kind !== 'rest') this.pokeHushAt = 0;
-      if ((type === 'idle' || type === 'party' || type === 'coffee') && kind !== 'wait' && kind !== 'fail') {
+      if (!text || ((type === 'idle' || type === 'party' || type === 'coffee') && kind === 'silent')) {
         this.sayHushAt = 0;
         this.bubbleObj.visible = false;
         return;
@@ -928,8 +982,11 @@ export function setup() {
         this.bubbleObj.visible = false;
         return;
       }
-      this.sayHushAt = kind === 'wait' ? 0 : state.sim + (type === 'agent' || type === 'stop' || type === 'substop' ? 4.2 : 5.5);
-      this.bubbleObj.visible = true;
+      const dur = (type === 'idle' || type === 'party' || type === 'coffee')
+        ? 3.8
+        : (type === 'agent' || type === 'stop' || type === 'substop' ? 4.2 : 5.5);
+      this.sayHushAt = kind === 'wait' ? 0 : state.sim + dur;
+      this.bubbleObj.visible = !isChibiHiddenBySetting(this) && this.root.visible;
     }
     hush() { this.sayHushAt = 0; this.bubbleObj.visible = false; }
     homeSpot() {
@@ -1356,6 +1413,15 @@ export function setup() {
         } else { this.pos.x += (dx / d) * step; this.pos.y += (dz / d) * step; this.faceTarget = Math.atan2(dx, dz); }
       }
       if (!this.chore) this.tick();
+      if (isChibiHiddenBySetting(this)) {
+        if (this.root.visible) {
+          this.root.visible = false;
+          this.root.matrixWorldAutoUpdate = false;
+        }
+        if (this.tagObj.visible) this.tagObj.visible = false;
+        if (this.bubbleObj.visible) this.bubbleObj.visible = false;
+        return;
+      }
       if (this.deptStaff && !this.busySub && !this.inBriefing && !this.reportingToBoss && this.phase !== 'walk' && this.station === 'desk') {
         this._idleAnimAcc = (this._idleAnimAcc || 0) + dt;
         if (this._idleAnimAcc < 0.25 && this._poseInit) return;
@@ -1384,7 +1450,7 @@ export function setup() {
         { sit, scale: this.scale, look: idleish ? this.lookY : 0, wave: !walking && this.waveUntil > t, blink: this.blinkAt < 0.12, carry: this.carry, doze: this.doze });
       const y = applyChibiPose(this.P, pose, walking ? animDt : dt) * this.scale;
       this.root.position.set(this.pos.x + this.stompShift, y + this.gy(), this.pos.y);
-      const hid = (!!this.inStall && !walking) || !!this.away || !!this.offstage;   // behind a shut stall door, gone home, inside a shop or the lift
+      const hid = (!!this.inStall && !walking) || !!this.away || !!this.offstage || isChibiHiddenBySetting(this);   // behind a shut stall door, gone home, inside a shop or the lift
       if (this.root.visible === hid) {
         this.root.visible = !hid;
         this.root.matrixWorldAutoUpdate = !hid;

@@ -89,10 +89,10 @@ engine switches to demo mode and talks to no API.
 | --- | ---: | --- |
 | `audio/sfx.js` | 70 | Sounds, synthesized in the browser. |
 | `core/env.js` | 78 | Page-wide basics: DOM helpers, the floor plan choice, replay clock, office clock, season, formatting. |
-| `core/loop.js` | 299 | The render loop and its frame budget. |
+| `core/loop.js` | 305 | The render loop and its frame budget. |
 | `core/optimize.js` | 143 | Merging static meshes into fewer draw calls, then starting. |
 | `core/state.js` | 3 | Values that more than one module assigns (the clock, the selection, mode switches…), on one shared object so any module can change them. |
-| `demo/demo.js` | 382 | Demo mode: fictional projects and a fictional Mac. |
+| `demo/demo.js` | 385 | Demo mode: fictional projects and a fictional Mac. |
 | `interact/first-person.js` | 265 | First person: walk the office as your own character, and (with the city outside) down the lift and out on the street: the pavements, the zebras (the traffic stops for you), the shops, the bánh mì cart. |
 | `interact/place-cards.js` | 221 | Place cards: what happens at each place. |
 | `interact/place-chips.js` | 251 | Place chips over the furniture and label decluttering. |
@@ -132,7 +132,7 @@ engine switches to demo mode and talks to no API.
 | `people/staff.js` | 383 | People who work here but aren't sessions: the receptionist, the evening cleaner, a Shopee courier with a parcel. |
 | `people/team-lines.js` | 42 | Dashed lines from a boss to its subagents. |
 | `people/teatime.js` | 89 | Friday 16:00: afternoon tea. |
-| `people/workers.js` | 1420 | Workers: one character per session or subagent, what they do and where they walk. |
+| `people/workers.js` | 1483 | Workers: one character per session or subagent, what they do and where they walk. |
 | `replay/replay.js` | 163 | Replay and recording. |
 | `replay/timeline.js` | 253 | The timeline: one lane per session. |
 | `scene/blocks.js` | 32 | Building blocks: materials, rounded boxes, cylinders, rugs, canvas textures. |
@@ -152,14 +152,15 @@ engine switches to demo mode and talks to no API.
 | `ui/lite.js` | 52 | List mode: the sessions as cards, no 3D. |
 | `ui/look-switch.js` | 29 | Switching the character look. |
 | `ui/mac-drawer.js` | 888 | The Mac drawer: memory, CPU, dev servers, plan limits, cleanup. |
+| `ui/mcp-drawer.js` | 1062 | MCP Hub modal: view, test, toggle, add/edit and inspect Model Context Protocol servers & tools. |
 | `ui/permissions.js` | 927 | Approve / deny cards, Focus-to-Approve floating modal, and AI session questions/plans. |
 | `ui/phone.js` | 122 | The office on a phone: an app-like layout for small screens, upright or held sideways. |
 | `ui/photo.js` | 138 | Photo mode: the office alone over the whole window, the camera free (any angle, closer or further, pan with the right button), then a PNG at the screen's size, Full HD or 4K. |
 | `ui/portraits.js` | 62 | Portraits of the two character looks for Settings → Characters: two people in each look, drawn by the office's own renderer (same materials, light and tone mapping, so they match what you will see) into a canvas, the first time the tab opens. |
 | `ui/session-account.js` | 54 | "Change account" in a session's drawer (on this computer only): the accounts of the plan card, each with what it has left. |
 | `ui/session-drawer.js` | 685 | The session drawer: chat, steps, subagents. |
-| `ui/settings.js` | 234 | Settings popover: backdrop, floor plan, look, time, toggles. |
-| `ui/task-sheet.js` | 1016 | "Giao việc": giving Claude work from the group chat (server/tasks.mjs runs it on the Mac). |
+| `ui/settings.js` | 245 | Settings popover: backdrop, floor plan, look, time, toggles. |
+| `ui/task-sheet.js` | 1027 | "Giao việc": giving Claude work from the group chat (server/tasks.mjs runs it on the Mac). |
 | `ui/timelapse.js` | 156 | A 15-second clip of the office to share: square (1080 × 1080) for a feed or vertical (1080 × 1920) for Reels, TikTok and Shorts, the camera turning slowly round the floor, people at four times their pace, the day running into the evening (a clock in the corner from 8:00 to 23:00, the lights coming on at six), a title at the start and the day's numbers over the last two and a half seconds, with an original lo-fi tune under it (clip-music.js; it can be turned off). |
 | `ui/tips.js` | 115 | The first visit: a short tour of what you can click. |
 | `ui/topbar.js` | 571 | Phone modal, notifications, the night switch. |

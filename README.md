@@ -68,6 +68,12 @@ Dự án này được phát triển và mở rộng dựa trên nền tảng d�
 - **Docker & On-Demand Host Bridge (`:4311`)**: Chạy gọn nhẹ trong Docker container (`:4310`) kết hợp trình giám sát `work-office-native watch-bridge` chỉ đánh thức Host Bridge khi có tác vụ thực thi và tự nghỉ sau 45 giây nhàn rỗi.
 - Theo dõi thời gian thực CPU, RAM, ổ đĩa, GPU NVIDIA (`nvidia-smi`), tự động chuyển đổi đa tài khoản Antigravity và ước tính động hạn mức **Quota 5 giờ & 7 ngày** theo từng dự án.
 
+### 7. Trung tâm Quản lý MCP (`🔌 MCP Hub`) & Trình Quản lý File Dự Án (`📁 File Dự Án`)
+- **Trung tâm Kết nối & Quản lý MCP (`server/mcp.mjs` & `src/office/ui/mcp-drawer.js`)**: Quản lý tập trung toàn bộ máy chủ Model Context Protocol (`mcp_config.json`) với 4 tab chuyên biệt (**Danh sách Server**, **Kho 12 Mẫu MCP phổ biến**, **Form cấu hình tùy chỉnh `stdio`/`http` kèm Live JSON Preview**, và **Trình sửa/nhập/xuất JSON**). Hỗ trợ bật/tắt tức thời từng server hoặc toàn bộ, kiểm tra kết nối trực tiếp (`ping`), nhân bản cấu hình, khám phá danh sách tool/schema và tự động che khóa nhạy cảm (`maskSecret`).
+- **Trình Quản lý & Xem File Dự Án (`server/files.mjs` & `src/office/ui/file-manager.js`)**: Duyệt cây thư mục theo đúng phân quyền Workspace, xem trực tiếp tài liệu Word (`.docx`), bảng tính Excel (`.xlsx`, `.csv`), `.pdf`, hình ảnh, video/audio, chỉnh sửa mã nguồn trực tuyến (`Ctrl+S`), tải file lên, tạo thư mục và giao việc trực tiếp kèm đường dẫn file.
+- **Đổi nhanh AI Model & Thanh Chỉ thị Trực tiếp trong Ngăn Phiên (`Session Drawer`)**: Cho phép xem badge Model trên `Session Rail`, chuyển đổi trực tiếp giữa 14 AI Model (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`) và gửi chỉ thị nhanh (`#ds-quick-reply`) ngay trong ngăn chi tiết phiên.
+- **Tùy chỉnh Giới tính Chibi 3D (`👦 Nam` / `👧 Nữ`)**: Hỗ trợ chọn giới tính nhân vật Chibi riêng cho Giám đốc, Phó Giám đốc (PIN) và từng Trợ lý Giám đốc.
+
 ---
 
 ## 🚀 Cài đặt & Sử dụng nhanh

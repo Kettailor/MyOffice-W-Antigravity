@@ -11,6 +11,7 @@ import { closePlace, plcState } from '../interact/place-cards.js';
 import { popLook, togglePlan, togglePop } from './settings.js';
 import { exitFp, fp } from '../interact/first-person.js';
 import { closeTimeline } from '../replay/timeline.js';
+import { setupFileManager } from './file-manager.js';
 import { t as tr } from '../../i18n/index.js';
 
 export let bellOn = false;
@@ -307,13 +308,29 @@ function renderAccessSection(body) {
     roleIn.addEventListener('keydown', (e) => e.stopPropagation());
     fields.append(nameIn, roleIn);
 
+    let selectedGender = m.gender === 'female' ? 'female' : 'male';
+    const genderRow = el('div', 'pm-gender-row');
+    const genderLbl = el('small', 'pm-mwstitle', '🧑 Giới tính Chibi:');
+    const maleBtn = el('button', `btn btn--sm pm-gender-btn${selectedGender === 'male' ? ' is-active' : ''}`, '👦 Nam');
+    maleBtn.type = 'button';
+    const femaleBtn = el('button', `btn btn--sm pm-gender-btn${selectedGender === 'female' ? ' is-active' : ''}`, '👧 Nữ');
+    femaleBtn.type = 'button';
+    const syncGenderBtns = () => {
+      maleBtn.classList.toggle('is-active', selectedGender === 'male');
+      maleBtn.setAttribute('aria-pressed', String(selectedGender === 'male'));
+      femaleBtn.classList.toggle('is-active', selectedGender === 'female');
+      femaleBtn.setAttribute('aria-pressed', String(selectedGender === 'female'));
+    };
+    syncGenderBtns();
+    genderRow.append(genderLbl, maleBtn, femaleBtn);
+
     const wsTitle = el('small', 'pm-mwstitle', '📁 Workspaces được phép nhìn thấy & giao việc:');
     const wsGrid = el('div', 'pm-mwsgrid');
     const picked = new Set((m.allowedWorkspaces || []).map((x) => String(x).toLowerCase()));
     const checkboxes = [];
 
     const permTitle = el('small', 'pm-mwstitle', `🎛️ Quyền chức năng phiên làm việc (${m.role || 'Trợ lý Giám đốc'}):`);
-    const permGrid = el('div', 'pm-mwsgrid');
+    const permGrid = el('div', 'pm-mwsgrid actionPermsWrap');
     const makePermCb = (labelTxt, initChecked) => {
       const lbl = el('label', 'pm-mws');
       const cb = el('input');
@@ -323,9 +340,14 @@ function renderAccessSection(body) {
       permGrid.append(lbl);
       return cb;
     };
+    const isDeputyRole = (m.role || '') === 'Phó Giám đốc' || Boolean(m.isDirectorDevice);
     const canStopCb = makePermCb('⏹️ Dừng phiên', m.rawCanStopSession !== false && m.canStopSession !== false);
     const canEditCb = makePermCb('✏️ Chỉnh sửa phiên', m.rawCanEditSession !== false && m.canEditSession !== false);
     const canDeleteCb = makePermCb('🗑️ Xóa phiên', m.rawCanDeleteSession !== false && m.canDeleteSession !== false);
+    const canEditFilesCb = makePermCb(
+      '📁 Cho phép tải lên / sửa / xóa file dự án',
+      typeof m.rawCanEditFiles === 'boolean' ? m.rawCanEditFiles : (typeof m.canEditFiles === 'boolean' ? m.canEditFiles : isDeputyRole),
+    );
 
     const saveMemberPerms = async (quietToast = false) => {
       const allowedWorkspaces = checkboxes.filter((c) => c.checked).map((c) => c.value);
@@ -335,10 +357,12 @@ function renderAccessSection(body) {
         id: m.id,
         name: nameIn.value.trim() || 'Trợ lý Giám đốc',
         role: roleIn.value.trim() || 'Trợ lý Giám đốc',
+        gender: selectedGender,
         allowedWorkspaces,
         canStopSession: canStopCb.checked,
         canEditSession: canEditCb.checked,
         canDeleteSession: canDeleteCb.checked,
+        canEditFiles: canEditFilesCb.checked,
         status: 'approved',
       });
       if (r?.ok) {
@@ -351,8 +375,18 @@ function renderAccessSection(body) {
       }
       return r;
     };
+    maleBtn.addEventListener('click', () => {
+      selectedGender = 'male';
+      syncGenderBtns();
+      if (m.status === 'approved') saveMemberPerms(true);
+    });
+    femaleBtn.addEventListener('click', () => {
+      selectedGender = 'female';
+      syncGenderBtns();
+      if (m.status === 'approved') saveMemberPerms(true);
+    });
     if (m.status === 'approved') {
-      for (const pcb of [canStopCb, canEditCb, canDeleteCb]) {
+      for (const pcb of [canStopCb, canEditCb, canDeleteCb, canEditFilesCb]) {
         pcb.addEventListener('change', () => { saveMemberPerms(true); });
       }
     }
@@ -398,7 +432,7 @@ function renderAccessSection(body) {
     });
 
     acts.append(saveBtn, delBtn);
-    card.append(top, fields, wsTitle, wsGrid, permTitle, permGrid, acts);
+    card.append(top, fields, genderRow, wsTitle, wsGrid, permTitle, permGrid, acts);
     mWrap.append(card);
   }
 
@@ -503,22 +537,52 @@ function phoneSide(body) {
     const canStop = isFull || (v.canStopSession !== false && v.sessionPerms?.stop !== false);
     const canEdit = isFull || (v.canEditSession !== false && v.sessionPerms?.edit !== false);
     const canDel = isFull || (v.canDeleteSession !== false && v.sessionPerms?.delete !== false);
+    const canFiles = isFull || Boolean(v.canEditFiles);
     const vBox = el('div', 'pm-pinbox');
     const permBadges = el('div', 'pm-mwsgrid');
     for (const [labelTxt, allowed] of [
       ['⏹️ Dừng phiên làm việc', canStop],
       ['✏️ Chỉnh sửa tên phiên', canEdit],
       ['🗑️ Xóa phiên làm việc', canDel],
+      ['📁 Tải lên / sửa / xóa file dự án', canFiles],
     ]) {
       const chip = el('span', `pm-mbadge ${allowed ? 'pm-mbadge--approved' : 'pm-mbadge--rejected'}`, `${allowed ? '🟢' : '🔒'} ${labelTxt}`);
       permBadges.append(chip);
     }
+
+    const curGender = (state.viewer?.gender || 'male') === 'female' ? 'female' : 'male';
+    const genderWrap = el('div', 'pm-gender-box');
+    genderWrap.append(el('small', 'pm-mwstitle', '🧑 Giới tính nhân vật Chibi:'));
+    const genderRow = el('div', 'pm-gender-row');
+    for (const [gVal, gText] of [['male', '👦 Nam'], ['female', '👧 Nữ']]) {
+      const gb = el('button', `btn btn--sm pm-gender-btn${curGender === gVal ? ' is-active' : ''}`, gText);
+      gb.type = 'button';
+      gb.setAttribute('aria-pressed', String(curGender === gVal));
+      gb.addEventListener('click', async () => {
+        if ((state.viewer?.gender || 'male') === gVal) return;
+        gb.disabled = true;
+        const r = await post('/api/access', { action: 'updateSelf', gender: gVal });
+        gb.disabled = false;
+        if (r?.ok) {
+          state.viewer.gender = r.viewer?.gender || gVal;
+          toast(gVal === 'female' ? '✅ Đã đổi nhân vật Chibi sang Nữ!' : '✅ Đã đổi nhân vật Chibi sang Nam!');
+          renderPhone();
+          renderViewerBadge();
+        } else {
+          toast(r?.message || tr('drawer.unreachable'));
+        }
+      });
+      genderRow.append(gb);
+    }
+    genderWrap.append(genderRow);
+
     vBox.append(
       el('b', null, `👔 Vai trò: ${v.role || 'Trợ lý Giám đốc'} · ${v.name || 'Từ xa'}`),
       el('p', 'muted pm-note', state.requireTaskApproval
         ? '🛡️ Chế độ: Mọi công việc (task) bạn giao sẽ được gửi tới Giám đốc duyệt trước khi Agent thực hiện.'
         : '⚡ Chế độ: Công việc bạn giao được Agent thực hiện ngay lập tức.'),
       el('p', 'muted pm-note', `📁 Workspace được phép truy cập: ${(v.allowedWorkspaces || []).map((d) => String(d).split(/[\\/]/).filter(Boolean).pop() || d).join(', ') || 'Theo phân quyền Giám đốc'}`),
+      genderWrap,
       el('small', 'pm-mwstitle', '🎛️ Quyền chức năng phiên làm việc của bạn:'),
       permBadges,
     );
@@ -548,7 +612,8 @@ function phoneSide(body) {
 }
 
 export function setup() {
-  /* ---------- phone modal, bell, night, closing ---------- */
+  /* ---------- phone modal, bell, night, closing, file manager ---------- */
+  setupFileManager();
   state.lanUrl = null; state.lanBase = null; state.phonePin = null;
   for (const id of ['btn-phone', 'btn-phone-top']) $(id)?.addEventListener('click', () => { $('phone-modal').hidden = false; renderPhone(); if (state.isLocal) loadTunnel().then(renderPhone); });
   try { bellOn = localStorage.getItem('office-bell') === '1' && Notification.permission === 'granted'; } catch { /* storage blocked */ }
@@ -565,6 +630,10 @@ export function setup() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
     if ($('wait-focus-modal') && !$('wait-focus-modal').hidden) { $('wait-focus-modal').querySelector('.wait-close-btn')?.click(); return; }
+    if ($('mcp-modal') && !$('mcp-modal').hidden) { $('mcp-modal').hidden = true; return; }
+    if ($('file-manager-modal') && !$('file-manager-modal').hidden) { $('file-manager-modal').hidden = true; return; }
+    if ($('wrap-modal') && !$('wrap-modal').hidden) { $('wrap-modal').hidden = true; return; }
+    if ($('zchat') && !$('zchat').hidden) { $('zchat').hidden = true; return; }
     if (!$('tl').hidden) closeTimeline(); else if (plcState.id) closePlace(); else if (!popLook.hidden) togglePop(false); else if (!$('pop-plan').hidden) togglePlan(false); else if (!$('phone-modal').hidden) $('phone-modal').hidden = true; else if (!drS.hidden) closeSession(); else if (!drM.hidden) closeMac(); else if (fp.on) exitFp();
   });
   $('feed-toggle').addEventListener('click', () => { if (!small.matches) return; const open = $('feed').classList.toggle('feed--open'); $('feed-toggle').setAttribute('aria-expanded', String(open)); });

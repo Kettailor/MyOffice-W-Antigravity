@@ -247,7 +247,7 @@ function buildTodoForm(scope, placeholderKey, labelKey) {
   form.dataset.scope = scope;
   const input = el('input');
   input.type = 'text';
-  input.maxLength = 140;
+  input.maxLength = 2000;
   input.placeholder = tr(placeholderKey);
   input.setAttribute('aria-label', tr(labelKey));
   input.enterKeyHint = 'done';

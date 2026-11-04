@@ -1,6 +1,6 @@
 // Place cards: what happens at each place.
 import { state } from '../core/state.js';
-import { $, el, fmtAgo, hhmm, nowMs, short, small, stage } from '../core/env.js';
+import { $, PRO, el, fmtAgo, hhmm, nowMs, short, small, stage } from '../core/env.js';
 import { lbl, verb } from '../ui/event-text.js';
 import { TYPE_ICON, icon } from '../ui/icons.js';
 import { camera, fpCam } from '../scene/renderer.js';

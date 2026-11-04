@@ -40,7 +40,6 @@ const pickOne = (list) => list[Math.floor(Math.random() * list.length)];
 export function inferChatChannel(m) {
   if (!m || typeof m !== 'object') return 'work';
   if (m.kind === 'perm' || m.tag === 'claude') return 'work';
-  if (m.kind === 'poll' || m.kind === 'remind' || m.kind === 'sticker' || m.sticker != null || m.poll || m.remind) return 'casual';
   if (m.role === 'staff' || CASUAL_STAFF_FROM.has(m.from) || String(m.from || '').startsWith('__')) return 'casual';
   if (m.key && String(m.key).startsWith('life:')) return 'casual';
   if (m.kind === 'sys') {
@@ -60,6 +59,7 @@ export function inferChatChannel(m) {
     }
   }
   if (m.channel === 'work' || m.channel === 'casual') return m.channel;
+  if (m.kind === 'poll' || m.kind === 'remind' || m.kind === 'sticker' || m.sticker != null || m.poll || m.remind) return 'casual';
   return 'work';
 }
 
@@ -170,7 +170,7 @@ export function createChatEngine(ctx) {
     const p = who(from); if (!p) return;
     const ch = opts.channel || inferChatChannel({ from: p.key, text, sticker: opts.sticker, poll: opts.poll, remind: opts.remind });
     const now = ctx.now(), wait = opts.now ? 0 : opts.delay ?? rand(400, 1800), typing = opts.now || p.key === 'me' ? 0 : Math.min(2800, 700 + String(text || '').length * 30);
-    queue.push({ p, text: String(text || '').slice(0, opts.long ? 4000 : 600), opts: { ...opts, channel: ch }, typeAt: now + wait, at: now + wait + typing });
+    queue.push({ p, text: String(text || '').slice(0, opts.long ? 20_000 : 8_000), opts: { ...opts, channel: ch }, typeAt: now + wait, at: now + wait + typing });
     queue.sort((a, b) => a.at - b.at);
     tick();
   }
@@ -425,13 +425,13 @@ export function createChatEngine(ctx) {
       images = null,
       channel = null,
     } = rawOpts;
-    text = String(text || '').trim().slice(0, 600);
+    text = String(text || '').trim().slice(0, 20_000);
     const imgList = Array.isArray(images) ? images.filter(Boolean) : [];
     const mainPhoto = singlePhoto || (!text && imgList.length === 1 ? imgList[0] : null);
     if (!text && sticker == null && !mainPhoto && !imgList.length) return;
     const ch = channel === 'casual' ? 'casual' : (channel || (to ? 'work' : (sticker != null ? 'casual' : 'work')));
     const r = replyTo && byId(replyTo), reply = r && !r.recalled ? { id: r.id, name: r.whoName || r.name || tr('chat.you'), text: short(r.kind === 'text' ? r.text : r.kind === 'poll' ? r.poll.q : tr(r.kind === 'photo' ? 'chat.photo' : 'chat.sticker'), 90) } : null;
-    say('me', text, { now: true, channel: ch, sticker, photo: mainPhoto, images: imgList.length ? imgList : null, reply, role: 'boss', to, whoName, whoRole, whoId, mentions, humanOnly, ownerId: ownerId || whoId || null });
+    say('me', text, { now: true, long: true, channel: ch, sticker, photo: mainPhoto, images: imgList.length ? imgList : null, reply, role: 'boss', to, whoName, whoRole, whoId, mentions, humanOnly, ownerId: ownerId || whoId || null });
     const mine = st.msgs.at(-1);
     if (humanOnly && Array.isArray(mentions) && mentions.length) return;
     const quote = mine && text ? { id: mine.id, name: whoName || tr('chat.boss'), text: short(text, 90) } : null;

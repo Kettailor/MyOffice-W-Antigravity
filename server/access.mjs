@@ -16,6 +16,16 @@ export const ROLE_PRESETS = [
   'Khách xem',
 ];
 
+export function normalizeGender(g) {
+  return g === 'female' ? 'female' : 'male';
+}
+
+function isViceDirectorRole(role = '', isDirectorDevice = false) {
+  if (isDirectorDevice) return true;
+  const r = String(role || '').trim();
+  return r === DIRECTOR_DEVICE_ROLE || r === 'vice_director';
+}
+
 function normWinPath(p = '') {
   const s = String(p || '').trim().replace(/[\\/]+$/, '');
   if (!s) return '';
@@ -73,9 +83,13 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       if (Array.isArray(raw.members)) {
         state.members = raw.members.map((m) => ({
           ...m,
+          gender: normalizeGender(m?.gender),
           canStopSession: typeof m?.canStopSession === 'boolean' ? m.canStopSession : true,
           canEditSession: typeof m?.canEditSession === 'boolean' ? m.canEditSession : true,
           canDeleteSession: typeof m?.canDeleteSession === 'boolean' ? m.canDeleteSession : true,
+          canEditFiles: typeof m?.canEditFiles === 'boolean'
+            ? m.canEditFiles
+            : isViceDirectorRole(m?.role, m?.isDirectorDevice),
         }));
       }
       if (Array.isArray(raw.pendingTasks)) state.pendingTasks = raw.pendingTasks.filter((t) => t && t.status === 'pending');
@@ -156,10 +170,18 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return null;
   }
 
-  function createDirectorDeviceMember(req, { name = '' } = {}) {
-    let m = getMemberFromReq(req, { cookieOnly: true });
-    const ip = clientIp(req);
-    const ua = shortUa(req);
+  function createDirectorDeviceMember(reqOrOpts = {}, optsArg = undefined) {
+    const isHttpReq = Boolean(reqOrOpts && (reqOrOpts.headers || reqOrOpts.socket));
+    const req = isHttpReq ? reqOrOpts : null;
+    const opts = (isHttpReq ? optsArg : reqOrOpts) || {};
+    const { name = '', gender, ip: optIp, ua: optUa } = opts;
+
+    let m = req ? getMemberFromReq(req, { cookieOnly: true }) : null;
+    const ip = optIp || (req ? clientIp(req) : 'unknown');
+    const ua = optUa || (req ? shortUa(req) : 'Thiết bị');
+    if (!m && !isSharedOrLocalIp(ip)) {
+      m = state.members.find((x) => x.isDirectorDevice && x.ip === ip && (!ua || x.ua === ua)) || null;
+    }
     const now = Date.now();
     const existingVpCount = state.members.filter((x) => x.isDirectorDevice && x.id !== m?.id).length;
     const defaultVpName = existingVpCount === 0 ? 'Phó Giám đốc' : `Phó Giám đốc ${existingVpCount + 1}`;
@@ -167,6 +189,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     const cleanName = (customName && customName !== 'Trợ lý Giám đốc' && customName !== 'Trợ lý từ xa')
       ? customName.slice(0, 48)
       : (m?.isDirectorDevice && m.name ? m.name : defaultVpName);
+    const cleanGender = gender !== undefined ? normalizeGender(gender) : normalizeGender(m?.gender);
 
     if (!m) {
       m = {
@@ -174,6 +197,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
         secret: crypto.randomBytes(18).toString('hex'),
         name: cleanName,
         role: DIRECTOR_DEVICE_ROLE,
+        gender: cleanGender,
         isDirectorDevice: true,
         note: `Thiết bị chính chủ (${ua})`,
         ip,
@@ -184,6 +208,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
         canStopSession: true,
         canEditSession: true,
         canDeleteSession: true,
+        canEditFiles: true,
         createdAt: now,
         approvedAt: now,
         lastSeenAt: now,
@@ -200,6 +225,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     } else {
       m.name = cleanName;
       m.role = DIRECTOR_DEVICE_ROLE;
+      m.gender = cleanGender;
       m.isDirectorDevice = true;
       m.ip = ip;
       m.ua = ua;
@@ -209,6 +235,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       if (typeof m.canStopSession !== 'boolean') m.canStopSession = true;
       if (typeof m.canEditSession !== 'boolean') m.canEditSession = true;
       if (typeof m.canDeleteSession !== 'boolean') m.canDeleteSession = true;
+      if (typeof m.canEditFiles !== 'boolean') m.canEditFiles = true;
       m.approvedAt = m.approvedAt || now;
       m.lastSeenAt = now;
     }
@@ -223,21 +250,28 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return null;
   }
 
-  function createOrUpdateRequest(req, { name, role, note, autoApprove = false, defaultWorkspaces = [] } = {}) {
-    let m = getMemberFromReq(req);
+  function createOrUpdateRequest(reqOrOpts = {}, optsArg = undefined) {
+    const isHttpReq = Boolean(reqOrOpts && (reqOrOpts.headers || reqOrOpts.socket));
+    const req = isHttpReq ? reqOrOpts : null;
+    const opts = (isHttpReq ? optsArg : reqOrOpts) || {};
+    const { id: optId, name, role, gender, note, ip: optIp, ua: optUa, autoApprove = false, defaultWorkspaces = [] } = opts;
+
+    let m = req ? getMemberFromReq(req) : (optId ? state.members.find((x) => x.id === optId) : null);
     const cleanName = String(name || m?.name || 'Trợ lý từ xa').trim().slice(0, 48) || 'Trợ lý từ xa';
     const cleanRole = String(role || m?.role || state.defaultRole || DEFAULT_ROLE).trim().slice(0, 48) || DEFAULT_ROLE;
+    const cleanGender = gender !== undefined ? normalizeGender(gender) : normalizeGender(m?.gender);
     const cleanNote = String(note || '').trim().slice(0, 160);
-    const ip = clientIp(req);
-    const ua = shortUa(req);
+    const ip = optIp || (req ? clientIp(req) : 'unknown');
+    const ua = optUa || (req ? shortUa(req) : 'Thiết bị');
     const now = Date.now();
 
     if (!m) {
       m = {
-        id: 'mem-' + crypto.randomBytes(5).toString('hex'),
+        id: optId || ('mem-' + crypto.randomBytes(5).toString('hex')),
         secret: crypto.randomBytes(18).toString('hex'),
         name: cleanName,
         role: cleanRole,
+        gender: cleanGender,
         note: cleanNote,
         ip,
         ua,
@@ -247,6 +281,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
         canStopSession: true,
         canEditSession: true,
         canDeleteSession: true,
+        canEditFiles: isViceDirectorRole(cleanRole, false),
         createdAt: now,
         approvedAt: autoApprove ? now : 0,
         lastSeenAt: now,
@@ -263,6 +298,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     } else {
       m.name = cleanName;
       m.role = cleanRole;
+      m.gender = cleanGender;
       if (cleanNote) m.note = cleanNote;
       m.ip = ip;
       m.ua = ua;
@@ -270,6 +306,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       if (typeof m.canStopSession !== 'boolean') m.canStopSession = true;
       if (typeof m.canEditSession !== 'boolean') m.canEditSession = true;
       if (typeof m.canDeleteSession !== 'boolean') m.canDeleteSession = true;
+      if (typeof m.canEditFiles !== 'boolean') m.canEditFiles = isViceDirectorRole(m.role, m.isDirectorDevice);
       if (autoApprove) {
         m.status = 'approved';
         m.approvedAt = now;
@@ -285,11 +322,27 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return m;
   }
 
-  function approveMember(id, { name, role, allowedWorkspaces, requireApproval, canStopSession, canEditSession, canDeleteSession } = {}) {
+  function approveMember(idOrObj, optsArg = {}) {
+    const isObj = typeof idOrObj === 'object' && idOrObj !== null;
+    const id = isObj ? idOrObj.id : idOrObj;
+    const {
+      name,
+      role,
+      gender,
+      allowedWorkspaces,
+      requireApproval,
+      canStopSession,
+      canEditSession,
+      canDeleteSession,
+      canEditFiles,
+    } = isObj ? idOrObj : (optsArg || {});
+
     const m = state.members.find((x) => x.id === id);
     if (!m) return null;
     if (typeof name === 'string' && name.trim()) m.name = name.trim().slice(0, 48);
     if (typeof role === 'string' && role.trim()) m.role = role.trim().slice(0, 48);
+    if (gender !== undefined) m.gender = normalizeGender(gender);
+    else m.gender = normalizeGender(m.gender);
     if (Array.isArray(allowedWorkspaces)) {
       m.allowedWorkspaces = allowedWorkspaces.map((w) => String(w || '').trim()).filter(Boolean);
     }
@@ -299,6 +352,11 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     if (typeof canStopSession === 'boolean') m.canStopSession = canStopSession;
     if (typeof canEditSession === 'boolean') m.canEditSession = canEditSession;
     if (typeof canDeleteSession === 'boolean') m.canDeleteSession = canDeleteSession;
+    if (typeof canEditFiles === 'boolean') {
+      m.canEditFiles = canEditFiles;
+    } else if (typeof m.canEditFiles !== 'boolean') {
+      m.canEditFiles = isViceDirectorRole(m.role, m.isDirectorDevice);
+    }
     m.status = 'approved';
     m.approvedAt = Date.now();
     save();
@@ -306,11 +364,15 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return pubMember(m);
   }
 
-  function updateMember(id, patch = {}) {
+  function updateMember(idOrObj, patchArg = {}) {
+    const isObj = typeof idOrObj === 'object' && idOrObj !== null;
+    const id = isObj ? idOrObj.id : idOrObj;
+    const patch = isObj ? idOrObj : (patchArg || {});
     const m = state.members.find((x) => x.id === id);
     if (!m) return null;
     if (typeof patch.name === 'string' && patch.name.trim()) m.name = patch.name.trim().slice(0, 48);
     if (typeof patch.role === 'string' && patch.role.trim()) m.role = patch.role.trim().slice(0, 48);
+    if (patch.gender !== undefined) m.gender = normalizeGender(patch.gender);
     if (Array.isArray(patch.allowedWorkspaces)) {
       m.allowedWorkspaces = patch.allowedWorkspaces.map((w) => String(w || '').trim()).filter(Boolean);
     }
@@ -324,6 +386,33 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     if (typeof patch.canStopSession === 'boolean') m.canStopSession = patch.canStopSession;
     if (typeof patch.canEditSession === 'boolean') m.canEditSession = patch.canEditSession;
     if (typeof patch.canDeleteSession === 'boolean') m.canDeleteSession = patch.canDeleteSession;
+    if (typeof patch.canEditFiles === 'boolean') m.canEditFiles = patch.canEditFiles;
+    save();
+    onUpdate?.();
+    return pubMember(m);
+  }
+
+  function updateSelfProfile(idOrReq, patchArg = {}) {
+    let m = null;
+    let patch = patchArg || {};
+    if (typeof idOrReq === 'string') {
+      m = state.members.find((x) => x.id === idOrReq) || null;
+    } else if (idOrReq && typeof idOrReq === 'object') {
+      if (idOrReq.headers || idOrReq.socket) {
+        m = getMemberFromReq(idOrReq);
+      } else if (typeof idOrReq.id === 'string') {
+        m = state.members.find((x) => x.id === idOrReq.id) || null;
+        patch = idOrReq;
+      }
+    }
+    if (!m) return null;
+    if (typeof patch.name === 'string' && patch.name.trim()) {
+      m.name = patch.name.trim().slice(0, 48);
+    }
+    if (patch.gender !== undefined) {
+      m.gender = normalizeGender(patch.gender);
+    }
+    m.lastSeenAt = Date.now();
     save();
     onUpdate?.();
     return pubMember(m);
@@ -458,7 +547,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       model: String(payload.model || '').trim(),
       targetName: String(payload.targetName || path.basename(String(payload.dir || '')) || 'Dự án'),
       chat: Boolean(payload.chat),
-      text: String(payload.text || '').trim().slice(0, 4000),
+      text: String(payload.text || '').trim().slice(0, 200_000),
       images: Array.isArray(payload.images) ? payload.images : [],
       status: 'pending',
       createdAt: Date.now(),
@@ -480,7 +569,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     item.status = decision === 'approve' ? 'approved' : 'rejected';
     item.decidedAt = Date.now();
     if (typeof editedText === 'string' && editedText.trim()) {
-      item.text = editedText.trim().slice(0, 4000);
+      item.text = editedText.trim().slice(0, 200_000);
     }
     save();
     onUpdate?.();
@@ -491,8 +580,12 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     if (!m) return null;
     const { secret, ...rest } = m;
     const perms = effectiveSessionPerms(m);
+    const defaultEditFiles = isViceDirectorRole(m.role, m.isDirectorDevice);
+    const canEditFiles = Boolean(m.canEditFiles ?? defaultEditFiles);
     return {
       ...rest,
+      gender: normalizeGender(m.gender),
+      canEditFiles,
       sessionPerms: perms,
       canStopSession: perms.canStopSession,
       canEditSession: perms.canEditSession,
@@ -500,6 +593,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       rawCanStopSession: m.canStopSession !== false,
       rawCanEditSession: m.canEditSession !== false,
       rawCanDeleteSession: m.canDeleteSession !== false,
+      rawCanEditFiles: canEditFiles,
     };
   }
 
@@ -545,6 +639,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     createOrUpdateRequest,
     approveMember,
     updateMember,
+    updateSelfProfile,
     removeMember,
     setRequireTaskApproval,
     setSessionPermissions,
@@ -563,6 +658,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     getSecurityStatus,
     hashPinSecret,
     signSessionToken,
+    normalizeGender,
   };
 }
 
@@ -570,6 +666,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
 export function renderRemoteAccessPage({ member = null, wrongPin = false, defaultRole = DEFAULT_ROLE } = {}) {
   const isPending = member && member.status === 'pending';
   const isRejected = member && member.status === 'rejected';
+  const curGender = normalizeGender(member?.gender);
   const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   return `<!doctype html>
@@ -592,6 +689,9 @@ p.lead{color:#9ca3af;font-size:13px;margin-bottom:16px}
 .field label{display:block;font-size:12px;font-weight:600;color:#d1d5db;margin-bottom:5px}
 .field input,.field select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(15,20,28,0.85);color:#fff;font-size:14px;outline:none;transition:border-color .15s}
 .field input:focus,.field select:focus{border-color:#38bdf8}
+.gender-pick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+.gender-btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(15,20,28,0.75);color:#cbd5e1;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.gender-btn.active{border-color:#38bdf8;background:rgba(56,189,248,0.18);color:#fff;box-shadow:0 0 0 1px rgba(56,189,248,0.35)}
 .btn{width:100%;padding:11px 16px;border-radius:10px;border:0;background:linear-gradient(135deg,#0284c7,#2563eb);color:#fff;font-weight:600;font-size:14px;cursor:pointer;transition:transform .1s,opacity .15s}
 .btn:hover{opacity:0.94}
 .btn:active{transform:scale(0.99)}
@@ -620,8 +720,13 @@ p.lead{color:#9ca3af;font-size:13px;margin-bottom:16px}
   <div class="pin-card">
     <h2>👔 Chính chủ Giám đốc (Thiết bị khác)</h2>
     <p>Nhập mã PIN 6 số tạo từ máy chính để vào ngay với nhân vật Chibi <b>Phó Giám đốc</b> (toàn quyền tất cả dự án):</p>
-    <form method="post" action="/pin">
+    <form id="pinForm" method="post" action="/pin">
       <input type="hidden" name="mode" value="director_pin">
+      <input type="hidden" name="gender" id="pin-gender" value="${esc(curGender)}">
+      <div class="gender-pick" style="margin-bottom:8px">
+        <button type="button" class="gender-btn ${curGender === 'male' ? 'active' : ''}" data-gender="male">👦 Nam</button>
+        <button type="button" class="gender-btn ${curGender === 'female' ? 'active' : ''}" data-gender="female">👧 Nữ</button>
+      </div>
       <div class="pin-row">
         <input name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="one-time-code" required>
         <button type="submit">Vào ngay</button>
@@ -636,10 +741,18 @@ p.lead{color:#9ca3af;font-size:13px;margin-bottom:16px}
     <p id="wait-info">Xin chào <strong>${esc(member?.name || '')}</strong> (${esc(member?.role || defaultRole)}).<br>Thông báo đã hiện trên màn hình Giám đốc. Sau khi duyệt bạn sẽ có nhân vật Chibi riêng trong văn phòng!</p>
   </div>
 
-  <form id="req-form">
+  <form id="req-form" name="requestForm">
+    <input type="hidden" name="gender" id="req-gender" value="${esc(curGender)}">
     <div class="field">
       <label for="f-name">Họ và tên Trợ lý hiển thị</label>
       <input id="f-name" name="name" required maxlength="48" placeholder="VD: Nguyễn Minh Anh" value="${esc(member && !member.isDirectorDevice ? member.name : '')}" autocomplete="name">
+    </div>
+    <div class="field">
+      <label>Giới tính nhân vật Chibi 3D</label>
+      <div class="gender-pick">
+        <button type="button" class="gender-btn ${curGender === 'male' ? 'active' : ''}" data-gender="male">👦 Nam</button>
+        <button type="button" class="gender-btn ${curGender === 'female' ? 'active' : ''}" data-gender="female">👧 Nữ</button>
+      </div>
     </div>
     <div class="field">
       <label for="f-role">Vai trò đề xuất (Giám đốc có thể chỉnh lại)</label>
@@ -656,11 +769,29 @@ p.lead{color:#9ca3af;font-size:13px;margin-bottom:16px}
 </div>
 <script>
 const form = document.getElementById('req-form');
+const requestForm = form;
+const pinForm = document.getElementById('pinForm');
 const waitPanel = document.getElementById('wait-panel');
 const waitInfo = document.getElementById('wait-info');
 const btnSubmit = document.getElementById('btn-submit');
 const fName = document.getElementById('f-name');
 const fRole = document.getElementById('f-role');
+const pinGender = document.getElementById('pin-gender');
+const reqGender = document.getElementById('req-gender');
+const genderBtns = document.querySelectorAll('.gender-btn[data-gender]');
+
+function selectGender(g) {
+  const val = g === 'female' ? 'female' : 'male';
+  if (pinGender) pinGender.value = val;
+  if (reqGender) reqGender.value = val;
+  genderBtns.forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-gender') === val);
+  });
+}
+
+genderBtns.forEach((btn) => {
+  btn.addEventListener('click', () => selectGender(btn.getAttribute('data-gender')));
+});
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -673,6 +804,7 @@ form.addEventListener('submit', async (e) => {
       body: JSON.stringify({
         name: fName.value.trim(),
         role: fRole.value,
+        gender: reqGender ? reqGender.value : 'male',
         note: document.getElementById('f-note').value.trim(),
       }),
     });
@@ -705,3 +837,5 @@ setInterval(pollStatus, 1800);
 </body>
 </html>`;
 }
+
+export const renderPinPage = renderRemoteAccessPage;

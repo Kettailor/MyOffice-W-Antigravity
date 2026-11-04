@@ -14,6 +14,7 @@ import { whereabouts } from '../people/outings.js';
 import { imageUrl, openImage } from './image-view.js';
 import { syncToggles, uiCfg } from './settings.js';
 import { resize } from '../scene/renderer.js';
+import { canSeeSession } from './group-chat.js';
 import { t as tr, num } from '../../i18n/index.js';
 
 let feedFilter = 'all';
@@ -146,7 +147,11 @@ function alertCard(e) {
 let lastFeedSig = '';
 export function renderFeed() {
   const list = $('feed-list');
-  const mainFeed = state.feed.filter((e) => !e.agent && !['agent', 'substart', 'substop'].includes(e.type));
+  const mainFeed = state.feed.filter((e) => {
+    const s = e.sess ? sessions.get(e.sess) : null;
+    if (s && (s.masked || !canSeeSession(s))) return false;
+    return !e.agent && !['agent', 'substart', 'substop'].includes(e.type);
+  });
   const latest = new Map();
   const latestWait = new Map();
   for (const e of mainFeed) {
@@ -428,13 +433,13 @@ export function renderRail() {
   syncRailToolbar();
   const byFolder = uiCfg.groupByFolder !== false;
   const expandIdle = uiCfg.railExpandIdle !== false;
-  const all = [...sessions.values()].sort(order);
+  const all = [...sessions.values()].filter((s) => !s.masked && canSeeSession(s)).sort(order);
   const q = query.trim().toLowerCase();
   const rail = $('rail-list'), chips = $('chips');
   const ram = new Map((macSnap?.claude || []).map((c) => [c.pid, c.mem]));
   const count = { wait: 0, work: 0, rest: 0, home: 0 };
   const folderMap = new Map();
-  for (const [id, r] of railRows) if (!sessions.has(id)) { r.li.remove(); r.c.remove(); railRows.delete(id); }
+  for (const [id, r] of railRows) { const s = sessions.get(id); if (!s || s.masked || !canSeeSession(s)) { r.li.remove(); r.c.remove(); railRows.delete(id); } }
   for (const s of all) {
     const stKey = uiStatusOf(s);
     count[stKey] = (count[stKey] || 0) + 1;
@@ -460,7 +465,8 @@ export function renderRail() {
       if (r.stBadge.textContent !== stTxt) r.stBadge.textContent = stTxt;
     }
     { const k = agentOf(s); if (r.avTxt.firstChild?.dataset?.agent !== k) { r.avTxt.replaceChildren(agentMark(k)); r.av.title = AGENT_NAME[k]; } }
-    const nk = dn(s) + '|' + (s.dir || '') + '|' + (s.origin || '') + (s.link ? '|rc' : '');
+    const modelTxt = s.modelLabel || s.usage?.model || '';
+    const nk = dn(s) + '|' + (s.dir || '') + '|' + (s.origin || '') + '|' + modelTxt + (s.link ? '|rc' : '');
     if (r.nameKey !== nk) {
       r.nameKey = nk;
       r.name.textContent = dn(s);
@@ -469,7 +475,11 @@ export function renderRail() {
       const pj = el('span', 'ri-proj', `📁 ${pInfo.name}`);
       pj.title = s.origin ? tr('activity.runsIn', { dir: pInfo.path, origin: s.origin }) : pInfo.path;
       r.subline.append(pj);
-      if (s.origin) {
+      if (modelTxt) {
+        const mdl = el('span', 'ri-origin ri-model', `🤖 ${modelTxt}`);
+        mdl.title = `Model: ${modelTxt}`;
+        r.subline.append(mdl);
+      } else if (s.origin) {
         const orig = el('span', 'ri-origin', s.origin);
         r.subline.append(orig);
       }
@@ -630,7 +640,7 @@ export const fmtTok = (n) => (n >= 1e6 ? `${num(n / 1e6, 1)}M` : `${Math.round(n
 export const fmtUsd = (v) => `$${v >= 100 ? Math.round(v) : v.toFixed(2)}`;
 let lastKpiSig = '';
 export function renderKpi() {
-  const list = [...sessions.values()];
+  const list = [...sessions.values()].filter((s) => !s.masked && canSeeSession(s));
   const runningSubs = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -694,7 +704,7 @@ export function renderKpi() {
   }));
 }
 export function renderHud() {
-  const list = [...sessions.values()];
+  const list = [...sessions.values()].filter((s) => !s.masked && canSeeSession(s));
   const waiting = list.filter((s) => s.status === 'wait').length;
   const subCount = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
   const folderCount = new Set(list.map((s) => projInfoOf(s).key)).size;

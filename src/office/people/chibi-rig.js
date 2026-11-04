@@ -95,6 +95,7 @@ function sweep(points, radius, segs = 24, radial = 12) {
 const HAIR = {
   bob: { line: [1.12, 1.98, 2.15], locks: 10 },
   plain: { line: [1.1, 1.6, 1.95], locks: 9, sweep: 0.16, phase: 0.3 },
+  parted: { line: [1.06, 1.56, 1.92], locks: 9, sweep: 0.22, phase: 0.18 },
   spiky: { line: [1.02, 1.5, 1.85], locks: 9, tip: 0.2, round: 2 },
   ponytail: { line: [1.12, 1.72, 1.82], locks: 10, sweep: -0.12 },
   bun: { line: [1.1, 1.6, 1.8], locks: 10 },
@@ -102,7 +103,10 @@ const HAIR = {
 };
 
 export function makeChibi(cfg = {}, scale = 1) {
+  if (typeof scale === 'string') { cfg = { ...cfg, look: scale }; scale = 1; }
   const look = DIMS[cfg.look] ? cfg.look : 'pixar', D = DIMS[look], toy = look === 'toy', R = D.R;
+  const gender = cfg.gender === 'female' || cfg.skirt === true ? 'female' : 'male';
+  const isFemale = gender === 'female';
   const root = new THREE.Group(); root.scale.setScalar(scale);
   const seed = [...String(cfg.name || cfg.shirt || 'x')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
   const skinC = cfg.skin || SKINS[seed % SKINS.length], shirtC = cfg.shirt || '#5F8FD8', hairC = cfg.hair || '#3B2618';
@@ -111,11 +115,13 @@ export function makeChibi(cfg = {}, scale = 1) {
     : { color: skinC, roughness: 0.5, sheen: 0.45, sheenRoughness: 0.6, sheenColor: new THREE.Color('#FF9E80') }));
   const fabric = (c, k = 1) => getPooledMat(`fab:${look}:${c}:${k}`, () => new THREE.MeshPhysicalMaterial({ color: darken(c, k), roughness: toy ? 0.7 : 0.85, sheen: toy ? 0.3 : 0.7, sheenRoughness: 0.8, sheenColor: lighten(c, 0.55) }));
   const top = fabric(shirtC), topDark = fabric(shirtC, 0.74), pants = fabric(cfg.pants || '#3A4150');
+  const skirtC = cfg.skirtColor || cfg.pants || shirtC || '#1E293B';
+  const skirtM = fabric(skirtC), skirtDark = fabric(skirtC, 0.78);
   const hair = getPooledMat(`hair:${look}:${hairC}`, () => new THREE.MeshPhysicalMaterial({ color: hairC, side: THREE.DoubleSide, roughness: toy ? 0.5 : 0.42, clearcoat: toy ? 0.15 : 0.3, clearcoatRoughness: 0.45, sheen: 0.6, sheenRoughness: 0.3, sheenColor: lighten(hairC, 0.4) }));
   const shoeC = cfg.shoes || '#2D2A2E';
   const shoeM = getPooledMat(`shoe:${shoeC}`, () => plainMat(shoeC, { roughness: 0.45 })), soleM = getPooledMat('sole:#F4F1EA', () => plainMat('#F4F1EA', { roughness: 0.7 }));
   const white = getPooledMat('basic:#FFFFFF', () => new THREE.MeshBasicMaterial({ color: '#FFFFFF' }));
-  const P = { D, look, blink: [] };
+  const P = { D, look, gender, root, blink: [] };
   const add = (parent, geo, m, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) => {
     const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.scale.set(sx, sy, sz); o.castShadow = true; parent.add(o); return o;
   };
@@ -125,14 +131,20 @@ export function makeChibi(cfg = {}, scale = 1) {
   const sh = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.95), new THREE.MeshBasicMaterial({ map: getShadowTex(), transparent: true, depthWrite: false }));
   sh.rotation.x = -Math.PI / 2; sh.position.y = 0.012; sh.renderOrder = -1; root.add(sh); P.shadow = sh;
 
-  /* legs: hip -> knee -> sneaker */
+  /* legs: hip -> knee -> sneaker / office shoe */
   const leg = (sx) => {
     const hip = new THREE.Group(); hip.position.set(sx * D.hipX, D.hipY, 0); root.add(hip);
-    add(hip, cap(D.legR, D.thigh - D.legR), pants, 0, -D.thigh / 2, 0);
+    add(hip, cap(D.legR * (isFemale ? 0.95 : 1), D.thigh - D.legR), isFemale ? skirtM : pants, 0, -D.thigh / 2, 0);
     const knee = new THREE.Group(); knee.position.y = -D.thigh; hip.add(knee);
-    add(knee, sph(D.legR * 0.96), pants);
-    add(knee, new THREE.CylinderGeometry(D.legR * 0.95, D.legR * 0.98, D.shin, 18), pants, 0, -D.shin / 2, 0);
-    add(knee, new THREE.CylinderGeometry(D.legR * 1.08, D.legR * 1.08, toy ? 0.05 : 0.035, 18), toy ? fabric(cfg.pants || '#3A4150', 0.85) : pants, 0, -D.shin + 0.02, 0);
+    if (isFemale) {
+      add(knee, sph(D.legR * 0.9), skin);
+      add(knee, new THREE.CylinderGeometry(D.legR * 0.88, D.legR * 0.78, D.shin, 18), skin, 0, -D.shin / 2, 0);
+      add(knee, new THREE.CylinderGeometry(D.legR * 0.86, D.legR * 0.86, 0.032, 18), shoeM, 0, -D.shin + 0.02, 0);
+    } else {
+      add(knee, sph(D.legR * 0.96), pants);
+      add(knee, new THREE.CylinderGeometry(D.legR * 0.95, D.legR * 0.98, D.shin, 18), pants, 0, -D.shin / 2, 0);
+      add(knee, new THREE.CylinderGeometry(D.legR * 1.08, D.legR * 1.08, toy ? 0.05 : 0.035, 18), toy ? fabric(cfg.pants || '#3A4150', 0.85) : pants, 0, -D.shin + 0.02, 0);
+    }
     const shoe = new THREE.Group(); shoe.position.set(0, -D.shin, 0.035); knee.add(shoe);
     const s = D.shoeR;
     add(shoe, sph(s, 18, 12), shoeM, 0, 0, 0.02, 0.82, 0.58, 1.32);
@@ -141,7 +153,24 @@ export function makeChibi(cfg = {}, scale = 1) {
     return { hip, knee };
   };
   P.legL = leg(-1); P.legR = leg(1);
-  add(root, sph(D.torso[1][0] * 0.98, 16, 12), pants, 0, D.hipY, 0, 1, 0.62, 0.8);
+  add(root, sph(D.torso[1][0] * 0.98, 16, 12), isFemale ? skirtM : pants, 0, D.hipY, 0, 1, 0.62, 0.8);
+  if (isFemale) {
+    const skirtH = D.thigh * 0.88;
+    const rTop = D.torso[1][0] * 1.0, rBot = D.torso[1][0] * 1.44;
+    const skirtGeo = new THREE.CylinderGeometry(rTop, rBot, skirtH, 48, 6, false);
+    const sPos = skirtGeo.attributes.position;
+    for (let i = 0; i < sPos.count; i++) {
+      const vx = sPos.getX(i), vy = sPos.getY(i), vz = sPos.getZ(i);
+      const u = Math.max(0, (skirtH * 0.5 - vy) / skirtH);
+      const ang = Math.atan2(vx, vz);
+      const pleat = 1 + 0.055 * u * Math.cos(ang * 16);
+      sPos.setX(i, vx * pleat);
+      sPos.setZ(i, vz * pleat * 0.86);
+    }
+    skirtGeo.computeVertexNormals();
+    P.skirt = add(root, skirtGeo, skirtM, 0, D.hipY - skirtH * 0.36, 0);
+    add(root, new THREE.TorusGeometry(rTop * 0.96, 0.018, 8, 36), skirtDark, 0, D.hipY + 0.015, 0, 1, 1, 0.84).rotation.x = Math.PI / 2;
+  }
 
   /* spine: everything above the hips leans together */
   const spine = new THREE.Group(); spine.position.y = D.hipY; root.add(spine); P.spine = spine;
@@ -154,7 +183,7 @@ export function makeChibi(cfg = {}, scale = 1) {
     add(torso, new RoundedBoxGeometry(tr * 1.0, H * 0.2, 0.05, 2, 0.02), topDark, 0, H * 0.24, tr * 0.86);
     add(torso, new THREE.TorusGeometry(H * 0.21, 0.055, 10, 28), topDark, 0, H * 0.93, -0.02).rotation.x = Math.PI / 2 - 0.25;
     for (const sx of [-1, 1]) add(torso, new THREE.CylinderGeometry(0.009, 0.009, H * 0.24, 6), soleM, sx * 0.045, H * 0.74, tr * 0.88).rotation.x = 0.25;
-  } else if (outfit === 'suit') {   // a jacket over a white shirt and a tie (the director)
+  } else if (outfit === 'suit') {   // a jacket over a white shirt and a tie (the director / male executive)
     const shirtW = plainMat('#F4F1EA', { roughness: 0.8 }), tieM = plainMat(cfg.tie || '#B5323A', { roughness: 0.45 });
     const v = new THREE.Shape(); v.moveTo(-tr * 0.36, 0); v.lineTo(tr * 0.36, 0); v.lineTo(0, -H * 0.46); v.closePath();
     add(torso, new THREE.ShapeGeometry(v), shirtW, 0, H * 0.98, tr * 0.9).rotation.x = -0.12;
@@ -163,6 +192,15 @@ export function makeChibi(cfg = {}, scale = 1) {
     add(torso, sph(0.026, 10, 8), tieM, 0, H * 0.9, tr * 0.9, 1.2, 0.9, 0.7);
     for (const sx of [-1, 1]) { const l = add(torso, new RoundedBoxGeometry(0.05, H * 0.46, 0.016, 2, 0.006), topDark, sx * tr * 0.2, H * 0.74, tr * 0.92); l.rotation.set(-0.1, 0, sx * 0.42); }
     for (let i = 0; i < 2; i++) add(torso, sph(0.014, 8, 6), topDark, 0, H * (0.4 - i * 0.13), tr * 0.95);
+    add(torso, new THREE.TorusGeometry(tr * 0.93, 0.016, 8, 36), topDark, 0, -0.03, 0).rotation.x = Math.PI / 2;
+  } else if (outfit === 'blazer') {   // tailored blazer over a soft white blouse and pendant (female executive)
+    const blouseM = plainMat('#FAF7F2', { roughness: 0.75 }), goldM = plainMat('#FBBF24', { roughness: 0.3, metalness: 0.6 });
+    const v = new THREE.Shape(); v.moveTo(-tr * 0.34, 0); v.lineTo(tr * 0.34, 0); v.lineTo(0, -H * 0.44); v.closePath();
+    add(torso, new THREE.ShapeGeometry(v), blouseM, 0, H * 0.98, tr * 0.9).rotation.x = -0.12;
+    add(torso, new THREE.TorusGeometry(H * 0.17, 0.022, 10, 28), blouseM, 0, H * 0.95, 0.01, 1, 1, 0.9).rotation.x = Math.PI / 2 - 0.15;
+    add(torso, sph(0.022, 10, 8), goldM, 0, H * 0.84, tr * 0.92, 1.1, 1.1, 0.6);
+    for (const sx of [-1, 1]) { const l = add(torso, new RoundedBoxGeometry(0.046, H * 0.44, 0.015, 2, 0.006), topDark, sx * tr * 0.19, H * 0.74, tr * 0.92); l.rotation.set(-0.1, 0, sx * 0.4); }
+    add(torso, sph(0.015, 8, 6), goldM, 0, H * 0.42, tr * 0.95);
     add(torso, new THREE.TorusGeometry(tr * 0.93, 0.016, 8, 36), topDark, 0, -0.03, 0).rotation.x = Math.PI / 2;
   } else {
     const collarM = plainMat('#F4F1EA', { roughness: 0.8 });
@@ -189,6 +227,7 @@ export function makeChibi(cfg = {}, scale = 1) {
     return { sh: s, el, hand };
   };
   P.armL = arm(-1); P.armR = arm(1);
+  P.handL = P.armL.hand; P.handR = P.armR.hand;
 
   /* head */
   const head = new THREE.Group(); head.position.y = D.headY; spine.add(head); P.head = head;
@@ -212,7 +251,7 @@ export function makeChibi(cfg = {}, scale = 1) {
     add(head, sph(R * (toy ? 0.17 : 0.2), 16, 12), skin, ex, -R * 0.1, -R * 0.02, 0.45, 1, 0.75);
     if (!toy) add(head, sph(R * 0.12, 12, 10), earM, ex + sx * R * 0.05, -R * 0.1, -R * 0.0, 0.3, 0.8, 0.55);
   }
-  const lashM = plainMat('#2A1D18', { roughness: 0.5 });
+  const lashM = plainMat(isFemale ? '#1E1410' : '#2A1D18', { roughness: 0.45 });
   const browM = plainMat(darken(hairC, 0.8), { roughness: 0.6 });
   const iris = plainMat(cfg.iris || IRIS[seed % IRIS.length], { roughness: 0.25 });
   for (const sx of [-1, 1]) {
@@ -223,9 +262,10 @@ export function makeChibi(cfg = {}, scale = 1) {
       add(ball, sph(R * 0.12, 22, 16), plainMat('#2B1D18', { roughness: 0.25 }), 0, 0, 0, 0.84, 1.12, 0.42);
       add(ball, sph(R * 0.042, 10, 8), white, -R * 0.03, R * 0.05, R * 0.04, 1, 1, 0.4);
       add(ball, sph(R * 0.02, 8, 6), white, R * 0.035, -R * 0.045, R * 0.042, 1, 1, 0.4);
+      if (isFemale) add(ball, cap(R * 0.016, R * 0.055), lashM, sx * R * 0.095, R * 0.05, R * 0.01).rotation.z = sx * -0.95;
       P.blink.push({ ball, lash: null });
       const bx = sx * R * 0.37, by = R * 0.11;
-      const brow = add(head, new THREE.TorusGeometry(R * 0.08, R * 0.017, 6, 14, Math.PI * 0.6), browM, bx, by, surf(bx, by) - R * 0.01);
+      const brow = add(head, new THREE.TorusGeometry(R * 0.08, R * (isFemale ? 0.014 : 0.017), 6, 14, Math.PI * 0.6), browM, bx, by, surf(bx, by) - R * 0.01);
       brow.rotation.set(0, sx * 0.36, Math.PI * 0.2);
     } else {
       const x = sx * R * 0.35, y = -R * 0.06, e = R * 0.21, k = e / 0.068;
@@ -238,26 +278,27 @@ export function makeChibi(cfg = {}, scale = 1) {
       add(ball, sph(0.025 * k, 14, 10), plainMat('#14100E', { roughness: 0.2 }), 0, -0.006 * k, 0.035 * k, 1, 1.05, 0.3);
       add(ball, sph(0.014 * k, 8, 6), white, -0.016 * k, 0.022 * k, 0.042 * k, 1, 1, 0.4);
       add(ball, sph(0.007 * k, 8, 6), white, 0.014 * k, -0.02 * k, 0.041 * k, 1, 1, 0.4);
-      const lash = add(eye, new THREE.TorusGeometry(0.07 * k, 0.011 * k, 6, 28, Math.PI), lashM, 0, 0, 0.012 * k, 1, 1.06, 0.7);
-      add(lash, cap(0.008 * k, 0.03 * k), lashM, sx * 0.075 * k, 0.012 * k, 0).rotation.z = sx * -1.0;
+      const lash = add(eye, new THREE.TorusGeometry(0.07 * k, (isFemale ? 0.0135 : 0.011) * k, 6, 28, Math.PI), lashM, 0, 0, 0.012 * k, 1, 1.06, 0.7);
+      add(lash, cap((isFemale ? 0.0095 : 0.008) * k, (isFemale ? 0.038 : 0.03) * k), lashM, sx * 0.075 * k, 0.014 * k, 0).rotation.z = sx * -1.05;
+      if (isFemale) add(lash, cap(0.0075 * k, 0.03 * k), lashM, sx * 0.064 * k, 0.042 * k, 0).rotation.z = sx * -0.75;
       add(eye, new THREE.TorusGeometry(0.068 * k, 0.0035 * k, 5, 20, Math.PI * 0.7), plainMat(darken(skinC, 0.86), { roughness: 0.6 }), 0, 0.022 * k, 0.014 * k, 1, 1.06, 0.7).rotation.z = Math.PI * 0.15;
       P.blink.push({ ball, lash });
       const bx = sx * R * 0.35, by = R * 0.21;
-      const brow = add(head, new THREE.TorusGeometry(R * 0.17, R * 0.032, 8, 16, Math.PI * 0.6), browM, bx, by - R * 0.1, surf(bx, by) - R * 0.03);
+      const brow = add(head, new THREE.TorusGeometry(R * 0.17, R * (isFemale ? 0.024 : 0.032), 8, 16, Math.PI * 0.6), browM, bx, by - R * 0.1, surf(bx, by) - R * 0.03);
       brow.rotation.set(0, sx * 0.32, Math.PI * 0.2);
     }
   }
   const noseY = toy ? -R * 0.25 : -R * 0.24;
   add(head, sph(R * (toy ? 0.055 : 0.08), 14, 10), plainMat(darken(skinC, 0.95), { roughness: 0.5 }), 0, noseY, surf(0, noseY) - R * 0.01, 1.1, 0.85, 0.8);
   const mY = toy ? -R * 0.38 : -R * 0.42;
-  const lipM = plainMat(toy ? '#A9483F' : '#B9544B', { roughness: 0.45 });
+  const lipM = plainMat(isFemale ? '#D6456B' : (toy ? '#A9483F' : '#B9544B'), { roughness: 0.42 });
   const smile = add(head, new THREE.TorusGeometry(R * (toy ? 0.07 : 0.09), R * (toy ? 0.017 : 0.024), 6, 18, Math.PI), lipM, 0, mY + R * 0.04, surf(0, mY) - R * 0.005);
   smile.rotation.z = Math.PI; P.mouthSmile = smile;
   const o = add(head, sph(R * 0.07, 12, 10), plainMat('#6E2B26'), 0, mY, surf(0, mY) - R * 0.01, 0.9, 1.1, 0.4); o.visible = false; P.mouthO = o;
-  const blushM = new THREE.MeshBasicMaterial({ color: '#FF8E8E', transparent: true, opacity: toy ? 0.42 : 0.3, depthWrite: false });
+  const blushM = new THREE.MeshBasicMaterial({ color: isFemale ? '#FF6B8B' : '#FF8E8E', transparent: true, opacity: isFemale ? (toy ? 0.58 : 0.48) : (toy ? 0.42 : 0.3), depthWrite: false });
   for (const sx of [-1, 1]) {
     const bx = sx * R * 0.52, by = -R * 0.27;
-    const b = new THREE.Mesh(sph(R * 0.14, 14, 10), blushM); b.scale.set(1.5, 0.75, 0.3); b.position.set(bx, by, surf(bx, by) + R * 0.02); b.rotation.y = sx * 0.55; head.add(b);
+    const b = new THREE.Mesh(sph(R * 0.14, 14, 10), blushM); b.scale.set(isFemale ? 1.68 : 1.5, isFemale ? 0.85 : 0.75, 0.3); b.position.set(bx, by, surf(bx, by) + R * 0.02); b.rotation.y = sx * 0.55; head.add(b);
   }
 
   /* hair: one sculpted shell plus tails, buns, spikes and a stray strand */
@@ -435,7 +476,7 @@ export function makeChibi(cfg = {}, scale = 1) {
   groc.visible = false; P.grocery = groc; P.groceryBand = grocBand;
   const drop = new THREE.Mesh(sph(0.05, 12, 10), new THREE.MeshBasicMaterial({ color: '#7EC8F0', transparent: true, opacity: 0.85 }));
   drop.scale.set(0.8, 1.3, 0.8); drop.position.set(R * 1.0, D.hipY + D.headY + R * 0.5, 0.2); drop.visible = false; root.add(drop); P.drop = drop;
-  mergeRig(root, new Set([sh, drop, P.mouthSmile, P.mouthO, band, grocBand]));
+  mergeRig(root, new Set([sh, drop, P.mouthSmile, P.mouthO, band, grocBand, ...(P.skirt ? [P.skirt] : [])]));
   standIns(root, P);
   return { root, P };
 }
@@ -458,9 +499,10 @@ function standIns(root, P) {
   standInSets.add([root, meshes]);
 }
 export function disposeChibi(root) {
-  if (!root) return;
-  for (const set of standInSets) if (set[0] === root) standInSets.delete(set);
-  root.traverse((o) => {
+  const target = root?.isObject3D ? root : root?.root;
+  if (!target) return;
+  for (const set of standInSets) if (set[0] === target) standInSets.delete(set);
+  target.traverse((o) => {
     if (!o.isMesh) return;
     if (o.geometry && !o.geometry.userData?.pooled) o.geometry.dispose();
     const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];

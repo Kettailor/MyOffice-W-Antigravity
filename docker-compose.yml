@@ -22,6 +22,8 @@ services:
       - ./data:/app/data
       - ./server:/app/server
       - ./src:/app/src
+      - ./app:/app/app
+      - ./public:/app/public
       - ./.next:/app/.next
       - ${USERPROFILE:-~}/.gemini:/root/.gemini
       - E:/:/mnt/e

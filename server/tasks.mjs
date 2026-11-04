@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_DATA_DIR = process.env.OFFICE_DATA_DIR ? path.resolve(process.env.OFFICE_DATA_DIR) : path.join(ROOT, 'data');
-const MAX_TEXT = 4000, MAX_IMAGES = 20, MAX_IMAGE = 12_000_000;
-const IMG_KEEP_MS = 7 * 86400_000; // 7 days retention for task images
+export const MAX_TEXT = 200_000, MAX_CLI_INLINE_PROMPT = 12_000, MAX_IMAGES = 20, MAX_IMAGE = 12_000_000;
+const IMG_KEEP_MS = 7 * 86400_000; // 7 days retention for task images & prompt files
 const projectIdByDir = new Map();
 const projectIdBySid = new Map();
 
@@ -312,6 +312,7 @@ function cleanAgyError(errStr = '') {
 export function createTasks({ dataDir, claude, env, onStart, onDone, max = Number(process.env.OFFICE_MAX_CONCURRENT_TASKS) || 12, perHour = Number(process.env.OFFICE_TASKS_PER_HOUR) || 100 }) {
   const running = new Map(), recent = [];   // id -> task; when the last ones started (the hourly cap)
   const IMG_DIR = path.join(dataDir, 'task-images');
+  const PROMPT_DIR = path.join(dataDir, 'task-prompts');
   function bridgeHeaders() {
     let token = '';
     try { token = fs.readFileSync(path.join(dataDir, 'token'), 'utf8').trim(); } catch { /* ignore */ }
@@ -320,17 +321,19 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
       : { 'Content-Type': 'application/json' };
   }
   function pruneTaskImages() {
-    try {
-      if (!fs.existsSync(IMG_DIR)) return;
-      const now = Date.now();
-      for (const name of fs.readdirSync(IMG_DIR)) {
-        const full = path.join(IMG_DIR, name);
-        try {
-          const st = fs.statSync(full);
-          if (st.isFile() && now - st.mtimeMs > IMG_KEEP_MS) fs.rmSync(full, { force: true });
-        } catch { /* ignore */ }
-      }
-    } catch { /* ignore */ }
+    const now = Date.now();
+    for (const dirPath of [IMG_DIR, PROMPT_DIR]) {
+      try {
+        if (!fs.existsSync(dirPath)) continue;
+        for (const name of fs.readdirSync(dirPath)) {
+          const full = path.join(dirPath, name);
+          try {
+            const st = fs.statSync(full);
+            if (st.isFile() && now - st.mtimeMs > IMG_KEEP_MS) fs.rmSync(full, { force: true });
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
   }
   pruneTaskImages();
   setInterval(pruneTaskImages, 6 * 3600_000).unref();
@@ -425,9 +428,23 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
       const f = path.join(IMG_DIR, `${id}-${i + 1}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
       fs.writeFileSync(f, Buffer.from(m[2], 'base64'), { mode: 0o600 }); files.push(f);
     }
-    const prompt = files.length ? `${text}\n\n${files.length > 1 ? 'Attached images' : 'Attached image'} (read ${files.length > 1 ? 'them' : 'it'} with read_file):\n${files.join('\n')}` : text;
+    let effectiveText = text;
+    if (text.length > MAX_CLI_INLINE_PROMPT) {
+      try {
+        fs.mkdirSync(PROMPT_DIR, { recursive: true });
+        const promptFile = path.join(PROMPT_DIR, `${id}.md`);
+        fs.writeFileSync(promptFile, text, { encoding: 'utf8', mode: 0o600 });
+        effectiveText = `${text.slice(0, 6000)}\n\n[... Nội dung yêu cầu rất dài (${text.length} ký tự) — BẮT BUỘC dùng công cụ read_file đọc toàn bộ nội dung đầy đủ tại file sau trước khi thực hiện / Full prompt (${text.length} chars) saved to file, MUST read_file first:]\n${promptFile}`;
+      } catch {
+        effectiveText = text.slice(0, MAX_CLI_INLINE_PROMPT);
+      }
+    }
+    const prompt = files.length ? `${effectiveText}\n\n${files.length > 1 ? 'Attached images' : 'Attached image'} (read ${files.length > 1 ? 'them' : 'it'} with read_file):\n${files.join('\n')}` : effectiveText;
 
     const spawnEnv = { ...env() };
+    if (chosenModel) {
+      spawnEnv.ANTIGRAVITY_MODEL = chosenModel;
+    }
     // Prefer language_server agentapi only when ANTIGRAVITY_LS_ADDRESS is active in env; otherwise run standalone `agy` CLI!
     const useLsAgentApi = (bin.kind === 'agy' || (bin.kind === 'agy-cli' && bin.lsFile)) && Boolean(spawnEnv.ANTIGRAVITY_LS_ADDRESS);
     const isAgyCli = bin.kind === 'agy-cli' && !useLsAgentApi;

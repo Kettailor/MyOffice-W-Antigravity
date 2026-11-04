@@ -23,14 +23,28 @@ import { createChatEngine, CHAT_RETENTION_MS, REACTIONS, inferChatChannel } from
 import { t as tr } from '../../i18n/index.js';
 
 export { REACTIONS, CHAT_RETENTION_MS };
-export const channelOf = (m) => inferChatChannel(m);
+export function channelOf(m) {
+  return inferChatChannel(m);
+}
 export const chat = { msgs: [], pinned: null, unread: 0, unreadWork: 0, unreadCasual: 0, open: false, typing: [], channel: 'work' };
-const views = new Set();
+let views;
+function getViews() {
+  if (!views) views = new Set();
+  return views;
+}
 /** The window listens: (what, m) with what = 'add' | 'update' | 'typing' | 'all' | 'badge'. */
-export const onChat = (fn) => views.add(fn);
-const emit = (what, m) => { for (const fn of views) fn(what, m); };
-export const byId = (id) => chat.msgs.find((m) => m.id === id);
-export const myViewerId = () => (state.isLocal ? 'director' : (state.viewer?.id || (state.viewer?.isDirectorDevice ? 'director' : '')));
+export function onChat(fn) {
+  return getViews().add(fn);
+}
+function emit(what, m) {
+  for (const fn of getViews()) fn(what, m);
+}
+export function byId(id) {
+  return chat.msgs.find((m) => m.id === id);
+}
+export function myViewerId() {
+  return state.isLocal ? 'director' : (state.viewer?.id || (state.viewer?.isDirectorDevice ? 'director' : ''));
+}
 
 export function canSeeSession(s) {
   if (!s || s.masked === true) return false;
@@ -160,7 +174,7 @@ export function who(from) {
 }
 /** The sessions' people in the office now (not out on the street), optionally only those resting. */
 export function people(resting = false) {
-  return [...sessions.values()].filter((s) => !s.masked && workers.has(s.id) && !workers.get(s.id).offstage && (!resting || s.status === 'rest')).map((s) => s.id);
+  return [...sessions.entries()].filter(([, s]) => !s.masked && canSeeSession(s) && workers.has(s.id) && !workers.get(s.id).offstage && (!resting || s.status === 'rest')).map(([id]) => id);
 }
 
 /* ---------- the conversation: the server's, or (the demo) this browser's own engine ---------- */
@@ -206,6 +220,8 @@ function applyAdd(m) {
         if (m.channel !== 'casual') chat.unreadWork++;
       } else if (m.channel !== chat.channel && m.channel !== 'casual') {
         chat.unreadWork++;
+      } else if (m.channel === 'work' && !isHumanSelf(m) && (m.role === 'boss' || m.from === 'me')) {
+        // Remote user message in work channel: also increment unreadWork if window is closed or scrolled
       }
       const mentionedMe = isMentioningMe(m);
       if (m.kind === 'perm') {
@@ -213,7 +229,7 @@ function applyAdd(m) {
       } else if (mentionedMe) {
         sfx?.play('chime');
         sfx?.play('chatIn');
-      } else if (!chat.open || m.tag === 'claude') {
+      } else if (!chat.open || m.tag === 'claude' || m.role === 'boss' || m.from === 'me') {
         sfx?.play('chatIn');
         sfx?.play('chat');
       }

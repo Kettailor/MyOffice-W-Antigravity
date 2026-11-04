@@ -26,8 +26,10 @@ import { createGit } from './git.mjs';
 import { weekSummary } from './wrapped.mjs';
 import { createPrefs } from './prefs.mjs';
 import { pickLang, createT } from '../src/i18n/index.js';
-import { createAntigravityWatcher, agyBrainDir, normalizeAgyHookPayload, readAgyLog, computeAgyQuota, findNativeRustBin } from './antigravity.mjs';
+import { createAntigravityWatcher, agyBrainDir, normalizeAgyHookPayload, readAgyLog, computeAgyQuota, detectAgyAccountEmail, findNativeRustBin } from './antigravity.mjs';
 import { createAccessManager, renderRemoteAccessPage, DEFAULT_ROLE } from './access.mjs';
+import { createMcpManager } from './mcp.mjs';
+import { handleFilesApi } from './files.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.OFFICE_PORT) || 4310;
@@ -401,6 +403,7 @@ setInterval(() => {
 }, 10_000).unref();
 
 const trophies = createTrophies({ dataDir: DATA_DIR, claudeDir: CLAUDE_DIR, agyDir: agyBrainDir(), today, deployRe: DEPLOY_RE, tr, num, onChange: (t, earned) => broadcast({ k: 'trophies', t, earned }) });
+const mcpManager = createMcpManager({ dataDir: DATA_DIR });
 
 // Git: the session most recently active in a repository gets its commit / push / pull / CI animation
 const sessionsIn = (root) => {
@@ -558,8 +561,13 @@ const pub = (s) => {
     s.customTitle = customTitle;
     s.title = customTitle;
   }
+  const savedModelId = getSavedModel(s.sid, s.cwd) || s.preferredModel || '';
+  const savedModelMeta = savedModelId ? AGY_MODELS.find((m) => m.id === savedModelId) : null;
+  const effectiveModelLabel = savedModelMeta?.label || s.preferredModelLabel || s.usage?.model || '';
   return {
     id: s.id, pid: s.pid, sid: s.sid || null, name: s.name, title: customTitle || s.customTitle || s.title || '', customTitle: customTitle || s.customTitle || '', dir: tilde(s.cwd), cwd: s.cwd || '', link: s.link, desk: s.desk, status: s.status, act: s.act || '',
+    selectedModel: savedModelId,
+    modelLabel: effectiveModelLabel,
     waitCard: livePerm ? permPub(livePerm) : (s.waitCard || null),
     lastPrompt: s.lastPrompt && oneLine(unwrapPaste(s.lastPrompt)),
     taskStart: s.taskStart, counts: s.counts, subs: Object.values(s.subs || {}).map(pubSub), doneSubs: (s.doneSubs || []).map(pubSub), last: s.last, acct: acctOf(s),
@@ -571,22 +579,22 @@ const pub = (s) => {
     bg: s.bg ? [...s.bg.values()].slice(0, 6) : [],
     dayFirst: s.dayFirst || null,
     git: gitOf(s),
-    usage: s.usage?.model ? {
-      cost: Math.round(s.usage.cost * 100) / 100,
-      costToday: typeof s.usage.costToday === 'number' ? s.usage.costToday : null,
+    usage: (s.usage?.model || effectiveModelLabel) ? {
+      cost: Math.round((s.usage?.cost || 0) * 100) / 100,
+      costToday: typeof s.usage?.costToday === 'number' ? s.usage.costToday : null,
       ...liveCtx(s),
-      model: s.usage.model,
-      out: s.usage.out,
-      projectQuotaPct: s.usage.projectQuotaPct ?? null,
-      quota5hPct: s.usage.quota5hPct ?? null,
-      prompts5h: s.usage.prompts5h ?? 0,
-      steps5h: s.usage.steps5h ?? 0,
-      promptsToday: s.usage.promptsToday ?? 0,
-      stepsToday: s.usage.stepsToday ?? 0,
-      toolsToday: s.usage.toolsToday ?? 0,
-      subsToday: s.usage.subsToday ?? 0,
-      prompts: s.usage.prompts ?? 0,
-      steps: s.usage.steps ?? 0,
+      model: effectiveModelLabel || s.usage?.model || 'Gemini 3.1 Pro',
+      out: s.usage?.out || 0,
+      projectQuotaPct: s.usage?.projectQuotaPct ?? null,
+      quota5hPct: s.usage?.quota5hPct ?? null,
+      prompts5h: s.usage?.prompts5h ?? 0,
+      steps5h: s.usage?.steps5h ?? 0,
+      promptsToday: s.usage?.promptsToday ?? 0,
+      stepsToday: s.usage?.stepsToday ?? 0,
+      toolsToday: s.usage?.toolsToday ?? 0,
+      subsToday: s.usage?.subsToday ?? 0,
+      prompts: s.usage?.prompts ?? 0,
+      steps: s.usage?.steps ?? 0,
     } : null,
   };
 };
@@ -597,46 +605,6 @@ function canViewWorkspace(viewer, cwd = '') {
 }
 function isSessionAllowed(s, viewer) {
   return canViewWorkspace(viewer, s?.cwd || s?.dir || '');
-}
-function maskedIndexOf(s, viewer) {
-  let idx = 0;
-  for (const item of sessions.values()) {
-    if (!isSessionAllowed(item, viewer)) {
-      idx++;
-      if (item.id === s?.id) return idx;
-    }
-  }
-  return Math.max(1, idx + 1);
-}
-function pubForViewer(s, viewer, maskedIdx = null) {
-  const basePub = s && 'taskOwnerId' in s && Array.isArray(s.subs) ? s : pub(s);
-  if (isSessionAllowed(s, viewer)) return basePub;
-  const idx = maskedIdx ?? maskedIndexOf(s, viewer);
-  const rawSubs = s?.subs ? (Array.isArray(s.subs) ? s.subs : Object.values(s.subs)) : [];
-  return {
-    ...basePub,
-    masked: true,
-    name: `Nhân viên ${idx}`,
-    title: '',
-    dir: 'Dự án nội bộ',
-    cwd: '',
-    act: '',
-    waitCard: null,
-    git: null,
-    lastPrompt: '',
-    lastReply: '',
-    todos: [],
-    subs: rawSubs.map((sub, i) => ({
-      id: sub.id,
-      type: `Trợ lý ${i + 1}`,
-      desc: 'Đang làm việc',
-      last: { type: 'work', label: 'Đang làm việc...' },
-    })),
-    doneSubs: [],
-    last: basePub.status === 'work'
-      ? { type: 'work', label: 'Đang làm việc...' }
-      : { type: 'rest', label: 'Đang nghỉ' },
-  };
 }
 function gitOf(s) {
   const r = s.cwd && git.repoOf(s.cwd);
@@ -781,7 +749,7 @@ let todos = [];
 try { const t = JSON.parse(fs.readFileSync(TODO_FILE, 'utf8')); if (Array.isArray(t)) todos = t.slice(0, TODO_MAX); } catch { /* first run */ }
 function todoOp(b, actor = {}) {
   const item = todos.find((t) => t.id === String(b.id || ''));
-  const text = clip(oneLine(b.text), 140);
+  const text = clip(oneLine(b.text), 2000);
   const scope = b.scope === 'shared' ? 'shared' : 'mine';
   const clientId = clip(oneLine(String(b.clientId || '')), 48);
   const ownerId = actor.id || 'director';
@@ -851,7 +819,7 @@ function getOnlineTeamMembers() {
   const online = approved.filter((m) => (
     [...clients].some((c) => (c.viewer?.id || c.memberId) === m.id) ||
     now - (memberSeenAt.get(m.id) || 0) < 90_000
-  )).map((m) => ({ ...m, online: true }));
+  )).map((m) => ({ ...m, gender: m.gender || 'male', online: true }));
   const vpPinOnline = !online.some((m) => m.id === 'vp-pin') && (
     [...clients].some((c) => (c.viewer?.id || c.memberId) === 'vp-pin') ||
     now - (memberSeenAt.get('vp-pin') || 0) < 90_000
@@ -861,6 +829,7 @@ function getOnlineTeamMembers() {
       id: 'vp-pin',
       name: 'Phó Giám đốc',
       role: 'Phó Giám đốc',
+      gender: 'male',
       isDirectorDevice: true,
       status: 'approved',
       online: true,
@@ -870,7 +839,7 @@ function getOnlineTeamMembers() {
 }
 function getOnlineParticipants() {
   return [
-    { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true, online: true },
+    { id: 'director', name: 'Giám đốc', role: 'Giám đốc', gender: 'male', isDirector: true, online: true },
     ...getOnlineTeamMembers(),
   ];
 }
@@ -878,10 +847,10 @@ let lastOnlineSig = '';
 function broadcastTeamOnline(force = false) {
   const teamMembers = getOnlineTeamMembers();
   const participants = getOnlineParticipants();
-  const sig = teamMembers.map((m) => `${m.id}:${m.name}:${m.role}`).join('|');
+  const sig = teamMembers.map((m) => `${m.id}:${m.name}:${m.role}:${m.gender || 'male'}`).join('|');
   if (!force && sig === lastOnlineSig) return;
   lastOnlineSig = sig;
-  broadcast({ k: 'teamOnline', teamMembers, participants });
+  broadcast({ k: 'teamOnline', teamMembers, members: teamMembers, participants });
 }
 setInterval(() => broadcastTeamOnline(false), 5000).unref();
 
@@ -907,21 +876,13 @@ function formatMsgForViewer(obj, local, viewer) {
   if ((obj.k === 'sess' || obj.k === 'ev' || obj.k === 'stats') && obj.s) {
     const rawS = sessions.get(obj.s.id) || obj.s;
     if (viewer && !isSessionAllowed(rawS, viewer)) {
-      if (obj.k === 'ev' && (obj.e?.type === 'wait' || obj.e?.type === 'ask')) return null;
-      const maskedS = pubForViewer(rawS, viewer);
-      if (obj.k === 'ev' && obj.e) {
-        const maskedEv = {
-          ...obj.e,
-          name: maskedS.name,
-          label: obj.e.type === 'stop' ? 'Đã hoàn thành công việc' : 'Đang làm việc...',
-          desc: '',
-          file: '',
-          img: undefined,
-        };
-        return { ...obj, s: maskedS, e: maskedEv };
-      }
-      return { ...obj, s: maskedS };
+      return null;
     }
+  }
+  if (obj.k === 'gone') {
+    const rawS = obj.id && sessions.get(obj.id);
+    const cwd = obj.cwd || rawS?.cwd || '';
+    if (viewer && (!cwd || !canViewWorkspace(viewer, cwd))) return null;
   }
   if (obj.k === 'chat' && obj.m?.from && obj.m.from !== 'me') {
     const s = sessions.get(obj.m.from);
@@ -1118,6 +1079,11 @@ chat.onEvent = (e) => {
 };
 const nativeFromBoss = typeof chat.fromBoss === 'function' ? chat.fromBoss.bind(chat) : null;
 chat.fromBoss = (text, to = null, imgIds = [], meta = {}) => {
+  if (to && typeof to === 'object' && !Array.isArray(to)) {
+    meta = to;
+    to = meta.to || null;
+    imgIds = Array.isArray(meta.images) ? meta.images : (meta.photo ? [meta.photo] : []);
+  }
   if (nativeFromBoss) {
     const resolvedImgs = (Array.isArray(imgIds) ? imgIds : []).map((id) => (
       String(id).startsWith('data:') || String(id).startsWith('/') ? id : `/api/image?id=${id}`
@@ -1126,7 +1092,7 @@ chat.fromBoss = (text, to = null, imgIds = [], meta = {}) => {
     if (resMsg && Array.isArray(imgIds) && imgIds.length) resMsg.images = imgIds;
     return resMsg;
   }
-  const cleanText = String(text || '').trim().slice(0, 2000);
+  const cleanText = String(text || '').trim().slice(0, 20_000);
   const sticker = Number.isInteger(meta.sticker) ? meta.sticker : null;
   if (!cleanText && sticker == null && (!Array.isArray(imgIds) || !imgIds.length)) return null;
   const whoId = meta.whoId || 'director';
@@ -1217,6 +1183,7 @@ function getSavedModel(sid = '', dir = '') {
 function setSavedModel(sid = '', dir = '', modelId = '') {
   const cleanSid = String(sid || '').trim();
   const cleanModel = String(modelId ?? '').trim();
+  const meta = cleanModel ? AGY_MODELS.find((m) => m.id === cleanModel) : null;
   if (cleanSid) {
     sessionModels[`s:${cleanSid}`] = cleanModel;
   } else {
@@ -1228,12 +1195,27 @@ function setSavedModel(sid = '', dir = '', modelId = '') {
     const s = [...sessions.values()].find((x) => x.sid === cleanSid);
     if (s) {
       s.preferredModel = cleanModel;
-      const meta = cleanModel ? AGY_MODELS.find((m) => m.id === cleanModel) : null;
+      s.preferredModelLabel = meta?.label || '';
       if (meta && meta.id) {
         s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: meta.label };
         s.usage.model = meta.label;
       }
       broadcast({ k: 'sess', s: pub(s) });
+    }
+  } else {
+    const dk = normModelDirKey(dir);
+    if (dk) {
+      for (const s of sessions.values()) {
+        if (normModelDirKey(s.cwd) === dk && !(s.sid && Object.prototype.hasOwnProperty.call(sessionModels, `s:${s.sid}`))) {
+          s.preferredModel = cleanModel;
+          s.preferredModelLabel = meta?.label || '';
+          if (meta && meta.id) {
+            s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: meta.label };
+            s.usage.model = meta.label;
+          }
+          broadcast({ k: 'sess', s: pub(s) });
+        }
+      }
     }
   }
 }
@@ -1296,15 +1278,18 @@ const AGY_MODELS = [
   { id: 'gpt-oss-120b-medium', label: '🤖 GPT-OSS 120B (Medium)', desc: 'Mô hình mã nguồn mở 120B' },
 ];
 const threads = new Map();   // the conversation's own id -> { sid: the branch, at, running }
-const tasksOut = (local, viewer = null) => {
+const tasksOut = (local, viewerOrReq = null) => {
+  const viewer = (viewerOrReq && typeof viewerOrReq === 'object' && ('headers' in viewerOrReq || 'socket' in viewerOrReq))
+    ? (local ? null : viewerOf(viewerOrReq))
+    : viewerOrReq;
   const isFullDirector = local || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
   const canSee = (dir) => {
     if (isFullDirector) return true;
-    return access.canSeeWorkspace(viewer, dir);
+    return Boolean(dir && access.canSeeWorkspace(viewer, dir));
   };
   const allWs = allKnownWorkspaces();
   const dirs = allWs.map((w) => w.dir).filter((d) => canSee(d));
-  const sessList = [...sessions.values()].filter((s) => s.sid && s.cwd && canSee(s.cwd));
+  const sessList = [...sessions.values()].filter((s) => s.sid && s.cwd && (isFullDirector || isSessionAllowed(s, viewer)));
   const runningList = tasks.list().filter((t) => canSee(t.dir));
   return {
     ok: true,
@@ -1335,6 +1320,10 @@ const tasksOut = (local, viewer = null) => {
         status: isBusy && s.status !== 'wait' ? 'work' : s.status,
         busy: isBusy,
         subsCount,
+        subs: subsCount,
+        lastPrompt: s.lastPrompt || s.act || '',
+        act: s.act || '',
+        usage: s.usage || null,
         model: s.usage?.model || '',
         selectedModel: getSavedModel(s.sid, s.cwd),
       };
@@ -1711,7 +1700,7 @@ function dropSession(key, s) {
   if (s.fromFile && !taskSids.has(s.sid)) chat.onLeft(s.title || s.name);
   sessions.delete(key);
   if (s.sid && sidToKey.get(s.sid) === key) sidToKey.delete(s.sid);
-  broadcast({ k: 'gone', id: s.id });
+  broadcast({ k: 'gone', id: s.id, cwd: s.cwd || '' });
 }
 setInterval(() => {
   scanSessions();
@@ -2145,6 +2134,26 @@ const cookieOk = (req) => !!pinCookieOf(req);
 function authorized(req, url) {
   return isLoopback(req) || !!access.getApprovedMember(req) || (!req.viaTunnel && sameBytes(url.searchParams.get('k') || '', TOKEN)) || cookieOk(req);
 }
+function ensurePinDirectorMember(req) {
+  if (req && req._autoDirectorMember) return req._autoDirectorMember;
+  const existingFromCookie = access.getApprovedMember(req);
+  if (existingFromCookie && existingFromCookie.isDirectorDevice) {
+    if (req) req._autoDirectorMember = existingFromCookie;
+    return existingFromCookie;
+  }
+  const ip = String(req?.headers?.['cf-connecting-ip'] || req?.socket?.remoteAddress || 'unknown').replace(/^::ffff:/, '');
+  const ua = String(req?.headers?.['user-agent'] || '').slice(0, 160);
+  for (const m of Object.values(access.state.members || {})) {
+    if (m && m.isDirectorDevice && m.status === 'approved' && m.ip === ip && m.ua === ua) {
+      m.lastSeenAt = Date.now();
+      if (req) req._autoDirectorMember = m;
+      return m;
+    }
+  }
+  const created = access.createDirectorDeviceMember(req);
+  if (req) req._autoDirectorMember = created;
+  return created;
+}
 function viewerOf(req) {
   if (isLoopback(req)) return null;
   const hasMemberCookie = /(?:^|;\s*)office_member=/.test(String(req.headers?.cookie || ''));
@@ -2153,20 +2162,7 @@ function viewerOf(req) {
     if (m) return m;
   }
   if (cookieOk(req)) {
-    const m = access.getApprovedMember(req);
-    if (m && m.isDirectorDevice) return m;
-    return {
-      id: 'vp-pin',
-      name: 'Phó Giám đốc',
-      role: 'Phó Giám đốc',
-      isDirectorDevice: true,
-      status: 'approved',
-      allowedWorkspaces: ['*'],
-      requireApproval: false,
-      canStopSession: access.state.allowStopSession !== false,
-      canEditSession: access.state.allowEditSession !== false,
-      canDeleteSession: access.state.allowDeleteSession !== false,
-    };
+    return ensurePinDirectorMember(req);
   }
   return access.getApprovedMember(req);
 }
@@ -2451,19 +2447,20 @@ try { planLimits = JSON.parse(fs.readFileSync(LIMITS_FILE, 'utf8')); } catch { /
 const numOr = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 // windows: [{ key, label, pct, resetsAt, weekOf? }]; `five` / `seven` stay for the TV and older pages
 function setLimits(windows, source, account = planLimits?.account || null, extra = {}) {
+  const email = extra.email || account?.email || planLimits?.email || detectAgyAccountEmail();
   const next = {
     at: Date.now(),
     source,
+    email,
     windows,
-    account,
+    account: account ? { ...account, email } : { id: 'antigravity:local', plan: 'Antigravity', email },
     five: windows.find((w) => w.key === 'session') || null,
     seven: windows.find((w) => w.key === 'weekly') || null,
-    projects: extra.projects || planLimits?.projects || [],
     stats: extra.stats || planLimits?.stats || null,
   };
   const sig = (l) => JSON.stringify([
+    l?.email || null,
     l?.windows?.map((w) => [w.key, w.pct, w.resetsAt]) || null,
-    l?.projects?.map((p) => [p.dir, p.pct, p.prompts5h, p.steps5h, p.busy]) || null,
     l?.stats ? [l.stats.prompts5h, l.stats.steps5h, l.stats.prompts7d, l.stats.steps7d] : null,
   ]);
   const moved = sig(planLimits) !== sig(next);
@@ -2476,27 +2473,29 @@ function setLimits(windows, source, account = planLimits?.account || null, extra
 const winLabel = (w) => clip(String(w.key === 'session' ? tr('server.limits.fiveHour') : w.key === 'weekly' ? tr('server.limits.week') : w.weekOf ? tr('server.limits.modelWeek', { model: w.weekOf }) : w.label), 30);
 function limitsOut(viewer = null) {
   const isRestrictedAssistant = viewer && !viewer.isDirectorDevice && viewer.role !== 'Phó Giám đốc';
-  const l = planLimits, more = isRestrictedAssistant ? [] : othersOut(), main = { label: acctLabel(''), until: blockedUntil(l?.windows, hits.get('')), auto: isRestrictedAssistant ? null : autoOut() };
+  const l = planLimits;
+  const email = l?.email || l?.account?.email || detectAgyAccountEmail();
+  const more = isRestrictedAssistant ? [] : othersOut();
+  const main = {
+    email,
+    label: acctLabel('') || email,
+    until: blockedUntil(l?.windows, hits.get('')),
+    auto: isRestrictedAssistant ? null : autoOut(),
+  };
   if (!l) return more.length ? { windows: [], others: more, ...main } : l;
-  const projects = Array.isArray(l.projects)
-    ? (isRestrictedAssistant ? l.projects.filter((p) => access.canSeeWorkspace(viewer, p.dir)) : l.projects)
-    : [];
-  const scopedPct = isRestrictedAssistant
-    ? Math.min(100, Math.round(projects.reduce((acc, p) => acc + (Number(p.pct) || 0), 0) * 10) / 10)
-    : null;
+  const { projects: _omittedProjects, ...restL } = l;
   const windows = Array.isArray(l.windows)
     ? l.windows.map((w) => ({
         ...w,
-        pct: isRestrictedAssistant && w.key === 'session' && scopedPct != null ? scopedPct : w.pct,
         label: winLabel(w),
       }))
     : l.windows;
   return {
-    ...l,
+    ...restL,
+    email,
     scopedToAssistant: !!isRestrictedAssistant,
-    projects,
     windows,
-    five: l.five && { ...l.five, pct: isRestrictedAssistant && scopedPct != null ? scopedPct : l.five.pct, label: tr('server.limits.fiveHour') },
+    five: l.five && { ...l.five, label: tr('server.limits.fiveHour') },
     seven: isRestrictedAssistant ? null : (l.seven && { ...l.seven, label: tr('server.limits.week') }),
     others: more,
     ...main,
@@ -2573,6 +2572,7 @@ function fetchPlanUsage(force = false) {
       if (fs.existsSync(agyBrainDir())) {
         const qAll = computeAgyQuota(sessions);
         const q = agyAccounts.length > 0 ? computeAgyQuota(sessions, null, '') : qAll;
+        const email = q.email || qAll.email || detectAgyAccountEmail();
         usageNote = null;
         setLimits(
           [
@@ -2580,9 +2580,9 @@ function fetchPlanUsage(force = false) {
             { key: 'weekly', label: tr('server.limits.week'), pct: q.weekPct, resetsAt: q.weekResetsAt ? Date.parse(q.weekResetsAt) : null },
           ],
           'agy',
-          { id: 'antigravity:local', plan: 'Antigravity', org: `Gemini Models · ${q.billingCycle}` },
+          { id: 'antigravity:local', plan: 'Antigravity', email, org: `${email} · ${q.billingCycle}` },
           {
-            projects: qAll.projects,
+            email,
             stats: {
               left5hPct: q.left5hPct,
               leftWeekPct: q.leftWeekPct,
@@ -2661,8 +2661,8 @@ function saveAgyAccounts() {
     fsp.writeFile(AGY_ACCOUNTS_FILE, JSON.stringify(agyAccounts, null, 2)).catch(() => {});
   } catch { /* ignore */ }
 }
-function agyWindowsForSlug(slug) {
-  const q = computeAgyQuota(sessions, null, slug);
+function agyWindowsForSlug(slug, accountEmail = '') {
+  const q = computeAgyQuota(sessions, null, slug, accountEmail);
   return {
     q,
     windows: [
@@ -2673,19 +2673,27 @@ function agyWindowsForSlug(slug) {
 }
 function othersOut() {
   const claudeOthers = otherDirs.map((d) => { const o = others.get(d) || {}, slug = accName(d);
-    return { name: slug, label: acctLabel(slug), until: blockedUntil(o.windows, hits.get(slug)), at: o.at || 0, account: o.account || null, windows: (o.windows || []).map((w) => ({ ...w, label: winLabel(w) })), note: o.note ? tr(...o.note) : '' }; });
+    const email = o.account?.email || (slug.includes('@') ? slug : '');
+    return { name: slug, email, label: acctLabel(slug) || email || slug, until: blockedUntil(o.windows, hits.get(slug)), at: o.at || 0, account: o.account || null, windows: (o.windows || []).map((w) => ({ ...w, label: winLabel(w) })), note: o.note ? tr(...o.note) : '' }; });
   const claudeSlugs = new Set(claudeOthers.map((x) => x.name));
   const agyOthers = agyAccounts
     .filter((a) => a.slug && !claudeSlugs.has(a.slug))
     .map((a) => {
-      const { q, windows } = agyWindowsForSlug(a.slug);
+      const hintEmail = (a.email && String(a.email).includes('@'))
+        ? a.email
+        : (a.name && String(a.name).includes('@'))
+          ? a.name
+          : (a.slug && String(a.slug).includes('@') ? a.slug : '');
+      const { q, windows } = agyWindowsForSlug(a.slug, hintEmail);
+      const email = q.email || hintEmail || detectAgyAccountEmail();
       return {
         name: a.slug,
-        label: acctLabel(a.slug) || a.name || a.slug,
+        email,
+        label: acctLabel(a.slug) || a.name || email || a.slug,
         until: blockedUntil(windows, hits.get(a.slug)),
         at: Date.now(),
         isAgy: true,
-        account: { id: `antigravity:${a.slug}`, plan: 'Antigravity', org: `Gemini Models · ${q.billingCycle}` },
+        account: { id: `antigravity:${a.slug}`, plan: 'Antigravity', email, org: `${email} · ${q.billingCycle}` },
         windows: windows.map((w) => ({ ...w, label: winLabel(w) })),
         note: '',
       };
@@ -3218,9 +3226,12 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model =
   }
   const targetDir = s ? s.cwd : dir;
   if (!targetDir || !fs.existsSync(resolveContainerDir(targetDir))) return { ok: false, code: 'noDir' };
-  const cleanText = String(text || '').trim().slice(0, 4000);
+  const cleanText = String(text || '').trim().slice(0, 200_000);
   if (!cleanText) return { ok: false, code: 'empty' };
-  const validImages = (Array.isArray(images) ? images : []).slice(0, 5);
+  const validImages = (Array.isArray(images) ? images : []).slice(0, 20);
+  const chatDisplayText = cleanText.length > 12_000
+    ? `${cleanText.slice(0, 12_000)}\n\n… [Đầy đủ ${cleanText.length.toLocaleString('vi-VN')} ký tự đã gửi tới Agent]`
+    : cleanText;
   const targetSid = s ? s.sid : String(sid || '').trim();
   if (model !== undefined && model !== null) {
     setSavedModel(targetSid, targetDir, String(model).trim());
@@ -3247,8 +3258,9 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model =
         chat.photo(savedUrl, { whoName: actor.name || 'Giám đốc', whoRole: actor.role || 'Giám đốc', whoId: actor.id || 'director', ownerId: actor.id || 'director' });
       }
     }
-    chat.say('me', `${senderTag ? `👔 [${senderTag}] ` : ''}${modelLabel ? `[${modelLabel}] ` : ''}@${name} ${cleanText}`, {
+    chat.say('me', `${senderTag ? `👔 [${senderTag}] ` : ''}${modelLabel ? `[${modelLabel}] ` : ''}@${name} ${chatDisplayText}`, {
       now: true,
+      long: true,
       whoId: actor.id || 'director',
       whoName: actor.name || 'Giám đốc',
       whoRole: actor.role || 'Giám đốc',
@@ -3295,8 +3307,9 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model =
       chat.photo(savedUrl, { whoName: actor.name || 'Giám đốc', whoRole: actor.role || 'Giám đốc', whoId: actor.id || 'director', ownerId: actor.id || 'director' });
     }
   }
-  chat.say('me', `📋 ${senderTag ? `[${senderTag}] ` : ''}${modelLabel ? `[${modelLabel}] ` : ''}${cleanText}`, {
+  chat.say('me', `📋 ${senderTag ? `[${senderTag}] ` : ''}${modelLabel ? `[${modelLabel}] ` : ''}${chatDisplayText}`, {
     now: true,
+    long: true,
     whoId: actor.id || 'director',
     whoName: actor.name || 'Giám đốc',
     whoRole: actor.role || 'Giám đốc',
@@ -3336,22 +3349,35 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model =
 function snapNow(local, req = null) {
   const lanOn = lanIsOn();
   const viewer = local ? null : viewerOf(req);
-  const canSee = (dir) => local || !viewer || access.canSeeWorkspace(viewer, dir);
+  const isFullDirector = local || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
+  const canSee = (dir) => isFullDirector || Boolean(dir && access.canSeeWorkspace(viewer, dir));
   const visibleSessionIds = new Set();
   const pubSessions = [];
-  let maskedIdx = 0;
   for (const s of sessions.values()) {
     if (canSee(s.cwd)) {
       visibleSessionIds.add(s.id);
       pubSessions.push(pub(s));
-    } else {
-      pubSessions.push(pubForViewer(s, viewer, ++maskedIdx));
     }
   }
-  const visibleFeed = local ? feed : feed.filter((e) => !e.sess || visibleSessionIds.has(e.sess));
+  const visibleFeed = isFullDirector ? feed : feed.filter((e) => e.sess && visibleSessionIds.has(e.sess));
   const visiblePerms = local
     ? [...pending.values()].map(permPub)
     : [...pending.values()].filter((p) => p.kind !== 'accessReq' && p.kind !== 'taskReq' && (!p.sess || visibleSessionIds.has(p.sess)) && (!p.cwd || canSee(p.cwd))).map(permPub);
+  const viewerStats = isFullDirector ? stats : (() => {
+    const st = { day: stats.day, read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, steps: 0, subs: 0, cost: 0, deploy: 0, commit: 0, push: 0, pull: 0 };
+    for (const s of sessions.values()) {
+      if (!visibleSessionIds.has(s.id)) continue;
+      st.read += s.counts?.read || 0;
+      st.edit += s.counts?.edit || 0;
+      st.cmd += s.counts?.cmd || 0;
+      st.web += s.counts?.web || 0;
+      st.prompts += s.usage?.promptsToday || s.usage?.prompts || 0;
+      st.steps += s.usage?.stepsToday || s.usage?.steps || 0;
+      st.subs += s.usage?.subsToday || (s.subs ? Object.keys(s.subs).length : 0);
+      st.cost = Math.round((st.cost + (s.usage?.costToday ?? s.usage?.cost ?? 0)) * 100) / 100;
+    }
+    return st;
+  })();
   return {
     k: 'snap',
     seq: sent,
@@ -3359,9 +3385,9 @@ function snapNow(local, req = null) {
     sessions: pubSessions,
     perms: visiblePerms,
     feed: visibleFeed,
-    stats,
+    stats: viewerStats,
     local,
-    viewer: viewer ? access.pubMember(viewer) : { isDirector: true, name: 'Giám đốc', role: 'Giám đốc' },
+    viewer: viewer ? access.pubMember(viewer) : { isDirector: true, name: 'Giám đốc', role: 'Giám đốc', gender: 'male', canEditFiles: true },
     teamMembers: getOnlineTeamMembers(),
     participants: getOnlineParticipants(),
     requireTaskApproval: local ? access.state.requireTaskApproval : access.effectiveRequireApproval(viewer),
@@ -3370,6 +3396,7 @@ function snapNow(local, req = null) {
     limits: limitsOut(viewer),
     limitsNote: noteText(),
     trophies: trophies.pub(),
+    mcp: mcpManager.getPublicSummary(),
     lan: local && lanOn ? lanUrl() : null,
     lanBase: local && lanOn ? lanUrl(false) : null,
     pin: local ? currentPin() : null,
@@ -3447,7 +3474,7 @@ const server = http.createServer((req, res) => {
   if (!hostAllowed(req)) { res.writeHead(421).end(); return; }
   // through the tunnel (the internet), only what a phone may send: the PIN (and a new one, with the one it has now), its
   // answers to approvals (when the Mac allows them), the page's presence, the chat and work (when the Mac allows it). Everything else that changes something stays on the Mac and the home network.
-  if (req.viaTunnel && req.method !== 'GET' && req.method !== 'HEAD' && !['/pin', '/api/pin', '/api/perm', '/api/presence', '/api/chat', '/api/task', '/api/tasks', '/api/tasks/stop', '/api/projects/add', '/api/projects/remove', '/api/session/stop', '/api/session/rename', '/api/session/delete', '/api/access/request', '/api/todos'].includes(url.pathname)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
+  if (req.viaTunnel && req.method !== 'GET' && req.method !== 'HEAD' && !url.pathname.startsWith('/api/files/') && !['/pin', '/api/pin', '/api/perm', '/api/presence', '/api/chat', '/api/task', '/api/tasks', '/api/tasks/stop', '/api/projects/add', '/api/projects/remove', '/api/session/stop', '/api/session/rename', '/api/session/delete', '/api/access/request', '/api/access/profile', '/api/access', '/api/todos', '/api/mcp'].includes(url.pathname)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
   // Public remote access request & polling endpoints (before authorized check so pending Tailscale visitors can request access)
   if (url.pathname === '/api/access/status' && req.method === 'GET') {
     const m = access.getMemberFromReq(req);
@@ -3460,6 +3487,7 @@ const server = http.createServer((req, res) => {
       const m = access.createOrUpdateRequest(req, {
         name: b?.name,
         role: b?.role || DEFAULT_ROLE,
+        gender: b?.gender,
         note: b?.note,
         defaultWorkspaces: allKnownWorkspaces().map((w) => w.dir),
       });
@@ -3467,7 +3495,7 @@ const server = http.createServer((req, res) => {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
         'Set-Cookie': access.memberCookieHeader(m),
-      }).end(JSON.stringify({ ok: true, status: m.status, name: m.name, role: m.role, id: m.id }));
+      }).end(JSON.stringify({ ok: true, status: m.status, name: m.name, role: m.role, gender: m.gender, id: m.id }));
     });
     return;
   }
@@ -3489,7 +3517,10 @@ const server = http.createServer((req, res) => {
         pinFails.delete(ip);
         const m = access.createDirectorDeviceMember(req, {
           name: f.get('name') || '',
+          gender: f.get('gender') || 'male',
         });
+        markMemberSeen(m);
+        broadcastTeamOnline(true);
         chat.system(`👔 ${m.name} đã vào văn phòng từ thiết bị phụ (PIN).`);
         fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} pin ok ${ip} (${m.role}: ${m.name})\n`).catch(() => {});
         res.writeHead(303, {
@@ -3510,25 +3541,77 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (url.pathname === '/api/access/profile' && req.method === 'POST') {
+    if (!authorized(req, url) || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false });
+      return;
+    }
+    readJson(req).then((b) => {
+      const mac = isLoopback(req);
+      const viewer = mac ? null : viewerOf(req);
+      if (!viewer || !viewer.id) {
+        json(res, 200, { ok: true, viewer: { isDirector: true, name: String(b?.name || 'Giám đốc').trim(), role: 'Giám đốc', gender: b?.gender === 'female' ? 'female' : 'male' } });
+        return;
+      }
+      const m = access.updateSelfProfile(viewer.id, { name: b?.name, gender: b?.gender });
+      if (!m) {
+        json(res, 404, { ok: false, error: 'member_not_found' });
+        return;
+      }
+      markMemberSeen(m);
+      broadcastTeamOnline(true);
+      resyncMemberClients(m.id);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Set-Cookie': access.memberCookieHeader(m),
+      }).end(JSON.stringify({ ok: true, member: access.pubMember(m), viewer: access.pubMember(m) }));
+    });
+    return;
+  }
   if (url.pathname === '/api/access' && (req.method === 'GET' || req.method === 'POST')) {
-    if (!isLoopback(req)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
     if (req.method === 'GET') {
+      if (!isLoopback(req)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
       json(res, 200, { ok: true, ...access.pubState(allKnownWorkspaces()) });
       return;
     }
-    if (!sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
     readJson(req).then((b) => {
       const act = String(b?.action || '');
+      if (act === 'updateSelf') {
+        if (!authorized(req, url)) { json(res, 403, { ok: false }); return; }
+        const mac = isLoopback(req);
+        const viewer = mac ? null : viewerOf(req);
+        const targetId = String(b?.id || viewer?.id || '');
+        if (!targetId) {
+          json(res, 200, { ok: true });
+          return;
+        }
+        const m = access.updateSelfProfile(targetId, { name: b?.name, gender: b?.gender });
+        if (!m) { json(res, 404, { ok: false }); return; }
+        markMemberSeen(m);
+        broadcastTeamOnline(true);
+        resyncMemberClients(m.id);
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Set-Cookie': access.memberCookieHeader(m),
+        }).end(JSON.stringify({ ok: true, member: access.pubMember(m), viewer: access.pubMember(m) }));
+        return;
+      }
+      if (!isLoopback(req) || !sameOriginOf(req)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
       if (act === 'approveMember') {
         const ws = Array.isArray(b?.allowedWorkspaces) ? b.allowedWorkspaces : allKnownWorkspaces().map((w) => w.dir);
         const m = access.approveMember(String(b?.id || ''), {
           name: b?.name,
           role: b?.role || DEFAULT_ROLE,
+          gender: b?.gender,
           allowedWorkspaces: ws,
           requireApproval: b?.requireApproval,
           canStopSession: b?.canStopSession,
           canEditSession: b?.canEditSession,
           canDeleteSession: b?.canDeleteSession,
+          canEditFiles: b?.canEditFiles,
         });
         const permId = `access:${b?.id}`;
         if (pending.has(permId)) { pending.delete(permId); broadcast({ k: 'permDone', id: permId }); }
@@ -3550,12 +3633,14 @@ const server = http.createServer((req, res) => {
         const m = access.updateMember(String(b?.id || ''), {
           name: b?.name,
           role: b?.role,
+          gender: b?.gender,
           allowedWorkspaces: b?.allowedWorkspaces,
           status: b?.status,
           requireApproval: b?.requireApproval,
           canStopSession: b?.canStopSession,
           canEditSession: b?.canEditSession,
           canDeleteSession: b?.canDeleteSession,
+          canEditFiles: b?.canEditFiles,
         });
         if (m) resyncMemberClients(m.id);
         json(res, 200, { ok: !!m, member: m, ...access.pubState(allKnownWorkspaces()) });
@@ -3650,11 +3735,13 @@ const server = http.createServer((req, res) => {
             const m = access.approveMember(String(p.member.id || ''), {
               name: b.name || p.member.name,
               role: b.role || p.member.role || DEFAULT_ROLE,
+              gender: b.gender || p.member.gender,
               allowedWorkspaces: ws,
               requireApproval: b.requireApproval,
               canStopSession: b.canStopSession,
               canEditSession: b.canEditSession,
               canDeleteSession: b.canDeleteSession,
+              canEditFiles: b.canEditFiles,
             });
             pending.delete(p.id);
             broadcast({ k: 'permDone', type: 'perm_rm', id: p.id });
@@ -3801,6 +3888,7 @@ const server = http.createServer((req, res) => {
           executeTaskPayload({
             dir: s.cwd,
             sid: s.sid,
+            model: getSavedModel(s.sid, s.cwd),
             chat: false,
             text: promptText,
             images: Array.isArray(b.images) ? b.images : [],
@@ -3814,6 +3902,7 @@ const server = http.createServer((req, res) => {
           executeTaskPayload({
             dir: s.cwd,
             sid: s.sid,
+            model: getSavedModel(s.sid, s.cwd),
             chat: false,
             text: promptText,
             images: Array.isArray(b.images) ? b.images : [],
@@ -3831,6 +3920,7 @@ const server = http.createServer((req, res) => {
           executeTaskPayload({
             dir: s.cwd,
             sid: s.sid,
+            model: getSavedModel(s.sid, s.cwd),
             chat: false,
             text: promptText,
             images: [],
@@ -3897,7 +3987,7 @@ const server = http.createServer((req, res) => {
       markMemberSeen(viewer);
       broadcastTeamOnline(true);
     }
-    readJson(req, 8_000_000).then((b) => {
+    readJson(req, 32_000_000).then((b) => {
       if (url.pathname === '/api/tasks/allow') {
         if (!mac) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
         prefs.set('phoneTasks', b?.on ? true : false);
@@ -3934,8 +4024,8 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const text = String(b?.text || '').trim().slice(0, 4000);
-      const images = (Array.isArray(b?.images) ? b.images : []).slice(0, 5).map(String);
+      const text = String(b?.text || '').trim().slice(0, 200_000);
+      const images = (Array.isArray(b?.images) ? b.images : []).slice(0, 20).map(String);
       const hasExplicitModel = b && Object.prototype.hasOwnProperty.call(b, 'model');
       const model = hasExplicitModel ? String(b.model ?? '').trim() : getSavedModel(s ? s.sid : '', dir);
       if (hasExplicitModel) {
@@ -3963,6 +4053,15 @@ const server = http.createServer((req, res) => {
           text,
           images,
         });
+        if (b?.chat) {
+          chat.fromBoss(text, {
+            channel: 'work',
+            whoId: viewer.id,
+            whoName: viewer.name,
+            whoRole: viewer.role,
+            photo: Array.isArray(b.images) && b.images[0] ? b.images[0] : undefined,
+          });
+        }
         chat.system(`⏳ [${senderTag}] đề xuất công việc cho ${targetName}: "${clip(oneLine(text), 110)}" — Đang chờ Giám đốc phê duyệt.`);
         fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} task-queued ${clientIp(req)} (${senderTag}) ${targetName} ${clip(oneLine(text), 100)}\n`).catch(() => {});
         json(res, 200, {
@@ -3994,19 +4093,32 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/chat' && req.method === 'POST') {   // the group chat: { op, … } or { text, to, images, mentions, humanOnly }
-    if (!authorized(req, url) || !sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
-    readJson(req, 4_000_000).then((b) => {
+    if (!authorized(req, url) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
+    readJson(req, 16_000_000).then((b) => {
       if (!b || typeof b !== 'object') { json(res, 400, { ok: false }); return; }
-      const mac = isLoopback(req), rawViewer = viewerOf(req);
-      if (rawViewer) markMemberSeen(rawViewer);
-      const viewer = mac || !rawViewer
+      const mac = isLoopback(req), rawViewer = access.getApprovedMember(req) || viewerOf(req);
+      if (rawViewer) {
+        markMemberSeen(rawViewer);
+        broadcastTeamOnline();
+      }
+      const hasRemoteIdentity = Boolean(
+        (rawViewer && rawViewer.id && rawViewer.id !== 'director')
+        || (b?.whoId && b.whoId !== 'director')
+      );
+      const viewer = !hasRemoteIdentity && mac
         ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isLocal: true, isDirectorDevice: true }
-        : { id: rawViewer.id || 'remote', name: rawViewer.name || 'Trợ lý', role: rawViewer.role || DEFAULT_ROLE, isLocal: false, isDirectorDevice: !!rawViewer.isDirectorDevice };
+        : {
+            id: rawViewer?.id || b?.whoId || 'remote',
+            name: rawViewer?.name || b?.whoName || 'Trợ lý',
+            role: rawViewer?.role || b?.whoRole || DEFAULT_ROLE,
+            isLocal: false,
+            isDirectorDevice: Boolean(rawViewer?.isDirectorDevice),
+          };
       const op = String(b?.op || ''), str = (x, n) => String(x ?? '').slice(0, n);
       const reqChannel = b.channel === 'casual' ? 'casual' : (b.channel === 'work' ? 'work' : undefined);
       if (op === 'send' || (!op && (b.text != null || b.sticker != null || Array.isArray(b.images) || b.humanOnly || b.to))) {
-        const rawText = str(b.text, 2000);
-        const rawImgs = Array.isArray(b.images) ? b.images.slice(0, 5) : [];
+        const rawText = str(b.text, 20_000);
+        const rawImgs = Array.isArray(b.images) ? b.images.slice(0, 20) : [];
         const imgIds = rawImgs.map((img) => saveShotImage(img) || (typeof img === 'string' ? img : null)).filter(Boolean);
         const whoId = viewer.isLocal ? 'director' : viewer.id;
         const mentions = Array.isArray(b.mentions) ? b.mentions : [];
@@ -4625,6 +4737,76 @@ const server = http.createServer((req, res) => {
   // The page's own files (bundles, fonts, the QR library, the icons and share card in app/): public, no token needed.
   // In development also Next's overlay.
   if (url.pathname.startsWith('/_next/') || url.pathname.startsWith('/assets/') || PAGE_FILES.has(url.pathname) || (DEV && url.pathname.startsWith('/__nextjs'))) { Promise.resolve(nextHandle(req, res)).catch(() => {}); return; }
+  if (url.pathname.startsWith('/api/files/')) {
+    if (!authorized(req, url)) { json(res, 401, { ok: false, message: tr('server.pin.needed') }); return; }
+    const local = isLoopback(req);
+    const viewer = local ? null : viewerOf(req);
+    if (viewer) markMemberSeen(viewer);
+    handleFilesApi(req, res, url, {
+      viewer,
+      isLocal: local,
+      access,
+      getWorkspaces: () => allKnownWorkspaces().map((w) => ({ path: toContainerDir(w.dir) || w.dir, name: w.name })),
+      readJson,
+      json,
+    }).then((handled) => {
+      if (!handled && !res.headersSent) json(res, 404, { ok: false, error: 'not_found' });
+    }).catch((err) => {
+      if (!res.headersSent) json(res, 500, { ok: false, error: err?.message || 'internal_error' });
+    });
+    return;
+  }
+  if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/mcp') {
+    if (!authorized(req, url)) { json(res, 401, { ok: false, message: tr('server.pin.needed') }); return; }
+    const mac = isLoopback(req);
+    const viewer = viewerOf(req);
+    if (viewer) markMemberSeen(viewer);
+    const isFullDirector = mac || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
+    if (req.method === 'GET') {
+      json(res, 200, mcpManager.listServers({ isFullDirector }));
+      return;
+    }
+    if (!sameOriginOf(req)) { json(res, 403, { ok: false, message: tr('server.forbidden') }); return; }
+    if (!isFullDirector) {
+      json(res, 403, { ok: false, message: 'Chỉ Giám đốc hoặc Phó Giám đốc mới có quyền thay đổi cấu hình MCP.' });
+      return;
+    }
+    readJson(req, 512_000).then(async (b) => {
+      if (!b || typeof b !== 'object') {
+        json(res, 400, { ok: false, message: tr('server.badRequest') });
+        return;
+      }
+      const action = String(b?.action || '').trim();
+      let r = { ok: false, message: 'Hành động không hợp lệ.' };
+      if (action === 'upsert') {
+        r = mcpManager.upsertServer(b.server || b);
+      } else if (action === 'toggle') {
+        r = mcpManager.toggleServer(b.name, Boolean(b.enabled));
+      } else if (action === 'toggleAll') {
+        r = mcpManager.toggleAllServers(Boolean(b.enabled));
+      } else if (action === 'duplicate') {
+        r = mcpManager.duplicateServer(b.name, b.newName);
+      } else if (action === 'delete') {
+        r = mcpManager.deleteServer(b.name);
+      } else if (action === 'importJson') {
+        r = mcpManager.importJson(b.json, { enabled: b.enabled !== false });
+      } else if (action === 'test') {
+        r = await mcpManager.testServer(b.name);
+      } else if (action === 'testAll') {
+        r = await mcpManager.testAllServers();
+      }
+      if (!r.ok) {
+        json(res, 400, r);
+        return;
+      }
+      const list = mcpManager.listServers({ isFullDirector: true });
+      broadcast({ k: 'mcp', mcp: list.summary });
+      json(res, 200, { ...r, ...list });
+    }).catch((err) => {
+      json(res, 500, { ok: false, message: err?.message || 'Lỗi xử lý MCP.' });
+    });
+    return;
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return; }
   if (url.pathname === '/health') {
     json(res, 200, {
@@ -4647,7 +4829,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/chat') { json(res, 200, chatOut(isLoopback(req), viewerOf(req))); return; }
-  if (url.pathname === '/api/tasks') { json(res, 200, tasksOut(isLoopback(req), viewerOf(req))); return; }
+  if (url.pathname === '/api/tasks' || url.pathname === '/api/sessions') { json(res, 200, tasksOut(isLoopback(req), viewerOf(req))); return; }
   if (url.pathname === '/api/projects/browse') {
     const mac = isLoopback(req);
     const viewer = viewerOf(req);
@@ -4874,8 +5056,16 @@ const server = http.createServer((req, res) => {
     if (!isLoopback(req)) {
       const cookiesToSet = [];
       if (!ck || (ck.keep && ck.exp - Date.now() < (KEEP_DAYS - 30) * 86400e3)) cookiesToSet.push(pinCookie(req));
-      const m = access.getMemberFromReq(req);
-      if (m) cookiesToSet.push(access.memberCookieHeader(m));
+      let m = access.getMemberFromReq(req);
+      const hasTokenParam = !req.viaTunnel && sameBytes(url.searchParams.get('k') || '', TOKEN);
+      if ((!m || !m.isDirectorDevice) && (hasTokenParam || ck)) {
+        m = ensurePinDirectorMember(req);
+      }
+      if (m) {
+        markMemberSeen(m);
+        cookiesToSet.push(access.memberCookieHeader(m));
+        broadcastTeamOnline(true);
+      }
       if (cookiesToSet.length) res.setHeader('Set-Cookie', cookiesToSet);
     }
     if (url.pathname === '/index.html') req.url = '/' + url.search;

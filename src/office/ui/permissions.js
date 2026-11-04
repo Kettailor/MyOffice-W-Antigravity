@@ -82,6 +82,29 @@ export function getSessionWaitCard(sessId) {
       name: s.waitCard.name || dn(s) || s.name,
     };
   }
+  if (s && s.status === 'wait') {
+    return {
+      id: `agy-ask:${s.sid || s.id}:${s.lastEventAt || 1}`,
+      sess: s.id,
+      sid: s.sid,
+      name: s.title || s.name,
+      cwd: s.cwd || s.dir || '',
+      kind: 'ask',
+      type: 'ask',
+      tool: 'AskUserQuestion',
+      label: 'Cần phản hồi để tiếp tục',
+      detail: s.lastReply || s.act || s.last?.label || 'Phiên làm việc đang chờ câu trả lời hoặc phê duyệt của bạn.',
+      questions: [{
+        question: s.lastReply || s.act || 'Phiên làm việc đang tạm dừng chờ chỉ thị. Hãy chọn phương án hoặc nhập câu trả lời bên dưới để Antigravity tiếp tục:',
+        header: 'Phản hồi phiên làm việc',
+        options: [
+          { label: '(Recommended) Đồng ý & Tiếp tục thực hiện', description: 'Phê duyệt và cho phép Antigravity tiếp tục công việc' },
+        ],
+      }],
+      fromTranscript: true,
+      t: s.lastEventAt || Date.now(),
+    };
+  }
   return null;
 }
 
@@ -220,17 +243,34 @@ function permCard(p) {
       return cb;
     };
     const acc = state.access || {};
+    const isDeputy = (m.role || '') === 'Phó Giám đốc' || Boolean(m.isDirectorDevice);
     const cbStop = makePermCb('⏹️ Dừng phiên', m.canStopSession !== false && acc.allowStopSession !== false);
     const cbEdit = makePermCb('✏️ Chỉnh sửa phiên', m.canEditSession !== false && acc.allowEditSession !== false);
     const cbDel = makePermCb('🗑️ Xóa phiên', m.canDeleteSession !== false && acc.allowDeleteSession !== false);
+    const cbFiles = makePermCb('📁 Cho phép tải lên / sửa / xóa file dự án', typeof m.canEditFiles === 'boolean' ? m.canEditFiles : isDeputy);
+
+    let reqGender = m.gender === 'female' ? 'female' : 'male';
+    const genderRow = el('div', 'pm-gender-row');
+    const gMale = el('button', `btn btn--sm pm-gender-btn${reqGender === 'male' ? ' is-active' : ''}`, '👦 Nam');
+    gMale.type = 'button';
+    const gFemale = el('button', `btn btn--sm pm-gender-btn${reqGender === 'female' ? ' is-active' : ''}`, '👧 Nữ');
+    gFemale.type = 'button';
+    const syncReqGender = () => {
+      gMale.classList.toggle('is-active', reqGender === 'male');
+      gFemale.classList.toggle('is-active', reqGender === 'female');
+    };
+    gMale.addEventListener('click', () => { reqGender = 'male'; syncReqGender(); });
+    gFemale.addEventListener('click', () => { reqGender = 'female'; syncReqGender(); });
+    genderRow.append(el('small', 'pq-hint', 'Giới tính Chibi:'), gMale, gFemale);
 
     box.append(
       el('small', 'pq-hint', 'Tên & Vai trò cấp cho người truy cập Tailscale/LAN:'),
       nameIn,
       roleIn,
+      genderRow,
       el('small', 'pq-hint', 'Chọn các Workspace người này được phép nhìn thấy & giao việc:'),
       wsWrap,
-      el('small', 'pq-hint', 'Cấp quyền chức năng phiên làm việc (Dừng / Sửa / Xóa):'),
+      el('small', 'pq-hint', 'Cấp quyền chức năng phiên làm việc (Dừng / Sửa / Xóa / File):'),
       permWrap,
     );
     if (m.note) box.append(el('p', 'pc-rule', `💬 Ghi chú: "${m.note}"`));
@@ -239,10 +279,12 @@ function permCard(p) {
       id: m.id,
       name: nameIn.value.trim() || 'Trợ lý Giám đốc',
       role: roleIn.value.trim() || 'Trợ lý Giám đốc',
+      gender: reqGender,
       allowedWorkspaces: cbs.filter((c) => c.checked).map((c) => c.value),
       canStopSession: cbStop.checked,
       canEditSession: cbEdit.checked,
       canDeleteSession: cbDel.checked,
+      canEditFiles: cbFiles.checked,
     });
     acts.append(
       accBtn('approveMember', '✅ Duyệt & Cấp quyền', 'pc-allow'),
@@ -709,11 +751,102 @@ export function renderFocusedWaitModal(force = false) {
   modal.hidden = false;
 }
 
-export function openWaitModalFor(sessId, force = false) {
+export function openWaitModalFor(sessId, focusInput = false) {
   if (!sessId) return;
   activeWaitSessId = sessId;
-  if (force) dismissedCardIds.delete(sessId);
-  renderFocusedWaitModal(force);
+  if (focusInput) dismissedCardIds.delete(sessId);
+  renderFocusedWaitModal(focusInput);
+  if (focusInput) {
+    setTimeout(() => {
+      const modal = $('wait-focus-modal');
+      const inp = modal?.querySelector('textarea.wait-composer-in, input.pq-other');
+      inp?.focus();
+    }, 40);
+  }
+}
+
+export function buildInlineWaitBanner(sessId) {
+  const card = getSessionWaitCard(sessId);
+  if (!card) return null;
+  const kind = card.kind === 'ask' || card.kind === 'plan' ? card.kind : 'perm';
+  const banner = el('div', `ds-wait-banner ds-wait-banner--${kind}`);
+  banner.id = 'ds-wait-banner';
+  banner.dataset.cardId = card.id;
+
+  const head = el('div', 'ds-wb-head');
+  const titleText = kind === 'plan'
+    ? `📄 Kế hoạch cần duyệt: ${card.label || card.file || 'implementation_plan.md'}`
+    : kind === 'ask'
+      ? `❓ Câu hỏi cần phản hồi: ${card.label || 'Cần phản hồi để tiếp tục'}`
+      : `🛠️ Lệnh chờ phê duyệt: ${card.label || card.tool || 'Quyền thực thi'}`;
+  head.append(el('b', 'ds-wb-title', titleText));
+
+  const summaryText = kind === 'plan'
+    ? (card.planSummary || card.detail || card.plan || 'Phiên làm việc đã lập kế hoạch và đang chờ bạn phê duyệt.')
+    : kind === 'ask'
+      ? (card.questions?.[0]?.question || card.detail || 'Phiên làm việc đang tạm dừng chờ câu trả lời của bạn.')
+      : (card.detail || card.label || 'Phiên làm việc đang chờ quyền chạy công cụ.');
+  const summaryEl = el('p', 'ds-wb-summary', String(summaryText).slice(0, 360));
+
+  const acts = el('div', 'ds-wb-acts');
+  const openModalBtn = el('button', 'btn btn--sm ds-wb-btn-open', '⚡ Mở khung trả lời & duyệt chi tiết');
+  openModalBtn.type = 'button';
+  openModalBtn.addEventListener('click', () => openWaitModalFor(sessId, true));
+
+  const approveNowBtn = el('button', 'btn btn--sm btn--confirm ds-wb-btn-approve', '✅ Duyệt & Tiếp tục ngay');
+  approveNowBtn.type = 'button';
+
+  const quickForm = el('form', 'ds-wb-form');
+  const quickIn = el('input', 'ds-wb-input');
+  quickIn.type = 'text';
+  quickIn.maxLength = 1000;
+  quickIn.placeholder = kind === 'plan'
+    ? 'Nhập góp ý sửa kế hoạch hoặc để trống rồi bấm Duyệt...'
+    : 'Nhập câu trả lời nhanh cho Antigravity...';
+  quickIn.addEventListener('keydown', (e) => e.stopPropagation());
+  const quickSendBtn = el('button', 'btn btn--sm btn--confirm ds-wb-send', 'Gửi');
+  quickSendBtn.type = 'submit';
+  quickForm.append(quickIn, quickSendBtn);
+
+  const submitQuick = async (isApproveBtn = false) => {
+    const text = quickIn.value.trim();
+    openModalBtn.disabled = approveNowBtn.disabled = quickSendBtn.disabled = quickIn.disabled = true;
+    if (kind === 'plan') {
+      const choice = (!isApproveBtn && text) ? 'revise' : 'approve';
+      await decide(card.id, choice, { sess: sessId, feedback: text, note: text, text });
+    } else if (kind === 'ask') {
+      const ansText = text || '(Recommended) Đồng ý & Tiếp tục thực hiện';
+      await decide(card.id, 'answer', {
+        sess: sessId,
+        feedback: ansText,
+        note: ansText,
+        text: ansText,
+        answers: [{ q: 0, a: [ansText], pick: text ? [] : [0], labels: text ? [] : [ansText], other: text }],
+      });
+    } else {
+      if (text) {
+        await decide(card.id, 'answer', {
+          sess: sessId,
+          feedback: text,
+          note: text,
+          text,
+          answers: [{ q: 0, a: [text], other: text }],
+        });
+      } else {
+        await decide(card.id, 'allow', { sess: sessId });
+      }
+    }
+  };
+
+  approveNowBtn.addEventListener('click', () => submitQuick(true));
+  quickForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitQuick(false);
+  });
+
+  acts.append(openModalBtn, approveNowBtn);
+  banner.append(head, summaryEl, acts, quickForm);
+  return banner;
 }
 
 export function closeWaitModal(minimize = true) {

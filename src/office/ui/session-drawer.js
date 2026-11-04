@@ -12,7 +12,8 @@ import { TOKEN, removeSession } from '../net/live.js';
 import { unseenDone } from '../life/your-turn.js';
 import { DEMO, demoLog } from '../demo/demo.js';
 import { acctActions } from './session-account.js';
-import { closeWaitModal, getSessionWaitCard, openWaitModalFor, syncSessionWaitCards } from './permissions.js';
+import { buildInlineWaitBanner, closeWaitModal, decide, getSessionWaitCard, openWaitModalFor, syncSessionWaitCards } from './permissions.js';
+import { openFileManager } from './file-manager.js';
 import { t as tr, locale } from '../../i18n/index.js';
 
 /* ---------- session drawer ---------- */
@@ -107,16 +108,37 @@ export function renderSessionHead() {
   $('ds-time').textContent = s.taskStart && s.status !== 'rest' ? fmtClock((nowMs() - s.taskStart) / 1000) : '–';
   const u = s.usage;
   $('ds-ctx').textContent = u ? `${Math.round((u.ctx / u.ctxMax) * 100)}%` : '–'; $('ds-ctx').parentElement.title = u ? tr('drawer.tokens', { used: fmtTok(u.ctx), max: fmtTok(u.ctxMax), model: u.model }) : '';
-  const projPct = u?.projectQuotaPct ?? u?.quota5hPct;
-  const projUsed = projPct != null ? Math.round(projPct) : null;
-  const projLeft = projUsed != null ? Math.max(0, 100 - projUsed) : null;
-  $('ds-cost').textContent = u ? (projLeft != null ? `${projLeft}% · ${fmtUsd(u.cost)}` : fmtUsd(u.cost)) : '–';
-  $('ds-cost').parentElement.title = u && projPct != null
-    ? `Quota dự án (5g): Còn ${projLeft}% (${projUsed}% đã dùng) · ${u.prompts5h ?? u.prompts ?? 0} việc (${u.steps5h ?? u.steps ?? 0} bước) · ${tr('drawer.priceNote')}`
-    : tr('drawer.priceNote');
+  $('ds-cost').textContent = u ? fmtUsd(u.cost) : '–';
+  $('ds-cost').parentElement.title = tr('drawer.priceNote');
   const n = s.subs?.length || 0;
   $('tab-subs').textContent = n ? tr('drawer.tabSubsN', { n }) : tr('drawer.tabSubs');
+  renderInlineWaitBanner(s);
   if (actionsSig(s) !== drawnSig) renderActions();   // (it came to rest, went to work, or moved to another account)
+}
+
+function renderInlineWaitBanner(s) {
+  if (!drS) return;
+  const existing = $('ds-wait-banner');
+  const card = s ? getSessionWaitCard(s.id) : null;
+  if (!card) {
+    existing?.remove();
+    return;
+  }
+  if (existing && existing.dataset.cardId === card.id) {
+    return;
+  }
+  const banner = buildInlineWaitBanner(s.id);
+  if (!banner) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    existing.replaceWith(banner);
+  } else {
+    const headEl = $('ds-head');
+    if (headEl) headEl.after(banner);
+    else drS.prepend(banner);
+  }
 }
 export async function openWindowOf(s) {
   if (DEMO) { toast(tr('drawer.demoNoWindow')); return; }
@@ -127,7 +149,23 @@ export async function openWindowOf(s) {
 }
 // what the buttons below depend on
 let drawnSig = '', qrFor = null;   // (qrFor: the session whose Remote Control QR code is shown)
-const actionsSig = (s) => [s.id, s.status === 'rest', s.status === 'wait', s.status === 'work', Boolean(s.busy), getSessionWaitCard(s.id)?.id || '', s.pid, s.moved?.to, s.acct, state.limits?.others?.length, canSessionPerm('stop'), canSessionPerm('edit'), canSessionPerm('delete')].join('|');
+const DRAWER_MODELS = [
+  { id: '', labelKey: 'chat.task.modelAuto', fallback: '⚡ Mặc định (Auto)' },
+  { id: 'gemini-4-argon-high', label: '✨ Gemini 4 Argon (High)' },
+  { id: 'gemini-4-argon-medium', label: '✨ Gemini 4 Argon (Medium)' },
+  { id: 'gemini-4-argon-low', label: '✨ Gemini 4 Argon (Low)' },
+  { id: 'gemini-3.8-flash-high', label: '⚡ Gemini 3.8 Flash (High)' },
+  { id: 'gemini-3.8-flash-medium', label: '⚡ Gemini 3.8 Flash (Medium)' },
+  { id: 'gemini-3.8-flash-low', label: '⚡ Gemini 3.8 Flash (Low)' },
+  { id: 'claude-opus-5-5-high', label: '🧠 Claude Opus 5.5 (High)' },
+  { id: 'claude-opus-5-5-medium', label: '🧠 Claude Opus 5.5 (Medium)' },
+  { id: 'claude-opus-5-5-low', label: '🧠 Claude Opus 5.5 (Low)' },
+  { id: 'claude-sonnet-5-5-high', label: '🎯 Claude Sonnet 5.5 (High)' },
+  { id: 'claude-sonnet-5-5-medium', label: '🎯 Claude Sonnet 5.5 (Medium)' },
+  { id: 'claude-sonnet-5-5-low', label: '🎯 Claude Sonnet 5.5 (Low)' },
+  { id: 'gpt-oss-120b-medium', label: '🤖 GPT-OSS 120B (Medium)' },
+];
+const actionsSig = (s) => [s.id, s.status === 'rest', s.status === 'wait', s.status === 'work', Boolean(s.busy), getSessionWaitCard(s.id)?.id || '', s.pid, s.moved?.to, s.acct, s.selectedModel || '', s.modelLabel || s.usage?.model || '', state.limits?.others?.length, canSessionPerm('stop'), canSessionPerm('edit'), canSessionPerm('delete')].join('|');
 function renderLogs() {
   if (tab === 'chat') renderChat(false);
   else if (tab === 'subs') renderSubs(false);
@@ -199,10 +237,67 @@ function renderActions() {
   }
   if (state.isLocal && s.pid && s.status === 'rest') box.append(closeSessionButton(s));
   const topBtns = el('div', 'dr-top-btns');
+  const filesBtn = el('button', 'btn btn--sm act-files-sess', '📁 File');
+  filesBtn.type = 'button';
+  filesBtn.title = 'Mở trình quản lý & xem file của dự án này';
+  filesBtn.addEventListener('click', () => openFileManager(s.cwd || s.dir || ''));
+  topBtns.append(filesBtn);
   if (canSessionPerm('stop')) topBtns.append(stopSessionButton(s));
   if (canSessionPerm('edit')) topBtns.append(renameSessionButton(s));
   if (canSessionPerm('delete')) topBtns.append(deleteSessionButton(s));
   if (topBtns.childElementCount > 0) box.append(topBtns);
+  if (s.sid || s.cwd || s.dir) {
+    const modelWrap = el('div', 'dr-model-row');
+    modelWrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;width:100%;';
+    const modelLbl = el('span', 'dr-model-lbl', '🤖 Model:');
+    modelLbl.style.cssText = 'font-size:11px;font-weight:600;opacity:0.85;white-space:nowrap;';
+    const sel = el('select', 'zc-task-model-select dr-model-select');
+    sel.style.cssText = 'flex:1;min-width:0;padding:4px 8px;font-size:11.5px;border-radius:6px;';
+    sel.title = tr('chat.task.modelLabel');
+    const curModelId = s.selectedModel || '';
+    const curLabel = s.modelLabel || s.usage?.model || '';
+    for (const m of DRAWER_MODELS) {
+      const autoTxt = m.labelKey ? tr(m.labelKey) : m.fallback;
+      const lbl = m.id === ''
+        ? (curLabel && !curModelId ? `${autoTxt} · ${curLabel}` : autoTxt)
+        : m.label;
+      const opt = el('option', null, lbl);
+      opt.value = m.id;
+      sel.append(opt);
+    }
+    sel.value = DRAWER_MODELS.some((m) => m.id === curModelId) ? curModelId : '';
+    sel.addEventListener('change', async () => {
+      const nextModel = sel.value;
+      const chosenMeta = DRAWER_MODELS.find((m) => m.id === nextModel);
+      s.selectedModel = nextModel;
+      if (chosenMeta && chosenMeta.id) {
+        const cleanLbl = chosenMeta.label.replace(/^[^\w\d]+/, '').trim();
+        s.modelLabel = cleanLbl;
+        if (s.usage) s.usage.model = cleanLbl;
+      }
+      try {
+        const map = JSON.parse(localStorage.getItem('office-session-models') || '{}');
+        if (s.sid) map[`s:${s.sid}`] = nextModel;
+        else if (s.cwd || s.dir) map[`d:${s.cwd || s.dir}`] = nextModel;
+        localStorage.setItem('office-session-models', JSON.stringify(map));
+        localStorage.setItem('office-task-model', nextModel);
+      } catch { /* ignore */ }
+      renderSessionHead();
+      renderRail();
+      if (!DEMO) {
+        const res = await fetch(`/api/tasks/model${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sid: s.sid || '', dir: s.cwd || s.dir || '', model: nextModel }),
+        }).then((x) => x.json()).catch(() => null);
+        if (res?.ok) {
+          toast(`🤖 Đã chuyển Model sang: ${chosenMeta?.label || tr('chat.task.modelAuto')}`, 2800);
+        }
+      }
+    });
+    modelWrap.append(modelLbl, sel);
+    box.append(modelWrap);
+  }
   box.append(...acctActions(s, renderActions));
   if (s.link) {
     const a = el('a', 'btn btn--primary btn--sm', tr('drawer.openOnClaude')); a.href = s.link; a.target = '_blank'; a.rel = 'noopener';
@@ -676,10 +771,75 @@ export function setup() {
   $('tab-act').addEventListener('click', () => setTab('act'));
   // "Latest" button: shows when you have scrolled up in a conversation.
   jumpBtn = el('button', 'chat-jump');
-   jumpBtn.type = 'button';
-   jumpBtn.hidden = true;
+  jumpBtn.type = 'button';
+  jumpBtn.hidden = true;
   jumpBtn.append(icon('chevron'), document.createTextNode(tr('drawer.latest')));
   jumpBtn.addEventListener('click', () => { const b = $('ds-body'); b.scrollTo({ top: b.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' }); });
   $('dr-session').append(jumpBtn);
   $('ds-body').addEventListener('scroll', syncJump, { passive: true });
+
+  // Quick Reply & Direct Instruction Bar (#ds-quick-reply) at the bottom of #dr-session
+  if (drS && !$('ds-quick-reply')) {
+    const qrForm = el('form', 'ds-quick-reply');
+    qrForm.id = 'ds-quick-reply';
+    const qrIn = el('input', 'ds-qr-input');
+    qrIn.type = 'text';
+    qrIn.maxLength = 4000;
+    qrIn.placeholder = '💬 Nhập câu trả lời hoặc chỉ thị tiếp theo cho phiên này...';
+    qrIn.addEventListener('keydown', (e) => e.stopPropagation());
+    const qrBtn = el('button', 'btn btn--sm btn--confirm ds-qr-send', 'Gửi');
+    qrBtn.type = 'submit';
+    qrForm.append(qrIn, qrBtn);
+    qrForm.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const text = qrIn.value.trim();
+      if (!text) return;
+      const s = sessions.get(state.selectedId);
+      if (!s) return;
+      qrIn.disabled = true;
+      qrBtn.disabled = true;
+      const prevBtnTxt = qrBtn.textContent;
+      qrBtn.textContent = '...';
+      try {
+        const card = getSessionWaitCard(s.id);
+        if (card) {
+          await decide(card.id, card.kind === 'plan' ? 'feedback' : 'answer', {
+            sess: s.id,
+            feedback: text,
+            note: text,
+            text,
+            answers: [{ q: 0, a: [text], other: text }],
+          });
+          qrIn.value = '';
+        } else if (DEMO) {
+          qrIn.value = '';
+          toast('✅ Đã gửi chỉ thị cho phiên làm việc (Demo)!');
+        } else {
+          const r = await fetch(`/api/tasks${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sid: s.sid,
+              dir: s.cwd || s.dir || '',
+              model: s.selectedModel || '',
+              text,
+            }),
+          }).then((x) => x.json()).catch(() => null);
+          if (r?.ok) {
+            qrIn.value = '';
+            toast(r.queuedForApproval ? '⏳ Đã gửi chỉ thị chờ Giám đốc duyệt!' : '🚀 Đã gửi chỉ thị tiếp theo cho phiên làm việc!');
+            setTimeout(() => loadLog(true), 500);
+          } else {
+            toast(r?.message || tr('drawer.unreachable'));
+          }
+        }
+      } finally {
+        qrIn.disabled = false;
+        qrBtn.disabled = false;
+        qrBtn.textContent = prevBtnTxt;
+        qrIn.focus();
+      }
+    });
+    drS.append(qrForm);
+  }
 }

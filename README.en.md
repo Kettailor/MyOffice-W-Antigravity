@@ -54,6 +54,12 @@ This project is built upon and extends the open-source project **[My Office (`kh
    - **Docker & On-Demand Host Bridge (`:4311`)**: Runs the production server in Docker (`:4310`) paired with a lightweight watcher that wakes the Host Bridge on demand and auto-stops after 45s of inactivity.
    - Tracks CPU, RAM, disk, Windows NVIDIA GPU utilization, forgotten dev servers, and dynamic 5-hour / 7-day token quota across projects and accounts.
 
+6. **MCP Management Hub (`🔌 MCP`) & Project File Manager (`📁 Project Files`)**
+   - **4-Tab MCP Hub (`server/mcp.mjs` & `src/office/ui/mcp-drawer.js`)**: Manage all Model Context Protocol servers (`mcp_config.json`) with instant enable/disable toggles, batch actions, live connection testing (`ping`), 12 popular presets, custom `stdio`/`http` form with live JSON preview, raw JSON import/export, tool schema inspector, and automatic secret masking (`maskSecret`).
+   - **Project File Manager & Live Document Viewer (`server/files.mjs` & `src/office/ui/file-manager.js`)**: Workspace-scoped file browser with built-in preview for Word (`.docx`), Excel (`.xlsx`, `.csv`), `.pdf`, images, media, inline code editor (`Ctrl+S`), file upload, folder creation, and one-click task dispatch with the selected file.
+   - **Live AI Model Switcher & Quick Reply Bar**: Switch between 14 AI models (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`) and send follow-up instructions directly inside the `Session Drawer`, with live model badges on the `Session Rail`.
+   - **3D Chibi Gender Customization (`👦 Male` / `👧 Female`)**: Select custom 3D Chibi gender for Director, Deputy Director, and Assistant Director profiles.
+
 ---
 
 ## 🚀 Quick Start

@@ -8,6 +8,7 @@ import { setTrophies } from '../life/trophies.js';
 import { addFeed, queueFeed, queueUi, renderFeed, toast } from '../ui/activity.js';
 import { closeSession, drM, refreshIfSelected } from '../ui/session-drawer.js';
 import { acctLogin, acctMoved, acctSwitched, limitWarned, liveWindows, loadMac, renderLimits, renderMac } from '../ui/mac-drawer.js';
+import { syncMcpBadge } from '../ui/mcp-drawer.js';
 import { DEMO_TODOS, onTodos } from '../ui/whiteboard.js';
 import { TOKEN, freeDesk, removeSession, setConn, upsertSession } from '../net/live.js';
 import { onEvent } from '../life/incidents.js';
@@ -225,6 +226,7 @@ export function applyMsg(d, quiet = false) {
       if (d.build) { if (state.build && d.build !== state.build) reloadSoon(); else state.build = d.build; }   // (the office was updated: this page is an older one)
       state.todos = d.todos || []; onTodos();
       if (d.trophies) setTrophies(d.trophies);
+      if (d.mcp) { state.mcpSummary = d.mcp; syncMcpBadge(d.mcp); }
       state.limits = d.limits || null; state.limitsNote = d.limitsNote || ''; for (const w of liveWindows()) if (w.pct >= 80) limitWarned.add(`${w.key}:${w.resetsAt}:${w.pct >= 95 ? 95 : 80}`); renderLimits();
       $('btn-phone').hidden = false; if ($('btn-phone-top')) $('btn-phone-top').hidden = false;
       $('btn-bell').hidden = !('Notification' in window) || !window.isSecureContext;
@@ -253,8 +255,8 @@ export function applyMsg(d, quiet = false) {
     if ('fixed' in d) state.lanFixed = !!d.fixed;
     for (const c of [...$('perm-stack').children]) c.remove(); renderPerms(); reportPresence(); if (!$('phone-modal').hidden) renderPhone();
   }   // (approving and giving work from a phone, switched on the Mac)
-  else if (d.k === 'access') { state.access = d.access || null; state.requireTaskApproval = !!d.access?.requireTaskApproval; if (d.teamMembers) { state.teamMembers = d.teamMembers; syncTeamMembers(d.teamMembers); } if (d.participants) state.participants = d.participants; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); refreshIfSelected(); queueUi(); }
-  else if (d.k === 'teamOnline') { state.teamMembers = d.teamMembers || []; state.participants = d.participants || []; syncTeamMembers(state.teamMembers); renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
+  else if (d.k === 'access') { state.access = d.access || null; state.requireTaskApproval = !!d.access?.requireTaskApproval; if (d.teamMembers || d.members) { state.teamMembers = d.teamMembers || d.members; syncTeamMembers(state.teamMembers); } if (d.participants) state.participants = d.participants; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); refreshIfSelected(); queueUi(); }
+  else if (d.k === 'teamOnline' || d.k === 'teamMembers') { state.teamMembers = d.teamMembers || d.members || []; if (d.participants) state.participants = d.participants; syncTeamMembers(state.teamMembers); renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
   else if (d.k === 'viewer') { state.viewer = d.viewer || null; state.requireTaskApproval = !!d.requireTaskApproval; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); refreshIfSelected(); queueUi(); }
   else if (d.k === 'taskDeliver') { if (!quiet && (d.sess || d.dir)) deliverTaskBy(d.by, d.sess, d.text, d.dir); }
   else if (d.k === 'acctlogin') acctLogin(d);   // (adding an account: a step of its sign-in)
@@ -265,6 +267,7 @@ export function applyMsg(d, quiet = false) {
   else if (d.k === 'limits') { state.limits = d.limits || null; state.limitsNote = d.note || ''; renderLimits(); if (!drM.hidden) renderMac(); }
   else if (d.k === 'sysauto') { if (!quiet) { toast(d.message, 8000); loadMac(); } }   // (idle sessions closed on the drawer's timer)
   else if (d.k === 'trophies') setTrophies(d.t, quiet ? [] : d.earned || []);
+  else if (d.k === 'mcp') { state.mcpSummary = d.mcp; syncMcpBadge(d.mcp); }
   else if (d.k === 'vi') relabel(d.from, d.to);
 }
 // a translation that arrived after its event: swap the words in bubbles, the feed and the session list

@@ -8,7 +8,7 @@ import { fp } from '../interact/first-person.js';
 let teamGeo;
 let teamLines;
 export function updateTeam() {
-  if (fp.on) { teamLines.visible = false; return; }
+  if (fp.on || state.showSessionChibis === false) { teamLines.visible = false; return; }
   const boss = (state.selectedId && workers.get(state.selectedId)) || (state.hovered ? (state.hovered.sub ? state.hovered.parent : state.hovered) : null);
   if (!boss) { teamLines.visible = false; return; }
   const a = teamGeo.attributes.position; let n = 0;

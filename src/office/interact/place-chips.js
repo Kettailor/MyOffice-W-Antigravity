@@ -188,6 +188,7 @@ export function updatePlaces(now) {
   for (const w of workers.values()) pushBox(w.pos.x, w.pos.y, w.sub ? 1.75 : 2.1);
   for (const w of subs.values()) pushBox(w.pos.x, w.pos.y, 1.75);
   for (const w of leaving) pushBox(w.pos.x, w.pos.y, w.sub ? 1.75 : 2.1);
+  for (const w of npcs.values()) pushBox(w.pos.x, w.pos.y, 2.1);
   pushBox(cat.pos.x, cat.pos.y, 0.7);
   for (const pl of Object.values(PLACES)) {
     if (!pl.el) continue;

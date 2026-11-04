@@ -12,4 +12,6 @@ export default defineConfig([
   { rules: { '@typescript-eslint/no-unused-vars': ['warn', { ignoreRestSiblings: true }] } },
   // the dictionaries are plain `export default { … }` objects, one per area
   { files: ['src/i18n/locales/**'], rules: { 'import/no-anonymous-default-export': 'off' } },
+  // enforce no-undef on all plain JS/MJS modules where TypeScript does not run
+  { files: ['src/**/*.js', 'server/**/*.mjs'], rules: { 'no-undef': 'error' } },
 ]);

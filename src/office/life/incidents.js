@@ -117,7 +117,8 @@ export function onEvent(e) {
       const prevAfter = pa.after;
       a = { ...pa, after: () => { prevAfter?.(); pulseRocketPad('commit'); } };
     } else {
-      a = { ...a, station: 'rocket', anim: 'tidy', dwell: 2.0 };
+      pulseRocketPad('commit');
+      a = { ...a, station: w.sub ? null : 'desk', anim: 'tidy', dwell: 2.0 };
     }
   }
   if ((e.type === 'commit' || e.type === 'push' || e.type === 'pull' || e.type === 'deploy') && s.status === 'rest' && !a.rest) {

@@ -1,0 +1,50 @@
+/* Master stylesheet index & new UI components (.fm-modal, #ds-wait-banner, #ds-quick-reply, .pm-gender-btn). */
+@import './tokens.css';
+@import './topbar.css';
+@import './stage.css';
+@import './rail.css';
+@import './feed.css';
+@import './drawers.css';
+@import './chat.css';
+@import './mac.css';
+@import './permissions.css';
+@import './modal.css';
+@import './group-chat.css';
+@import './overlays.css';
+@import './phone.css';
+
+/* Inline Wait / Approval Banner (#ds-wait-banner) */
+#ds-wait-banner, .ds-wait-banner {
+  margin: 10px 16px 2px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Quick Reply Bar (#ds-quick-reply) */
+#ds-quick-reply, .ds-quick-reply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--side);
+}
+
+/* Chibi Gender Selector (.pm-gender-row / .pm-gender-btn) */
+.pm-gender-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pm-gender-btn.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+/* Project File Manager Modal (.fm-modal / .fm-card / .fm-sheet-table / .fm-docx-page) */
+.fm-modal { z-index: 32; }
+.fm-card { width: min(1240px, 96vw); height: min(840px, 90vh); display: flex; flex-direction: column; align-items: stretch; text-align: left; gap: 0; }
+.fm-sheet-table { width: 100%; border-collapse: collapse; }
+.fm-docx-page { width: min(794px, 100%); margin: 0 auto; background: #FFFFFF; color: #1E293B; }

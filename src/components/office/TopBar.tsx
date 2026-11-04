@@ -24,6 +24,7 @@ export default async function TopBar() {
         </div>
         <button id="btn-mac" className="tb-btn mac-pill" type="button" data-level="normal" title={t('ui.topBar.macTitle')}><i className="lvl"></i><span className="mp-label">{t('ui.topBar.mac')}</span><span className="mp-val" id="mac-mini">{t('ui.topBar.measuring')}</span><span className="mp-bar"><b id="ml-ram"></b></span><i className="mp-tip" id="mac-tip" hidden></i></button>
         <button id="btn-task" className="tb-btn tb-task" type="button" title={t('ui.topBar.taskTitle')}><span data-icon="clipboard"></span><span className="lbl">{t('ui.topBar.task')}</span></button>
+        <button id="btn-mcp" className="tb-btn tb-mcp" type="button" aria-expanded="false" aria-controls="mcp-modal" title={t('ui.topBar.mcpTitle')}><span data-icon="plug"></span><span className="lbl">{t('ui.topBar.mcp')}</span><i className="tb-badge mcp-top-badge" id="mcp-badge" hidden></i></button>
         <button id="btn-chat" className="tb-btn tb-chat" type="button" aria-pressed="false" title={t('chat.openTitle')}><span data-icon="chat"></span><span className="lbl">{t('chat.open')}</span><i className="tb-badge" id="chat-badge" hidden></i></button>
         <button id="btn-replay" className="tb-btn" type="button" aria-pressed="false" title={t('ui.topBar.replayTitle')}><span data-icon="rewind"></span><span className="lbl">{t('ui.topBar.replay')}</span></button>
         <div className="pop-wrap">

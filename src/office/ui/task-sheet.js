@@ -16,6 +16,7 @@ import { t as tr, locale } from '../../i18n/index.js';
 
 const q = () => (TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : '');
 export const MAX_TASK_IMAGES = 20;
+export const MAX_TASK_TEXT = 200_000;
 const PIN_KEY = 'office-pinned-tasks';
 const MODEL_KEY = 'office-task-model';
 const SESS_MODELS_KEY = 'office-session-models';
@@ -244,7 +245,7 @@ export function dictate(btn, field, onChange) {
   rec.onresult = (e) => {
     let live = '';
     for (let i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) done += e.results[i][0].transcript; else live += e.results[i][0].transcript; }
-    field.value = `${start}${sep}${done}${live}`.slice(0, 4000); onChange?.();
+    field.value = `${start}${sep}${done}${live}`.slice(0, MAX_TASK_TEXT); onChange?.();
   };
   const end = () => { btn.classList.remove('is-rec'); btn.setAttribute('aria-pressed', 'false'); };
   rec.onend = end; rec.onerror = (e) => { end(); if (e.error === 'not-allowed') toast(tr('chat.task.micBlocked'), 6000); };
@@ -307,18 +308,26 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   }
   const pins = loadPins();
   const models = Array.isArray(r.models) && r.models.length ? r.models : defaultModels();
+  const normDirKey = (d) => String(d || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const sessModels = { ...loadSessionModels(), ...(r.sessionModels && typeof r.sessionModels === 'object' ? r.sessionModels : {}) };
   for (const s of r.sessions || []) {
-    if (s.sid && s.selectedModel && !sessModels[`s:${s.sid}`]) sessModels[`s:${s.sid}`] = s.selectedModel;
+    if (s.sid && s.selectedModel) sessModels[`s:${s.sid}`] = s.selectedModel;
   }
   for (const p of r.projects || []) {
-    if (p.dir && p.selectedModel && !sessModels[`d:${p.dir}`]) sessModels[`d:${p.dir}`] = p.selectedModel;
+    if (p.dir && p.selectedModel) {
+      sessModels[`d:${p.dir}`] = p.selectedModel;
+      sessModels[`d:${normDirKey(p.dir)}`] = p.selectedModel;
+    }
   }
   saveSessionModels(sessModels);
   const keyOfPick = (p) => (p?.sid ? `s:${p.sid}` : p?.dir ? `d:${p.dir}` : '');
   const getModelForPick = (p) => {
     const k = keyOfPick(p);
     if (k && Object.prototype.hasOwnProperty.call(sessModels, k)) return sessModels[k] || '';
+    if (p?.dir) {
+      const nk = `d:${normDirKey(p.dir)}`;
+      if (Object.prototype.hasOwnProperty.call(sessModels, nk)) return sessModels[nk] || '';
+    }
     if (p?.sid) {
       const sObj = (r.sessions || []).find((x) => x.sid === p.sid);
       if (sObj?.selectedModel) return sObj.selectedModel;
@@ -387,7 +396,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   const initDraft = getDraft(keyOfPick(pick));
   const initialText = text ? text : (initDraft.text || '');
   const initialPhotos = (Array.isArray(initImages) && initImages.length ? initImages : (initDraft.photos || [])).slice(0, MAX_TASK_IMAGES);
-  const field = el('textarea', 'zc-task-in'); field.rows = 4; field.maxLength = 4000; field.placeholder = `${tr('chat.task.placeholder')} · ${tr('chat.task.pasteHint', { max: MAX_TASK_IMAGES })}`; field.value = initialText;
+  const field = el('textarea', 'zc-task-in'); field.rows = 5; field.maxLength = MAX_TASK_TEXT; field.placeholder = `${tr('chat.task.placeholder')} · ${tr('chat.task.pasteHint', { max: MAX_TASK_IMAGES })}`; field.value = initialText;
   const photos = [...initialPhotos], thumbs = el('div', 'zc-task-thumbs');
   const camSpan = el('span', null, `${tr('chat.task.photo')} (${photos.length}/${MAX_TASK_IMAGES})`);
   const noteEl = el('p', 'zc-task-note', tr('chat.task.note'));
@@ -931,6 +940,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     const k = keyOfPick(pick);
     if (k) {
       sessModels[k] = val;
+      if (pick?.dir) sessModels[`d:${normDirKey(pick.dir)}`] = val;
       saveSessionModels(sessModels);
     }
     try { localStorage.setItem(MODEL_KEY, val); } catch { /* storage blocked */ }
@@ -986,10 +996,20 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   mic.addEventListener('click', () => { if (stopMic) { stopMic(); stopMic = null; } else stopMic = dictate(mic, field, () => { saveCurrentDraft(); sync(); }); });
   const cam = el('button', 'zc-task-tool'); cam.type = 'button'; cam.title = `${tr('chat.task.photo')} (${tr('chat.task.pasteHint', { max: MAX_TASK_IMAGES })})`; cam.append(icon('image'), camSpan);
   cam.addEventListener('click', () => file.click());
-  const tools = el('div', 'zc-task-tools'); tools.append(mic, cam, file);
+  const charCountEl = el('small', 'zc-task-char-count');
+  charCountEl.style.marginLeft = 'auto';
+  charCountEl.style.fontSize = '11px';
+  charCountEl.style.opacity = '0.72';
+  const tools = el('div', 'zc-task-tools'); tools.append(mic, cam, charCountEl, file);
   const sendLabel = r.requireTaskApproval ? tr('chat.task.sendApprove') : tr('chat.task.send');
   const go = el('button', 'zc-task-go', sendLabel); go.type = 'button';
-  sync = () => { go.disabled = !pick || (!field.value.trim() && !photos.length); };
+  sync = () => {
+    const len = field.value.length;
+    const fmtLen = len.toLocaleString(locale() === 'vi-VN' ? 'vi-VN' : 'en-US');
+    const fmtMax = MAX_TASK_TEXT.toLocaleString(locale() === 'vi-VN' ? 'vi-VN' : 'en-US');
+    charCountEl.textContent = `${fmtLen} / ${fmtMax}`;
+    go.disabled = !pick || (!field.value.trim() && !photos.length);
+  };
   field.addEventListener('input', () => { saveCurrentDraft(); sync(); });
   go.addEventListener('click', async () => {
     stopMic?.(); stopMic = null; go.disabled = true; go.textContent = tr('chat.task.sending');

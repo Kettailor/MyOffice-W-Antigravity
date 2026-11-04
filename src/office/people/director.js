@@ -5,7 +5,7 @@ import { PRO, rand, reduceMotion, short } from '../core/env.js';
 import { scene } from '../scene/renderer.js';
 import { mat } from '../scene/blocks.js';
 import { DESKS, dLocal } from '../world/desks.js';
-import { DESK_SPOTS, faceTo } from './navigation.js';
+import { DESK_SPOTS, DOOR_IN, faceTo } from './navigation.js';
 import { Worker, dn, nearBoss, npcs, sessions, workers } from './workers.js';
 import { sfx } from '../audio/sfx.js';
 import { t as tr } from '../../i18n/index.js';
@@ -20,12 +20,19 @@ const EXEC_SPOTS = [
   { deskX: 1.45, deskZ: -6.25, seatX: 1.45, seatZ: -7.0, standX: 1.45, standZ: -6.82, x: 1.45, z: -7.0, face: 0, node: 'DRs2', sit: true },
   { deskX: 1.45, deskZ: -4.75, seatX: 1.45, seatZ: -4.0, standX: 1.45, standZ: -4.18, x: 1.45, z: -4.0, face: Math.PI, node: 'DRs3', sit: true },
 ];
-const EXEC_STYLES = [
-  { shirt: '#1E3A8A', hair: '#27272A', style: 'parted', acc: 'glasses', outfit: 'suit', pants: '#1E293B', shoes: '#0F172A' },
-  { shirt: '#0F766E', hair: '#451A03', style: 'bun', acc: 'id', outfit: 'blazer', pants: '#1E293B', shoes: '#1C1917' },
-  { shirt: '#4338CA', hair: '#1E1B4B', style: 'spiky', acc: 'headphones', outfit: 'suit', pants: '#1E293B', shoes: '#0F172A' },
-  { shirt: '#047857', hair: '#3F2E21', style: 'bob', acc: 'glasses', outfit: 'blazer', pants: '#1F2937', shoes: '#111827' },
+export const EXEC_STYLES_MALE = [
+  { gender: 'male', skirt: false, shirt: '#1E3A8A', hair: '#27272A', style: 'parted', acc: 'glasses', outfit: 'suit', tie: '#B91C1C', pants: '#1E293B', shoes: '#0F172A' },
+  { gender: 'male', skirt: false, shirt: '#334155', hair: '#1E1B4B', style: 'spiky', acc: 'headphones', outfit: 'suit', tie: '#2563EB', pants: '#1E293B', shoes: '#0F172A' },
+  { gender: 'male', skirt: false, shirt: '#312E81', hair: '#3B2618', style: 'plain', acc: 'glasses', outfit: 'suit', tie: '#D97706', pants: '#1F2937', shoes: '#111827' },
+  { gender: 'male', skirt: false, shirt: '#1E293B', hair: '#27272A', style: 'parted', acc: null, outfit: 'shirt', pants: '#0F172A', shoes: '#18181B' },
 ];
+export const EXEC_STYLES_FEMALE = [
+  { gender: 'female', skirt: true, shirt: '#0F766E', skirtColor: '#134E4A', hair: '#451A03', style: 'ponytail', acc: 'glasses', outfit: 'blazer', pants: '#134E4A', shoes: '#1C1917' },
+  { gender: 'female', skirt: true, shirt: '#BE185D', skirtColor: '#1E293B', hair: '#27272A', style: 'bun', acc: null, outfit: 'blazer', pants: '#1E293B', shoes: '#1C1917' },
+  { gender: 'female', skirt: true, shirt: '#6D28D9', skirtColor: '#2E1065', hair: '#3F2E21', style: 'bob', acc: 'glasses', outfit: 'blazer', pants: '#2E1065', shoes: '#111827' },
+  { gender: 'female', skirt: true, shirt: '#B91C1C', skirtColor: '#1F2937', hair: '#1C1917', style: 'ponytail', acc: null, outfit: 'shirt', pants: '#1F2937', shoes: '#18181B' },
+];
+export const EXEC_STYLES = [...EXEC_STYLES_MALE, ...EXEC_STYLES_FEMALE];
 const paperGeo = new THREE.BoxGeometry(0.17, 0.012, 0.23);
 let paperDocM;
 export const flights = [];   // papers in the air, director -> person
@@ -78,13 +85,42 @@ export function updateFlights(dt) {
 }
 export let director;
 
+function formatTeamMemberLabel(m) {
+  const rawName = String(m?.name || '').trim();
+  const isVp = Boolean(m?.isDirectorDevice || m?.role === 'Phó Giám đốc');
+  if (isVp) {
+    if (!rawName || rawName === 'Phó Giám đốc') return '👔 Phó Giám đốc';
+    return rawName.startsWith('👔') ? rawName : `👔 Phó Giám đốc · ${rawName}`;
+  }
+  const role = String(m?.role || 'Trợ lý Giám đốc').trim() || 'Trợ lý Giám đốc';
+  if (!rawName || rawName === role || rawName === 'Trợ lý' || rawName === 'Trợ lý từ xa') {
+    return `💼 ${role}`;
+  }
+  return rawName.startsWith('💼') ? rawName : `💼 ${role} · ${rawName}`;
+}
+
 export function ensureTeamMemberChibi(m, idxHint = 0) {
   if (!PRO || !Director) return director;
   if (!m || !m.id || m.id === 'director' || m.isDirector || m.isLocal) return director;
-  const label = m.isDirectorDevice ? m.name || 'Phó Giám đốc' : `${m.name || 'Trợ lý'}${m.role && m.role !== m.name ? ` · ${m.role}` : ''}`;
+  const isVp = Boolean(m.isDirectorDevice || m.role === 'Phó Giám đốc');
+  const gender = m.gender === 'female' ? 'female' : 'male';
+  const stylePool = gender === 'female' ? EXEC_STYLES_FEMALE : EXEC_STYLES_MALE;
+  const label = short(formatTeamMemberLabel(m), 32);
+  const dot = isVp ? '#60A5FA' : '#34D399';
   const existing = teamChibis.get(m.id);
   if (existing) {
-    existing.setName(short(label, 24));
+    existing.setName(label);
+    if (existing.tagDot) existing.tagDot.style.background = dot;
+    if (existing.label) existing.label.hidden = false;
+    if (existing.tagObj && existing.root?.visible) existing.tagObj.visible = true;
+    if (existing.gender !== gender) {
+      existing.gender = gender;
+      const slotIdx = existing.slotIdx ?? idxHint;
+      const st = stylePool[slotIdx % stylePool.length];
+      Object.assign(existing.cfg, st, { name: label, gender, look: 'pixar' });
+      existing.rebuild();
+      existing.waveUntil = (state.sim || 0) + 2.2;
+    }
     return existing;
   }
   const usedSpots = new Set();
@@ -92,19 +128,32 @@ export function ensureTeamMemberChibi(m, idxHint = 0) {
     const idx = EXEC_SPOTS.indexOf(ch.homeData);
     if (idx >= 0) usedSpots.add(idx);
   }
-  const prefIdx = m.isDirectorDevice ? 0 : 1;
+  const prefIdx = isVp ? 0 : 1;
   let spotIdx = !usedSpots.has(prefIdx) ? prefIdx : EXEC_SPOTS.findIndex((_, idx) => !usedSpots.has(idx));
   if (spotIdx < 0) spotIdx = idxHint % EXEC_SPOTS.length;
   const homeSpot = EXEC_SPOTS[spotIdx];
-  const st = EXEC_STYLES[(m.isDirectorDevice ? 0 : 1 + idxHint) % EXEC_STYLES.length];
-  const dot = m.isDirectorDevice ? '#60A5FA' : '#34D399';
+  const st = stylePool[spotIdx % stylePool.length];
   const ch = new Director({
     id: `__team_${m.id}`,
-    name: short(label, 24),
+    memberId: m.id,
+    gender,
+    slotIdx: spotIdx,
+    name: label,
     homeSpot,
     dot,
-    styleCfg: st,
+    styleCfg: { ...st, gender, look: 'pixar' },
   });
+  if (DOOR_IN && !reduceMotion) {
+    ch.pos.set(DOOR_IN.x, DOOR_IN.z);
+    ch.spot = DOOR_IN;
+    ch.face = ch.faceTarget = DOOR_IN.face || 0;
+    ch.pose = 'stand';
+    ch.station = 'arriving';
+    ch.hurry = true;
+    ch.goHome();
+  }
+  ch.waveUntil = (state.sim || 0) + 3.0;
+  ch.say('agent', `${label} đã vào văn phòng!`);
   teamChibis.set(m.id, ch);
   npcs.push(ch);
   return ch;
@@ -112,7 +161,9 @@ export function ensureTeamMemberChibi(m, idxHint = 0) {
 
 export function syncTeamMembers(members = []) {
   if (!PRO || !Director) return;
-  const list = (Array.isArray(members) ? members : []).filter((m) => m && m.online !== false);
+  const list = (Array.isArray(members) ? members : []).filter(
+    (m) => m && m.id && m.id !== 'director' && !m.isDirector && !m.isLocal && m.online !== false && m.status !== 'pending' && m.status !== 'rejected',
+  );
   const keepIds = new Set(list.map((m) => m.id));
   for (const [id, ch] of teamChibis) {
     if (!keepIds.has(id)) {
@@ -175,9 +226,13 @@ export function setup() {
   paperDocM = mat('#FBFBF7', { roughness: 0.9 });
   Director = class Director extends Worker {
     constructor(opts = {}) {
-      const styleCfg = opts.styleCfg || { shirt: '#2B3A55', hair: '#3A3A40', style: 'plain', acc: 'glasses', outfit: 'suit', pants: '#262B35', shoes: '#1B1B1E' };
+      const styleCfg = opts.styleCfg || { gender: 'male', shirt: '#2B3A55', hair: '#3A3A40', style: 'plain', acc: 'glasses', outfit: 'suit', pants: '#262B35', shoes: '#1B1B1E' };
       super({ name: opts.name || tr('people.director'), ...styleCfg }, { id: opts.id || '__director' });
+      this.memberId = opts.memberId || null;
+      this.gender = opts.gender || styleCfg.gender || 'male';
+      this.slotIdx = opts.slotIdx ?? 0;
       this.homeData = opts.homeSpot || DIR_HOME;
+      this.label = this.tagEl;
       this.tagEl.classList.add('tag--boss'); this.tagDot.style.background = opts.dot || '#E2B04A';
       this.queue = []; this.job = null; this.given = 0; this.reports = 0; this.nextIdle = 0;
       this.pos.set(this.homeData.x, this.homeData.z); this.spot = this.homeData; this.face = this.faceTarget = this.homeData.face || 0; this.pose = 'sit'; this.station = 'home'; this.anim = 'type';
@@ -228,7 +283,7 @@ export function setup() {
       const j = this.job; if (!j) return;
       const w = workers.get(j.sess);
       if (!w || w.leaving) { this.job = null; this.paper.visible = false; return; }
-      const near = w.phase !== 'walk' && !w.wcBusy && Math.hypot(w.pos.x - this.pos.x, w.pos.y - this.pos.y) < 1.7;
+      const near = state.showSessionChibis !== false && w.phase !== 'walk' && !w.wcBusy && Math.hypot(w.pos.x - this.pos.x, w.pos.y - this.pos.y) < 1.7;
       j.stage = 'hand'; j.w = w; j.drop = !near && j.to.desk != null;
       const who = short(dn(sessions.get(j.sess)), 22), what = state.streamer ? tr('people.newTask') : short(j.text, 44);
       const holdDur = this.queue.length > 0 ? 0.45 : near ? (reduceMotion ? 0.65 : 0.85) : 0.65;
@@ -242,7 +297,15 @@ export function setup() {
       }
       sfx.play('task');
     }
-    update(dt, t) { super.update(dt, t); }
+    update(dt, t) {
+      super.update(dt, t);
+      if (this.memberId && this.root?.visible) {
+        if (this.tagObj) this.tagObj.visible = true;
+        if (this.tagEl) this.tagEl.hidden = false;
+        if (this.label) this.label.hidden = false;
+      }
+    }
+    step(dt, t) { this.update(dt, t); }
     tick() {
       if (this.phase === 'walk') return;
       const j = this.job;
@@ -276,4 +339,7 @@ export function setup() {
   };
   director = PRO ? new Director() : null;
   if (director) npcs.push(director);
+  if (Array.isArray(state.teamMembers) && state.teamMembers.length) {
+    syncTeamMembers(state.teamMembers);
+  }
 }

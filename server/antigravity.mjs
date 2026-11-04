@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { redact } from './redact.mjs';
 
@@ -453,11 +453,36 @@ export function readAgySummariesDb(brainDir = agyBrainDir()) {
 }
 
 // Antigravity serializes tool call argument values in transcript.jsonl with extra quotes (e.g. "\"e:\\\\WorkOffice\"").
-export function cleanVal(v) {
+export function cleanVal(v, depth = 0) {
+  if (depth > 6 || v == null) return v;
+  if (Array.isArray(v)) {
+    return v.map((item) => cleanVal(item, depth + 1));
+  }
+  if (typeof v === 'object') {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) {
+      out[k] = cleanVal(val, depth + 1);
+    }
+    return out;
+  }
   if (typeof v !== 'string') return v;
   const s = v.trim();
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith('[') && s.endsWith(']')) || (s.startsWith('{') && s.endsWith('}'))) {
-    try { return JSON.parse(s); } catch { return s.replace(/^"|"$/g, ''); }
+  if (!s) return v;
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith('[') && s.endsWith(']')) ||
+    (s.startsWith('{') && s.endsWith('}'))
+  ) {
+    try {
+      const parsed = JSON.parse(s);
+      if (parsed !== v) return cleanVal(parsed, depth + 1);
+    } catch {
+      if (s.startsWith('"') && s.endsWith('"')) {
+        const unquoted = s.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        if (unquoted !== s) return cleanVal(unquoted, depth + 1);
+        return unquoted;
+      }
+    }
   }
   if (s === 'true') return true;
   if (s === 'false') return false;
@@ -467,12 +492,19 @@ export function cleanVal(v) {
 
 export function cleanArgs(args) {
   let obj = args;
-  if (typeof obj === 'string') {
-    try { obj = JSON.parse(obj); } catch { return {}; }
+  let guard = 0;
+  while (typeof obj === 'string' && guard++ < 4) {
+    const s = obj.trim();
+    if (!s) return {};
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return {};
+    }
   }
-  if (!obj || typeof obj !== 'object') return {};
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
   const out = {};
-  for (const [k, v] of Object.entries(obj)) out[k] = cleanVal(v);
+  for (const [k, v] of Object.entries(obj)) out[k] = cleanVal(v, 0);
   return out;
 }
 
@@ -571,19 +603,34 @@ export function normalizeAgyTool(rawName = '', rawArgs = {}) {
         },
       };
     }
-    case 'ask_question': {
-      const qs = Array.isArray(a.questions) ? a.questions : [];
-      const normQuestions = qs.map((q) => ({
-        question: String(q?.question || ''),
-        header: String(q?.header || ''),
-        multi: Boolean(q?.is_multi_select ?? q?.multiSelect ?? q?.multi),
-        multiSelect: Boolean(q?.is_multi_select ?? q?.multiSelect ?? q?.multi),
-        options: (Array.isArray(q?.options) ? q.options : []).map((o) => (
-          typeof o === 'string'
-            ? { label: o, description: '' }
-            : { label: String(o?.label || ''), description: String(o?.description || '') }
-        )),
-      }));
+    case 'ask_question':
+    case 'AskUserQuestion': {
+      const qs = Array.isArray(a.questions)
+        ? a.questions
+        : Array.isArray(a.Questions)
+          ? a.Questions
+          : (a.question || a.Question)
+            ? [a]
+            : [];
+      const normQuestions = qs.map((rawQ) => {
+        const q = typeof rawQ === 'string' ? cleanVal(rawQ) : rawQ;
+        if (typeof q === 'string') {
+          return { question: q, header: '', multi: false, multiSelect: false, options: [] };
+        }
+        const optsRaw = Array.isArray(q?.options) ? q.options : (Array.isArray(q?.Options) ? q.Options : []);
+        return {
+          question: String(q?.question || q?.Question || q?.prompt || ''),
+          header: String(q?.header || q?.Header || ''),
+          multi: Boolean(q?.is_multi_select ?? q?.multiSelect ?? q?.multi),
+          multiSelect: Boolean(q?.is_multi_select ?? q?.multiSelect ?? q?.multi),
+          options: optsRaw.map((rawO) => {
+            const o = typeof rawO === 'string' ? cleanVal(rawO) : rawO;
+            return typeof o === 'string'
+              ? { label: o, description: '' }
+              : { label: String(o?.label || o?.Label || o?.value || ''), description: String(o?.description || o?.Description || '') };
+          }),
+        };
+      });
       return {
         tool_name: 'AskUserQuestion',
         name: 'AskUserQuestion',
@@ -845,8 +892,90 @@ function stepQuotaUnits5h(step) {
   return base + freshWeight + cacheWeight;
 }
 
-// Computes real-time Antigravity 5-hour quota, 7-day weekly quota, and Per-Project quota breakdown!
-export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = null) {
+let cachedAgyAccountEmail = '';
+let cachedAgyAccountEmailAt = 0;
+
+export function detectAgyAccountEmail() {
+  const now = Date.now();
+  if (cachedAgyAccountEmail && now - cachedAgyAccountEmailAt < 10 * 60_000) {
+    return cachedAgyAccountEmail;
+  }
+  const envEmail = String(process.env.OFFICE_AGY_EMAIL || '').trim();
+  if (envEmail && envEmail.includes('@')) {
+    cachedAgyAccountEmail = envEmail;
+    cachedAgyAccountEmailAt = now;
+    return envEmail;
+  }
+  const home = os.homedir();
+  const candFiles = [
+    path.join(home, '.gemini', 'google_accounts.json'),
+    path.join(home, '.gemini', 'accounts.json'),
+    path.join(home, '.gemini', 'oauth_creds.json'),
+  ];
+  for (const fp of candFiles) {
+    try {
+      if (!fs.existsSync(fp)) continue;
+      const raw = fs.readFileSync(fp, 'utf8');
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        if (typeof data.active === 'string' && data.active.includes('@')) {
+          cachedAgyAccountEmail = data.active.trim();
+          cachedAgyAccountEmailAt = now;
+          return cachedAgyAccountEmail;
+        }
+        if (typeof data.email === 'string' && data.email.includes('@')) {
+          cachedAgyAccountEmail = data.email.trim();
+          cachedAgyAccountEmailAt = now;
+          return cachedAgyAccountEmail;
+        }
+        if (Array.isArray(data.accounts)) {
+          const acc = data.accounts.find((a) => a && typeof a.email === 'string' && a.email.includes('@'));
+          if (acc) {
+            cachedAgyAccountEmail = acc.email.trim();
+            cachedAgyAccountEmailAt = now;
+            return cachedAgyAccountEmail;
+          }
+        }
+        if (typeof data.id_token === 'string' && data.id_token.includes('.')) {
+          const parts = data.id_token.split('.');
+          if (parts[1]) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+            if (payload && typeof payload.email === 'string' && payload.email.includes('@')) {
+              cachedAgyAccountEmail = payload.email.trim();
+              cachedAgyAccountEmailAt = now;
+              return cachedAgyAccountEmail;
+            }
+          }
+        }
+      }
+      const emailMatch = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (emailMatch) {
+        cachedAgyAccountEmail = emailMatch[0];
+        cachedAgyAccountEmailAt = now;
+        return cachedAgyAccountEmail;
+      }
+    } catch { /* ignore */ }
+  }
+  try {
+    const gitEmail = execFileSync('git', ['config', '--global', 'user.email'], {
+      encoding: 'utf8',
+      timeout: 1500,
+      windowsHide: true,
+    }).trim();
+    if (gitEmail && gitEmail.includes('@')) {
+      cachedAgyAccountEmail = gitEmail;
+      cachedAgyAccountEmailAt = now;
+      return gitEmail;
+    }
+  } catch { /* ignore */ }
+  const fallback = `${process.env.USERNAME || process.env.USER || 'director'}@antigravity.local`;
+  cachedAgyAccountEmail = fallback;
+  cachedAgyAccountEmailAt = now;
+  return fallback;
+}
+
+// Computes real-time Antigravity 5-hour quota and 7-day weekly quota aggregated by Account Email!
+export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = null, accountEmail = '') {
   const now = Date.now();
   const fiveHoursMs = 5 * 3600_000;
   const sevenDaysMs = 7 * 86400_000;
@@ -1031,9 +1160,13 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
     }
   }
 
+  const resolvedEmail = (accountEmail && String(accountEmail).includes('@'))
+    ? String(accountEmail).trim()
+    : detectAgyAccountEmail();
+
   return {
     source: 'agy',
-    email: process.env.USER || process.env.USERNAME || 'Antigravity Local',
+    email: resolvedEmail,
     planName: 'Antigravity (Gemini Models)',
     billingCycle: `5g: còn ${Math.max(0, 100 - pct)}% · Tuần: còn ${Math.max(0, 100 - weekPct)}%`,
     pct,
@@ -1053,7 +1186,7 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
     extraPct: null,
     extraUsed: null,
     extraLimit: null,
-    projects,
+    projects: [],
   };
 }
 
@@ -1086,10 +1219,45 @@ export function createAntigravityWatcher({
   const subStates = new Map(); // subConvId -> { offset, mtimeMs, steps, parentId }
   const convStatCache = new Map(); // "${brain}|${convId}" -> { checkedAt, convDir, transcriptFile, st }
 
-  function parseStepLine(line, s, st, liveEvents, knownRoots, fallbackTs = Date.now()) {
+  function readFullStepToolCalls(convDir, stepIndex) {
+    if (!convDir || stepIndex === undefined || stepIndex === null) return null;
+    try {
+      const fullPath = path.join(convDir, '.system_generated', 'logs', 'transcript_full.jsonl');
+      if (!fs.existsSync(fullPath)) return null;
+      const stat = fs.statSync(fullPath);
+      const maxRead = Math.min(stat.size, 2 * 1024 * 1024);
+      const fd = fs.openSync(fullPath, 'r');
+      try {
+        const buf = Buffer.alloc(maxRead);
+        fs.readSync(fd, buf, 0, maxRead, Math.max(0, stat.size - maxRead));
+        const lines = buf.toString('utf8').split(/\r?\n/);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const ln = lines[i].trim();
+          if (!ln || !ln.includes('"PLANNER_RESPONSE"')) continue;
+          try {
+            const parsed = JSON.parse(ln);
+            if (parsed && parsed.step_index === stepIndex && Array.isArray(parsed.tool_calls)) {
+              return parsed.tool_calls;
+            }
+          } catch { /* ignore */ }
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  function parseStepLine(line, s, st, liveEvents, knownRoots, fallbackTs = Date.now(), convDir = '') {
     if (!line.trim()) return false;
     let j;
     try { j = JSON.parse(line); } catch { return false; }
+    if (j.type === 'PLANNER_RESPONSE' && Array.isArray(j.truncated_fields) && j.truncated_fields.includes('tool_calls') && convDir) {
+      const fullTools = readFullStepToolCalls(convDir, j.step_index);
+      if (Array.isArray(fullTools) && fullTools.length > 0) {
+        j.tool_calls = fullTools;
+      }
+    }
     const ts = j.created_at ? Date.parse(j.created_at) : (fallbackTs || Date.now());
     if (ts > (s.lastEventAt || 0)) s.lastEventAt = ts;
     const day = new Date(ts).toLocaleDateString('sv');
@@ -1140,7 +1308,10 @@ export function createAntigravityWatcher({
         st.deferredStopLabel = null;
         st.deferredStopAt = 0;
         st.lastSubStopAt = 0;
-        s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: st.model || 'Gemini 3.1 Pro' };
+        s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: s.preferredModelLabel || st.model || 'Gemini 3.1 Pro' };
+        if (s.preferredModelLabel || st.model) {
+          s.usage.model = s.preferredModelLabel || st.model || s.usage.model || 'Gemini 3.1 Pro';
+        }
         s.usage.prompts = (s.usage.prompts || 0) + 1;
         if (ts >= cutoff8d) {
           st.steps.push({ ts, kind: 'prompt', inp: 0, cr: 0, out: 0, cost: 0, acct: s.agyAccount || activeAcct });
@@ -1162,7 +1333,7 @@ export function createAntigravityWatcher({
         else if (tk === 'cmd') stepCmd++;
         else if (tk === 'web') stepWeb++;
       }
-      s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: st.model || 'Gemini 3.1 Pro' };
+      s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: s.preferredModelLabel || st.model || 'Gemini 3.1 Pro' };
       s.usage.steps = (s.usage.steps || 0) + 1;
       if (inp || cr || out) {
         const stepCost = (inp * 1.25 + cr * 0.3 + out * 10) / 1e6;
@@ -1170,7 +1341,7 @@ export function createAntigravityWatcher({
         s.usage.cr = (s.usage.cr || 0) + cr;
         s.usage.out += out;
         s.usage.ctx = inp + cr + out;
-        s.usage.model = st.model || s.usage.model || 'Gemini 3.1 Pro';
+        s.usage.model = s.preferredModelLabel || st.model || s.usage.model || 'Gemini 3.1 Pro';
         s.usage.cost += stepCost;
         if (ts >= cutoff8d) {
           st.steps.push({ ts, kind: 'step', inp, cr, out, cost: stepCost, read: stepRead, edit: stepEdit, cmd: stepCmd, web: stepWeb, acct: s.agyAccount || activeAcct });
@@ -1333,6 +1504,18 @@ export function createAntigravityWatcher({
       }
     } else if (j.type === 'GENERIC') {
       st.lastStepType = 'GENERIC';
+      if (typeof j.content === 'string' && j.content.includes('You requested user feedback on this artifact')) {
+        const fbTs = ts || fallbackTs || Date.now();
+        if (!st.waitInfo && fbTs > (st.clearedWaitAt || 0)) {
+          st.lastFeedbackAt = fbTs;
+          st.waitInfo = {
+            kind: 'plan',
+            ts: fbTs,
+            filePath: convDir ? path.join(convDir, 'implementation_plan.md') : '',
+            summary: '',
+          };
+        }
+      }
     }
     if (st.steps.length > 600 && st.steps[0]?.ts < cutoff8d) {
       let drop = 0;
@@ -1652,7 +1835,7 @@ export function createAntigravityWatcher({
         offset: 0,
         mtimeMs: 0,
         transcriptFile,
-        model: 'Gemini 3.1 Pro',
+        model: '',
         firstPrompt: '',
         lastStepType: '',
         lastStepHasTools: false,
@@ -1695,7 +1878,7 @@ export function createAntigravityWatcher({
         if (rustTail && rustTail.ok) {
           st.offset = Number(rustTail.nextOffset) || st.offset;
           for (const line of rustTail.lines) {
-            if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs)) usageChanged = true;
+            if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs, convDir)) usageChanged = true;
           }
           handledByRust = true;
         }
@@ -1708,7 +1891,7 @@ export function createAntigravityWatcher({
             const headBuf = Buffer.alloc(262144);
             await fh.read(headBuf, 0, headBuf.length, 0);
             for (const line of headBuf.toString('utf8').split(/\r?\n/)) {
-              if (parseStepLine(line, s, st, null, knownRoots, fileStat.mtimeMs)) usageChanged = true;
+              if (parseStepLine(line, s, st, null, knownRoots, fileStat.mtimeMs, convDir)) usageChanged = true;
             }
             const tailLen = 4_000_000;
             const tailBuf = Buffer.alloc(tailLen);
@@ -1716,7 +1899,7 @@ export function createAntigravityWatcher({
             const tailLines = tailBuf.toString('utf8').split(/\r?\n/);
             tailLines.shift();
             for (const line of tailLines) {
-              if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs)) usageChanged = true;
+              if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs, convDir)) usageChanged = true;
             }
           } else {
             const buf = Buffer.alloc(readLen);
@@ -1726,7 +1909,7 @@ export function createAntigravityWatcher({
               st.offset += end + 1;
               const lines = buf.subarray(0, end).toString('utf8').split(/\r?\n/);
               for (const line of lines) {
-                if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs)) usageChanged = true;
+                if (parseStepLine(line, s, st, liveEvents, knownRoots, fileStat.mtimeMs, convDir)) usageChanged = true;
               }
             }
           }
@@ -1822,7 +2005,14 @@ export function createAntigravityWatcher({
     const ageMs = Date.now() - Math.max(fileStat.mtimeMs, s.lastEventAt || 0);
     const dbRunning = !isForceStopped && dbMeta && (dbMeta.status === 'CASCADE_RUN_STATUS_RUNNING' || dbMeta.notFullyIdle) && ageMs < 5 * 60_000;
     const hasWaitInfo = !isForceStopped && Boolean(st.waitInfo && (st.waitInfo.kind === 'ask' || st.waitInfo.kind === 'plan'));
-    const waitingFeedback = !isForceStopped && st.lastFeedbackAt > 0 && st.lastFeedbackAt > (st.clearedWaitAt || 0) && Date.now() - st.lastFeedbackAt < 12 * 3600_000 && st.lastStepType === 'PLANNER_RESPONSE' && (!st.lastStepHasTools || hasWaitInfo) && !dbRunning;
+    const waitingFeedback = !isForceStopped
+      && st.lastFeedbackAt > 0
+      && st.lastFeedbackAt > (st.clearedWaitAt || 0)
+      && Date.now() - st.lastFeedbackAt < 12 * 3600_000
+      && (
+        (hasWaitInfo && (st.lastStepType === 'PLANNER_RESPONSE' || st.lastStepType === 'GENERIC'))
+        || (st.lastStepType === 'PLANNER_RESPONSE' && !st.lastStepHasTools && !dbRunning)
+      );
     const activeTurn = !isForceStopped && (dbRunning || ((st.lastStepType === 'USER_INPUT' || st.lastStepType === 'GENERIC' || st.lastStepHasTools) && ageMs < 90_000));
     const hasRunningSubs = !isForceStopped && Boolean(hasActiveSubCandidate || Object.keys(s.subs || {}).length > 0 || (st.pendingSubCalls || 0) > 0);
 

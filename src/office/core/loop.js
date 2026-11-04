@@ -60,10 +60,16 @@ const _camDelta = new THREE.Vector3(), _lastFocus = new THREE.Vector3(), _panFwd
 let camGliding = false;
 const panKeys = new Set();
 const activeWorkWalking = () => {
-  for (const w of workers.values()) if (w.phase === 'walk') return true;
-  for (const w of subs.values()) if (w.phase === 'walk') return true;
+  if (state.showSessionChibis !== false) {
+    for (const w of workers.values()) if (w.phase === 'walk') return true;
+    for (const w of subs.values()) if (w.phase === 'walk') return true;
+    if (leaving.size > 0) return true;
+  }
   if (director?.phase === 'walk') return true;
-  return leaving.size > 0 || flights.length > 0;
+  for (const w of npcs) {
+    if (w.phase === 'walk' && String(w.id || '').startsWith('__team_')) return true;
+  }
+  return flights.length > 0;
 };
 function frameGap(now) {
   if (SOFTWARE_GL) return 1000 / 5;
@@ -94,7 +100,7 @@ function updateWorld(o, force) {
   const ch = o.children;
   for (let i = 0; i < ch.length; i++) if (ch[i].matrixWorldAutoUpdate === true || force === true) updateWorld(ch[i], force);
 }
-function labelsIn(o) { const ch = o.children; for (let i = 0; i < ch.length; i++) { if (ch[i].isCSS2DObject) ch[i].updateWorldMatrix(true, false); if (ch[i].children.length) labelsIn(ch[i]); } }
+function labelsIn(o) { const ch = o.children; for (let i = 0; i < ch.length; i++) { if (ch[i].isCSS2DObject && ch[i].visible) ch[i].updateWorldMatrix(true, false); if (ch[i].children.length) labelsIn(ch[i]); } }
 let PR_STEPS;
 let prIdx = 0, prSlow = 0, prFast = 0, prHoldUntil = 0;
 function adaptResolution(gap, target, dt) {

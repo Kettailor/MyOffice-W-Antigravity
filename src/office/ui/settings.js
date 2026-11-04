@@ -3,7 +3,7 @@ import { state } from '../core/state.js';
 import { $, LAYOUT, PLANS, STATIC } from '../core/env.js';
 import { bubbleText } from './event-text.js';
 import { labels } from '../scene/renderer.js';
-import { npcs, subs, workers } from '../people/workers.js';
+import { applySessionChibisVisibility, npcs, subs, workers } from '../people/workers.js';
 import { isNightHour, night, setNight } from '../world/room-update.js';
 import { queueUi, renderFeed, toast } from './activity.js';
 import { renderChat, renderSessionHead, renderSubs, tab } from './session-drawer.js';
@@ -28,6 +28,7 @@ const setPref = (k, v) => {
 };
 
 export const DEFAULTS = {
+  sessionChibis: true,
   chibiNames: true,
   staffNames: true,
   subNames: true,
@@ -38,6 +39,8 @@ export const DEFAULTS = {
   railExpandIdle: true,
 };
 export const uiCfg = {
+  get sessionChibis() { return state.showSessionChibis ?? DEFAULTS.sessionChibis; },
+  set sessionChibis(v) { state.showSessionChibis = v; setPref('office-session-chibis', v ? 'on' : 'off'); applySessionChibisVisibility(); },
   get chibiNames() { return state.showChibiNames ?? DEFAULTS.chibiNames; },
   set chibiNames(v) { state.showChibiNames = v; },
   get staffNames() { return state.showStaffNames ?? DEFAULTS.staffNames; },
@@ -115,9 +118,14 @@ function setToggle(k, v) {
   if (k === 'stream') setStreamer(v);
   if (k === 'zones') { state.zonesOn = v; setPref('office-zones', v ? 'on' : 'off'); }
   if (k === 'teams') { state.teamsOn = v; setPref('office-teams', v ? 'on' : 'off'); updateTeamTags(); }
-  if (k === 'chibiNames') { state.showChibiNames = v; setPref('office-chibi-names', v ? 'on' : 'off'); }
-  if (k === 'staffNames') { state.showStaffNames = v; setPref('office-staff-names', v ? 'on' : 'off'); }
-  if (k === 'subNames') { state.showSubNames = v; setPref('office-sub-names', v ? 'on' : 'off'); }
+  if (k === 'sessionChibis') {
+    state.showSessionChibis = v;
+    setPref('office-session-chibis', v ? 'on' : 'off');
+    applySessionChibisVisibility();
+  }
+  if (k === 'chibiNames') { state.showChibiNames = v; setPref('office-chibi-names', v ? 'on' : 'off'); applySessionChibisVisibility(); }
+  if (k === 'staffNames') { state.showStaffNames = v; setPref('office-staff-names', v ? 'on' : 'off'); applySessionChibisVisibility(); }
+  if (k === 'subNames') { state.showSubNames = v; setPref('office-sub-names', v ? 'on' : 'off'); applySessionChibisVisibility(); }
   if (k === 'groupByFolder') { state.groupByFolder = v; setPref('office-group-folder', v ? 'on' : 'off'); queueUi(); }
   if (k === 'workSteps') {
     state.showWorkSteps = v;
@@ -148,6 +156,7 @@ export function syncToggles() {
     stream: state.streamer,
     zones: state.zonesOn,
     teams: state.teamsOn !== false,
+    sessionChibis: state.showSessionChibis !== false,
     chibiNames: state.showChibiNames !== false,
     staffNames: state.showStaffNames !== false,
     subNames: state.showSubNames !== false,
@@ -178,6 +187,7 @@ export function setChatNotify(mode) {
 export function setup() {
   /* ---------- appearance popover: backdrop, character look, time of day ---------- */
   state.teamsOn = getPref('office-teams') !== 'off';
+  state.showSessionChibis = getPref('office-session-chibis') !== 'off';
   state.showChibiNames = getPref('office-chibi-names') !== 'off';
   state.showStaffNames = getPref('office-staff-names') !== 'off';
   state.showSubNames = getPref('office-sub-names') !== 'off';
@@ -186,6 +196,7 @@ export function setup() {
   state.railShowPath = getPref('office-rail-path') !== 'off';
   state.railShowMetrics = getPref('office-rail-metrics') !== 'off';
   state.railExpandIdle = getPref('office-rail-expand-idle') !== 'off';
+  applySessionChibisVisibility();
   if (getPref('office-autocam') !== null) state.camAuto = getPref('office-autocam') !== 'off';
   if (getPref('office-perm') !== null) state.permOn = getPref('office-perm') !== 'off';
   if (getPref('office-zones') !== null) state.zonesOn = getPref('office-zones') === 'on';

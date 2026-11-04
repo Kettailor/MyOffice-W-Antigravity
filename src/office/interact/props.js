@@ -165,7 +165,7 @@ export function buildProps() {
   if (PRO) {
     prop('trophies', { name: tr('props.trophies.name'), hint: tr('props.trophies.hint'), place: 'director', meshes: meshesOf(PRO_FX.trophyCab) });
     prop('director', { name: tr('props.director.name'), hint: tr('props.director.hint'), place: 'director', meshes: [...meshesOf(PRO_FX.execDesk), ...meshesIn([-7.1, 0, -8.05, -3.5, 1.3, -7.4])] });
-    prop('coDirector', { name: tr('props.director.name'), hint: tr('props.director.hint'), place: 'coDirector', meshes: meshesIn([-2.5, 0, -7.95, 2.9, 2.3, -3.1]) });
+    prop('coDirector', { name: tr('props.director.name'), hint: tr('props.director.hint'), place: 'director', meshes: meshesIn([-2.5, 0, -7.95, 2.9, 2.3, -3.1]) });
     prop('wc', { name: tr('props.wc.name'), hint: tr('props.wc.hint'), place: 'wc', meshes: meshesIn([-8.0, 0, 5.4, -6.7, 2.0, 8.1]) });
     prop('foosball', { name: tr('props.foosball.name'), hint: tr('props.foosball.hint'), place: 'lounge', meshes: meshesOf(PRO_FX.foosball), bounce: PRO_FX.foosball, act: foosClick });
     if (PRO_FX.receptionPhone) prop('phone', { name: tr('props.phone.name'), hint: tr('props.phone.hint'), meshes: meshesOf(PRO_FX.receptionPhone), bounce: PRO_FX.receptionPhone, act: () => { sfx.play('beep'); toast(tr('props.phone.hint')); } });

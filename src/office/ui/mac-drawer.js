@@ -68,9 +68,20 @@ function limitRow(rows, w) {
 function renderOthers(rows) {
   for (const o of state.limits?.others || []) {
     const ws = liveOf(o), acc = [o.account?.plan, o.account?.org].filter(Boolean).join(' · ');
-    const block = acctBlock(o.name, o.label, acc, o.until); rows.append(block);
+    const oEmail = o.email || o.account?.email || o.label || o.name || '';
+    const block = acctBlock(o.name, oEmail, acc, o.until, oEmail); rows.append(block);
     if (!ws.length) { block.append(el('small', 'plan-other-note', o.note || tr('mac.plan.loading'))); continue; }
     for (const w of ws) limitRow(block, w);
+    if (o.stats) {
+      const st = o.stats;
+      block.append(
+        el(
+          'small',
+          'plan-reset',
+          `⚡ 5 giờ qua: ${st.prompts5h ?? 0} lần giao việc · ${st.steps5h ?? 0} bước Agent · Tuần: ${st.prompts7d ?? 0} việc (${st.steps7d ?? 0} bước)`,
+        ),
+      );
+    }
     // Anthropic not answering for now (it limits how often it's asked): the last reading stays, with when it was read
     if (o.note) block.append(el('small', 'plan-other-note', o.at ? tr('mac.plan.readAt', { time: hhmm(o.at), note: o.note }) : o.note));
   }
@@ -135,16 +146,17 @@ async function saveOrder(rows, slug) {
    (POST /api/accounts/use) and moving on by itself when one runs out (POST /api/accounts/auto) are the server's: it
    starts the editors' Claude Code through a script of its own (server/index.mjs, which account new sessions start on). */
 let editing = null;   // the account whose name is being typed ('' = the main one): the card isn't redrawn under it
-export const acctName = (slug, label) => label || (slug ? tr('mac.plan.otherAccount', { name: slug }) : tr('mac.plan.mainAccount'));
+export const acctName = (slug, label, email = '') => email || label || (slug ? tr('mac.plan.otherAccount', { name: slug }) : tr('mac.plan.mainAccount'));
 const switchOn = () => { const a = state.limits?.auto; return !!(a?.on || a?.pick); };
 // an account's heading and its limits, together: hovering any of it shows its actions
-function acctBlock(slug, label, info, until) { const b = el('div', 'acct-block'); b.dataset.slug = slug; b.append(acctHead(slug, label, info, until)); return b; }
-function acctHead(slug, label, info, until) {
+function acctBlock(slug, label, info, until, email = '') { const b = el('div', 'acct-block'); b.dataset.slug = slug; b.append(acctHead(slug, label, info, until, email)); return b; }
+function acctHead(slug, label, info, until, email = '') {
   const a = state.limits?.auto || {}, inUse = switchOn() ? (a.now || '') === slug : !slug;
   const head = el('div', `plan-other acct-head${inUse ? ' is-live' : ''}`), order = a.order || [];
+  const displayEmail = email || label || acctName(slug, label);
   const name = el('button', 'acct-name'); name.type = 'button'; name.title = tr('mac.plan.rename');
-  name.append(el('b', null, acctName(slug, label)), icon('pencil', 'ic acct-pen'));
-  name.addEventListener('click', () => renameIn(head, slug, label));
+  name.append(el('b', null, `📧 ${displayEmail}`), el('span', 'acct-pen', '✏️'));
+  name.addEventListener('click', () => renameIn(head, slug, email || label));
   const end = el('span', 'acct-end');
   if (!inUse) {
     const use = el('button', 'acct-use', tr('mac.plan.use')); use.type = 'button'; use.title = tr('mac.plan.useTitle', { name: acctName(slug, label) });
@@ -199,15 +211,15 @@ function acctHead(slug, label, info, until) {
 function renameIn(head, slug, label) {
   editing = slug; head.classList.add('is-editing');
   const f = el('form', 'acct-rename'), inp = el('input'), plain = acctName(slug, '');
-  inp.maxLength = 24; inp.value = acctName(slug, label); inp.placeholder = plain; inp.autocomplete = 'off'; inp.setAttribute('aria-label', tr('mac.plan.rename'));
+  inp.maxLength = 64; inp.value = acctName(slug, label); inp.placeholder = 'Nhập địa chỉ Email tài khoản (VD: name@gmail.com)'; inp.autocomplete = 'off'; inp.setAttribute('aria-label', tr('mac.plan.rename'));
   let done = false;
   const finish = (save) => {
     if (done) return; done = true; editing = null;
     const v = inp.value.trim() === plain ? '' : inp.value.trim();   // (its own name again: no name of the user's)
     if (save && v !== (label || '')) {
       const o = slug ? state.limits?.others?.find((x) => x.name === slug) : state.limits;   // (at once; the server sends the card again)
-      if (o) o.label = v;
-      post('/api/accounts/rename', { name: slug, label: v }).then((r) => { if (!r.ok) toast(tr('mac.plan.renameFailed')); });
+      if (o) { o.label = v; o.email = v; }
+      post('/api/accounts/rename', { name: slug, label: v, email: v }).then((r) => { if (!r.ok) toast(tr('mac.plan.renameFailed')); });
     }
     renderLimits();
   };
@@ -381,101 +393,56 @@ function renderAdd() {
 export function renderLimits() {
   const scopedAssistant = isAssistantRestricted() || !!state.limits?.scopedToAssistant;
   if (isAssistantRestricted() && $('btn-mac')) { $('btn-mac').hidden = true; drM.hidden = true; }
-  const ws = liveWindows(), box = $('plan-card'), others = scopedAssistant ? [] : (state.limits?.others || []), projects = state.limits?.projects || [], none = scopedAssistant ? !projects.length : (!ws.length && !others.length && !projects.length);
+  const ws = liveWindows(), box = $('plan-card'), others = scopedAssistant ? [] : (state.limits?.others || []), none = !ws.length && !others.length;
   box.classList.toggle('is-empty', none);
-  { // the pill shows the tightest limit (5 hours, the week, and active project quota), coloured by how close it is
-    const pill = $('btn-plan'), top = scopedAssistant ? (projects.find((p) => p.busy) || projects[0] || null) : tightest(ws);
+  { // the pill shows the total account quota percentage (5h), coloured by how close it is
+    const pill = $('btn-plan'), top = tightest(ws), w5 = ws.find((w) => w.key === 'session' || w.key === '5h') || top;
     pill.hidden = false;
-    const activeProj = projects.find((p) => p.busy) || projects[0] || null;
-    if (scopedAssistant) {
-      const actUsed = activeProj ? Math.round(activeProj.pct || 0) : 0;
-      const actLeft = Math.max(0, 100 - actUsed);
-      $('plan-mini').textContent = activeProj ? `📁 ${activeProj.name} · Còn ${actLeft}% (${actUsed}%)` : '📁 Dự án được phép';
-      $('plan-bar').style.width = `${activeProj ? Math.min(100, Math.max(2, activeProj.pct)) : 0}%`;
-      pill.dataset.level = activeProj ? limitLevel(activeProj.pct) : 'normal';
-      pill.title = projects.length
-        ? `Quota gói Antigravity các dự án được phép: ${projects.map((p) => { const u = Math.round(p.pct || 0); return `${p.name}: Còn ${Math.max(0, 100 - u)}% (${u}% đã dùng)`; }).join(', ')}`
-        : 'Quota gói Antigravity dự án được phép';
-    } else {
-      const topUsed = top ? Math.round(top.pct || 0) : 0;
-      const topLeft = Math.max(0, 100 - topUsed);
-      const actUsed = activeProj ? Math.round(activeProj.pct || 0) : 0;
-      const actLeft = Math.max(0, 100 - actUsed);
-      const projTag = activeProj ? ` · ${activeProj.name}: Còn ${actLeft}% (${actUsed}%)` : '';
-      const more = others.map((o) => { const t = tightest(liveOf(o)); if (!t) return ''; const u = Math.round(t.pct || 0); return ` · ${o.label || o.name}: Còn ${Math.max(0, 100 - u)}% (${u}%)`; }).join('');
-      $('plan-mini').textContent = (top ? `${top.key === 'session' ? tr('mac.plan.fiveHour') : top.label}: Còn ${topLeft}% (${topUsed}%)${projTag}` : state.limitsNote ? tr('mac.plan.unread') : tr('mac.plan.reading')) + more;
-      $('plan-bar').style.width = `${top ? Math.min(100, Math.max(2, top.pct)) : 0}%`;
-      pill.dataset.level = top ? limitLevel(top.pct) : 'normal';
-      const projSummary = projects.length ? ` · Dự án: ${projects.map((p) => { const u = Math.round(p.pct || 0); return `${p.name}: Còn ${Math.max(0, 100 - u)}% (${u}%)`; }).join(', ')}` : '';
-      pill.title = top ? tr('mac.plan.pillTitle', { text: `${ws.map((w) => { const u = Math.round(w.pct || 0); return `${w.label}: Còn ${Math.max(0, 100 - u)}% (${u}% đã dùng)`; }).join(' · ')}${projSummary}${top.resetsAt ? ` · ${tr('mac.plan.labelResets', { label: top.label, when: resetText(top.resetsAt) })}` : ''}` }) : state.limitsNote || tr('mac.plan.title');
-    }
+    const w5Pct = w5 ? Math.round(w5.pct || 0) : 0;
+    const w5Left = Math.max(0, 100 - w5Pct);
+    const more = others.map((o) => {
+      const ows = liveOf(o);
+      const t = ows.find((w) => w.key === 'session' || w.key === '5h') || tightest(ows);
+      if (!t) return '';
+      const u = Math.round(t.pct || 0);
+      return ` · ${o.email || o.label || o.name}: 5h ${u}%`;
+    }).join('');
+    $('plan-mini').textContent = (w5 ? `5h ${w5Pct}% (Còn ${w5Left}%)` : state.limitsNote ? tr('mac.plan.unread') : tr('mac.plan.reading')) + more;
+    $('plan-bar').style.width = `${top ? Math.min(100, Math.max(2, top.pct)) : 0}%`;
+    pill.dataset.level = top ? limitLevel(top.pct) : 'normal';
+    pill.title = top ? tr('mac.plan.pillTitle', { text: `${ws.map((w) => { const u = Math.round(w.pct || 0); return `${w.label}: Còn ${Math.max(0, 100 - u)}% (${u}% đã dùng)`; }).join(' · ')}${top.resetsAt ? ` · ${tr('mac.plan.labelResets', { label: top.label, when: resetText(top.resetsAt) })}` : ''}` }) : state.limitsNote || tr('mac.plan.title');
   }
   const acc = state.limits?.account, accText = acc ? [acc.plan, acc.org].filter(Boolean).join(' · ') : '';
   $('plan-acct').hidden = true;   // (the plan sits in the main account's heading)
   if (adding.step === 'idle') renderAdd();
-  if (none) { $('plan-at').textContent = ''; $('plan-empty').textContent = scopedAssistant ? 'Chưa có dự án nào được cấp quyền hoặc dự án chưa phát sinh lượt dùng.' : (state.limitsNote || tr('mac.plan.loading')); return; }
+  if (none) { $('plan-at').textContent = ''; $('plan-empty').textContent = state.limitsNote || tr('mac.plan.loading'); return; }
   $('plan-at').textContent = state.limits.at ? (Date.now() - state.limits.at < 60e3 ? tr('mac.plan.justUpdated') : tr('time.ago', { time: fmtAgo((Date.now() - state.limits.at) / 1000) })) : '';
   if (editing !== null || dragging) return;   // (a name being typed, an account being dragged: drawn again after)
   const rows = $('plan-rows'); rows.replaceChildren();
-  if (!scopedAssistant) {
-    const mainRows = acctBlock('', state.limits.label, accText, state.limits.until); rows.append(mainRows);
-    if (!ws.length) mainRows.append(el('small', 'plan-other-note', state.limitsNote || tr('mac.plan.loading')));
-    for (const w of ws) limitRow(mainRows, w);
-    if (state.limits?.stats) {
-      const st = state.limits.stats;
-      mainRows.append(
-        el(
-          'small',
-          'plan-reset',
-          `⚡ 5 giờ qua: ${st.prompts5h ?? 0} lần giao việc · ${st.steps5h ?? 0} bước Agent · Tuần: ${st.prompts7d ?? 0} việc (${st.steps7d ?? 0} bước)`,
-        ),
-      );
-    }
-    // no week over all models: org plans (Team / Enterprise) don't have one; a personal plan that shows none is still being read
-    if (ws.length && !ws.some((w) => w.key === 'weekly')) {
-      const org = ORG_PLANS.has(acc?.plan), m = el('span', 'hl-m plan-none');
-      m.append(el('span', null, tr('mac.plan.week')), el('span', 'plan-none-t', org ? tr('mac.plan.noneOnPlan', { plan: acc.plan }) : tr('mac.plan.unread')), el('em', null, '–'));
-      m.title = org ? tr('mac.plan.orgNoWeek') : tr('mac.plan.personalWeekSoon');
-      mainRows.append(m, el('small', 'plan-reset', ''));
-    }
-  }
-  // Per-project quota breakdown (Quota theo từng Dự án / Workspace)
-  if (projects.length) {
-    const projBox = el('div', 'acct-block');
-    if (!scopedAssistant) {
-      projBox.style.marginTop = '8px';
-      projBox.style.paddingTop = '8px';
-      projBox.style.borderTop = '1px solid rgba(255,255,255,0.08)';
-    }
-    const head = el('div', 'plan-other acct-head');
-    head.append(
-      el('b', null, scopedAssistant ? '📁 Quota gói Antigravity dự án được phép' : '📁 Quota theo Dự án (Workspace)'),
-      el('span', 'acct-meta', `${projects.length} dự án`),
-    );
-    projBox.append(head);
-    for (const p of projects) {
-      const pUsed = Math.round(p.pct || 0);
-      const pLeft = Math.max(0, 100 - pUsed);
-      const m = el('span', 'hl-m');
-      const bar = el('span', 'hl-bar');
-      const fill = el('b', limitLevel(p.pct));
-      fill.style.width = `${Math.min(100, Math.max(2, p.pct || p.weekPct || 1))}%`;
-      bar.append(fill);
-      const labelEl = el('span', null, `${p.busy ? '🟢 ' : ''}${p.name}`);
-      labelEl.title = p.dir;
-      m.append(labelEl, bar, el('em', null, `Còn ${pLeft}% (${pUsed}%)`));
-      const sub = el(
+  const mainEmail = state.limits?.email || state.limits?.account?.email || state.limits?.label || '';
+  const mainRows = acctBlock('', mainEmail, accText, state.limits.until, mainEmail); rows.append(mainRows);
+  if (!ws.length) mainRows.append(el('small', 'plan-other-note', state.limitsNote || tr('mac.plan.loading')));
+  for (const w of ws) limitRow(mainRows, w);
+  if (state.limits?.stats) {
+    const st = state.limits.stats;
+    mainRows.append(
+      el(
         'small',
         'plan-reset',
-        `5g: ${p.prompts5h} việc · ${p.steps5h} bước · Tổng: ${p.promptsTotal} việc (${p.stepsTotal} bước) · Ngữ cảnh ${Math.round((p.ctx || 0) / 1000)}k tok`,
-      );
-      projBox.append(m, sub);
-    }
-    rows.append(projBox);
+        `⚡ 5 giờ qua: ${st.prompts5h ?? 0} lần giao việc · ${st.steps5h ?? 0} bước Agent · Tuần: ${st.prompts7d ?? 0} việc (${st.steps7d ?? 0} bước)`,
+      ),
+    );
+  }
+  // no week over all models: org plans (Team / Enterprise) don't have one; a personal plan that shows none is still being read
+  if (ws.length && !ws.some((w) => w.key === 'weekly')) {
+    const org = ORG_PLANS.has(acc?.plan), m = el('span', 'hl-m plan-none');
+    m.append(el('span', null, tr('mac.plan.week')), el('span', 'plan-none-t', org ? tr('mac.plan.noneOnPlan', { plan: acc.plan }) : tr('mac.plan.unread')), el('em', null, '–'));
+    m.title = org ? tr('mac.plan.orgNoWeek') : tr('mac.plan.personalWeekSoon');
+    mainRows.append(m, el('small', 'plan-reset', ''));
   }
   if (!scopedAssistant) renderOthers(rows);
   if (adding.step === 'login' && others.some((o) => o.name === adding.data?.name)) { adding.step = 'done'; renderAdd(); }
-  for (const w of [...ws, ...others.flatMap((o) => liveOf(o).map((x) => ({ ...x, key: `${o.name}:${x.key}`, label: `${o.name} · ${x.label}` })))]) {
+  for (const w of [...ws, ...others.flatMap((o) => liveOf(o).map((x) => ({ ...x, key: `${o.name}:${x.key}`, label: `${o.email || o.label || o.name} · ${x.label}` })))]) {
     if (w.pct < 80) continue;
     const key = `${w.key}:${w.resetsAt}:${w.pct >= 95 ? 95 : 80}`;
     if (limitWarned.has(key)) continue;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createAccessManager } from '../../server/access.mjs';
+import { createAccessManager, normalizeGender } from '../../server/access.mjs';
 
 test('AccessManager: session permissions (stop, edit, delete) across connected roles and global toggles', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-office-access-test-'));
@@ -64,3 +64,92 @@ test('AccessManager: session permissions (stop, edit, delete) across connected r
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('AccessManager: stores and updates gender, canEditFiles, and updateSelfProfile', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-office-access-profile-'));
+  try {
+    const access = createAccessManager({ dataDir: tmpDir });
+
+    assert.equal(normalizeGender('female'), 'female');
+    assert.equal(normalizeGender('male'), 'male');
+    assert.equal(normalizeGender('unknown'), 'male');
+
+    // 1. Director device defaults to canEditFiles=true and normalizes gender
+    const vp = access.createDirectorDeviceMember({
+      name: 'Phó Giám đốc Linh',
+      gender: 'female',
+      ip: '100.64.0.11',
+      ua: 'Safari · iOS',
+    });
+    assert.equal(vp.gender, 'female');
+    assert.equal(vp.canEditFiles, true);
+
+    // 2. Remote assistant defaults to canEditFiles=false and gender='male' when unspecified
+    const assistReq = {
+      socket: { remoteAddress: '100.64.0.42' },
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0' },
+    };
+    const pending = access.createOrUpdateRequest(assistReq, {
+      name: 'Minh Tuấn',
+      role: 'Trợ lý Giám đốc',
+    });
+    assert.equal(pending.gender, 'male');
+    assert.equal(pending.canEditFiles, false);
+
+    // 3. Approving member can grant canEditFiles and update gender
+    const approved = access.approveMember(pending.id, {
+      gender: 'female',
+      canEditFiles: true,
+      allowedWorkspaces: ['E:\\WorkOffice'],
+    });
+    assert.equal(approved.gender, 'female');
+    assert.equal(approved.canEditFiles, true);
+    assert.equal(approved.rawCanEditFiles, true);
+
+    // 4. updateMember can toggle canEditFiles and gender
+    const toggled = access.updateMember(pending.id, {
+      gender: 'male',
+      canEditFiles: false,
+    });
+    assert.equal(toggled.gender, 'male');
+    assert.equal(toggled.canEditFiles, false);
+
+    // 5. updateSelfProfile updates name & gender by member id, object, or request cookie
+    const selfById = access.updateSelfProfile(pending.id, {
+      name: 'Minh Tuấn (PM)',
+      gender: 'female',
+    });
+    assert.ok(selfById);
+    assert.equal(selfById.name, 'Minh Tuấn (PM)');
+    assert.equal(selfById.gender, 'female');
+
+    const cookieHeader = access.memberCookieHeader(pending).split(';')[0];
+    const reqWithCookie = {
+      socket: { remoteAddress: '100.64.0.42' },
+      headers: { cookie: cookieHeader },
+    };
+    const selfByReq = access.updateSelfProfile(reqWithCookie, {
+      name: 'Minh Tuấn Official',
+      gender: 'male',
+    });
+    assert.ok(selfByReq);
+    assert.equal(selfByReq.name, 'Minh Tuấn Official');
+    assert.equal(selfByReq.gender, 'male');
+
+    // Wait for async save() queue to flush to disk and verify reloaded state
+    let reloadedAssist = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((r) => setTimeout(r, 40));
+      const reloaded = createAccessManager({ dataDir: tmpDir });
+      reloadedAssist = reloaded.pubState().members.find((m) => m.id === pending.id);
+      if (reloadedAssist?.name === 'Minh Tuấn Official') break;
+    }
+    assert.ok(reloadedAssist);
+    assert.equal(reloadedAssist.name, 'Minh Tuấn Official');
+    assert.equal(reloadedAssist.gender, 'male');
+    assert.equal(reloadedAssist.canEditFiles, false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
