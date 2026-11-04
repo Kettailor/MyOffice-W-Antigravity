@@ -84,7 +84,7 @@ export const MCP_PRESETS = [
     name: 'filesystem',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', './'],
+    args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd().replace(/\\/g, '/')],
     envKeys: [],
     headerKeys: [],
     title: 'Filesystem MCP',
@@ -724,13 +724,72 @@ export function createMcpManager({ dataDir, geminiRootDir } = {}) {
     return { ok: true, name: cleanName };
   }
 
+  function inferServerNameFromConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') return 'custom-mcp';
+    if (typeof cfg.name === 'string' && cfg.name.trim()) {
+      return cfg.name.trim();
+    }
+    const rawArgs = Array.isArray(cfg.args)
+      ? cfg.args.map((a) => String(a || '').trim())
+      : typeof cfg.args === 'string'
+        ? cfg.args.trim().split(/\s+/)
+        : [];
+    for (let i = rawArgs.length - 1; i >= 0; i--) {
+      const arg = rawArgs[i];
+      if (!arg || arg.startsWith('-')) continue;
+      // Strip version suffix like @latest or @1.2.3 (keep scoped @org/pkg)
+      const withoutVer = arg.replace(/(?<=.)@(?:latest|\d[\w.-]*)$/i, '');
+      const base = withoutVer.includes('\\') || (withoutVer.includes('/') && !withoutVer.startsWith('@'))
+        ? path.basename(withoutVer).replace(/\.(?:exe|cmd|bat|ps1|js|mjs|cjs|py)$/i, '')
+        : withoutVer;
+      const cleaned = base.replace(/[^a-zA-Z0-9._/@-]+/g, '-').replace(/^-+|-+$/g, '');
+      if (cleaned && !/^(y|yes|run|start|serve|stdio|mcp)$/i.test(cleaned)) {
+        return cleaned;
+      }
+    }
+    const rawUrl = String(cfg.serverUrl || cfg.url || '').trim();
+    if (rawUrl) {
+      try {
+        const u = new URL(rawUrl);
+        const hostPart = u.hostname.split('.')[0];
+        if (hostPart && hostPart !== 'www' && hostPart !== 'api' && hostPart !== 'mcp') {
+          return hostPart;
+        }
+        const seg = u.pathname.split('/').filter(Boolean).pop();
+        if (seg) return seg.replace(/[^a-zA-Z0-9._-]+/g, '-');
+      } catch { /* ignore */ }
+    }
+    const rawCmd = String(cfg.command || '').trim();
+    if (rawCmd) {
+      const cmdBase = path.basename(rawCmd).replace(/\.(?:exe|cmd|bat|ps1|js|mjs|cjs|py)$/i, '');
+      if (cmdBase && !/^(npx|npm|pnpm|yarn|uvx|uv|node|python|python3|docker|cmd|powershell)$/i.test(cmdBase)) {
+        return cmdBase;
+      }
+    }
+    return 'custom-mcp';
+  }
+
+  function parseLooseMcpJson(rawStr) {
+    let s = String(rawStr || '').trim();
+    if (!s) throw new Error('Nội dung JSON trống.');
+    // Remove trailing comma at the end of snippet
+    s = s.replace(/,\s*$/, '');
+    // If user pasted `"server-name": { ... }` without outer `{}`
+    if (/^"[^"]+"\s*:\s*\{[\s\S]*\}$/.test(s)) {
+      s = `{${s}}`;
+    }
+    // Remove trailing commas before closing `}` or `]`
+    const cleaned = s.replace(/,\s*([}\]])/g, '$1');
+    return JSON.parse(cleaned);
+  }
+
   function importJson(rawJson, { enabled = true } = {}) {
     let parsed = rawJson;
     if (typeof rawJson === 'string') {
       const trimmed = rawJson.trim();
       if (!trimmed) return { ok: false, message: 'Nội dung JSON trống.' };
       try {
-        parsed = JSON.parse(trimmed);
+        parsed = parseLooseMcpJson(trimmed);
       } catch (err) {
         return { ok: false, message: `JSON không hợp lệ: ${err?.message || err}` };
       }
@@ -742,9 +801,14 @@ export function createMcpManager({ dataDir, geminiRootDir } = {}) {
     let entriesMap = null;
     if (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers)) {
       entriesMap = parsed.mcpServers;
-    } else if (typeof parsed.name === 'string' && (parsed.command || parsed.serverUrl || parsed.url)) {
-      const { name, ...rest } = parsed;
-      entriesMap = { [name]: rest };
+    } else if (
+      typeof parsed.command === 'string' ||
+      typeof parsed.serverUrl === 'string' ||
+      typeof parsed.url === 'string'
+    ) {
+      const inferredName = inferServerNameFromConfig(parsed);
+      const { name: _omitName, ...rest } = parsed;
+      entriesMap = { [inferredName]: rest };
     } else {
       entriesMap = parsed;
     }
@@ -752,7 +816,7 @@ export function createMcpManager({ dataDir, geminiRootDir } = {}) {
     const imported = [];
     for (const [rawName, cfg] of Object.entries(entriesMap)) {
       const name = String(rawName || '').trim();
-      if (!name || !cfg || typeof cfg !== 'object') continue;
+      if (!name || !cfg || typeof cfg !== 'object' || Array.isArray(cfg)) continue;
       const r = upsertServer({
         name,
         command: cfg.command,
@@ -876,17 +940,22 @@ export function createMcpManager({ dataDir, geminiRootDir } = {}) {
       let stdoutBuf = '';
       let stderrBuf = '';
       let child = null;
+      let timer = null;
 
       const finish = (result) => {
         if (settled) return;
         settled = true;
+        if (timer) clearTimeout(timer);
         try {
+          child?.stdin?.destroy();
+          child?.stdout?.destroy();
+          child?.stderr?.destroy();
           if (child && !child.killed) child.kill();
         } catch { /* ignore */ }
         resolve(result);
       };
 
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         const latencyMs = Math.max(1, Date.now() - t0);
         if (child && child.exitCode === null) {
           finish({

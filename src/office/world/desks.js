@@ -14,7 +14,8 @@ import { offTexture } from './screens.js';
    Pro: three team pods of four, two desks facing two across a fabric screen (the front pair turned round).
    Headquarters: the same three pods, then two pods in each department room of the wing. */
 const DESK_COLS = [-2.1, 0, 2.1], DESK_ROWS = [-1.6, 0.4, 2.4];
-export let PODS = [[0.0, 0.4], [5.2, 0.4], [2.6, 5.2], ...(HQ ? DEPTS.flatMap((d) => [[-2.6, 0], [2.6, 0]].map(([dx, dz]) => [d.cx + dx, d.cz + dz])) : [])];
+const CORE_PODS = [[0.0, 0.25], [5.0, 0.25], [0.0, 4.15], [5.0, 4.15]];
+export let PODS = [...CORE_PODS, ...(HQ ? DEPTS.flatMap((d) => [[-2.6, 0], [2.6, 0]].map(([dx, dz]) => [d.cx + dx, d.cz + dz])) : [])];
 export let TEAM_SIZE;
 export let TEAMS;
 // teams sit by unit: on the company floor a unit is one pod (4 desks); in a department room it is the room's two pods
@@ -72,12 +73,12 @@ export function syncKit(i) {
 }
 
 export function setup() {
-  PODS = PRO ? [[0.0, 0.4], [5.2, 0.4], [2.6, 5.2], ...(HQ ? DEPTS.flatMap((d) => [[-2.6, 0], [2.6, 0]].map(([dx, dz]) => [d.cx + dx, d.cz + dz])) : [])] : []; TEAM_SIZE = PRO ? 4 : DESK_COLS.length;
+  PODS = PRO ? [...CORE_PODS, ...(HQ ? DEPTS.flatMap((d) => [[-2.6, 0], [2.6, 0]].map(([dx, dz]) => [d.cx + dx, d.cz + dz])) : [])] : []; TEAM_SIZE = PRO ? 4 : DESK_COLS.length;
   const range = (a, n) => Array.from({ length: n }, (_, k) => a + k);
   // a team's area: half a pod on the open floor (the two desks face to face on its left or right side: a project with
   // more people takes the other half too), a whole department room on the headquarters' wing, a row in the small office
-  UNITS = PRO ? [...[0, 1, 2].flatMap((p) => [[0, 2], [1, 3]].map((h) => ({ desks: h.map((k) => p * 4 + k), dept: -1, pod: p, side: h[0] ? 1 : -1 }))),
-    ...(HQ ? DEPTS.map((_, i) => ({ desks: range(12 + i * 8, 8), dept: i })) : [])]
+  UNITS = PRO ? [...CORE_PODS.flatMap((_, p) => [[0, 2], [1, 3]].map((h) => ({ desks: h.map((k) => p * 4 + k), dept: -1, pod: p, side: h[0] ? 1 : -1 }))),
+    ...(HQ ? DEPTS.map((_, i) => ({ desks: range(CORE_PODS.length * 4 + i * 8, 8), dept: i })) : [])]
     : DESK_ROWS.map((_, r) => ({ desks: range(r * DESK_COLS.length, DESK_COLS.length), dept: -1 }));
   unitOfDesk = []; UNITS.forEach((u, i) => { for (const d of u.desks) unitOfDesk[d] = i; });
   TEAMS = UNITS.length;

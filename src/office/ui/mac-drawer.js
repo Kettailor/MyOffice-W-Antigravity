@@ -44,8 +44,19 @@ const limitLevel = (pct) => (pct >= 95 ? 'critical' : pct >= 80 ? 'warn' : 'norm
 // 5 hours first, then the week over all models (personal plans), then each model's week, then anything else
 // (a model's week: the server labels it "Opus (week)" / "Opus (tuần)"; '7 ngày' is the label older servers saved)
 const WIN_ORDER = (w) => (w.key === 'session' ? 0 : w.key === 'weekly' ? 1 : /tuần|week/i.test(w.label) ? 2 : 3);
+const normalizeWindow = (w) => {
+  if (!w) return null;
+  const label = w.key === 'weekly' && w.label === '7 ngày' ? tr('mac.plan.week') : w.label;
+  if (w.resetsAt && w.resetsAt <= Date.now()) {
+    if (w.key === 'session' || w.key === 'weekly' || state.limits?.source === 'agy') {
+      return { ...w, label, pct: 0, resetsAt: null };
+    }
+    return null;
+  }
+  return { ...w, label };
+};
 export const liveWindows = () => (state.limits?.windows || [state.limits?.five && { ...state.limits.five, key: 'session', label: tr('mac.plan.fiveHour') }, state.limits?.seven && { ...state.limits.seven, key: 'weekly', label: tr('mac.plan.week') }].filter(Boolean))
-  .filter((w) => !w.resetsAt || w.resetsAt > Date.now()).map((w) => (w.key === 'weekly' && w.label === '7 ngày' ? { ...w, label: tr('mac.plan.week') } : w))
+  .map(normalizeWindow).filter(Boolean)
   .sort((a, b) => WIN_ORDER(a) - WIN_ORDER(b));
 const ORG_PLANS = new Set(['Team', 'Enterprise']);
 export function resetText(ts) {
@@ -54,15 +65,36 @@ export function resetText(ts) {
   const days = tr('mac.plan.weekdays', null, 'list');
   return tr('mac.plan.date', { day: days[d.getDay()], d: pad2(d.getDate()), m: pad2(d.getMonth() + 1), time: t });
 }
-const liveOf = (o) => (o.windows || []).filter((w) => !w.resetsAt || w.resetsAt > Date.now()).sort((a, b) => WIN_ORDER(a) - WIN_ORDER(b));
+const liveOf = (o) => (o.windows || []).map(normalizeWindow).filter(Boolean).sort((a, b) => WIN_ORDER(a) - WIN_ORDER(b));
 const tightest = (ws) => ws.reduce((a, w) => (!a || w.pct > a.pct ? w : a), null);
+function fmtRefreshIn(ts) {
+  if (!ts) return '';
+  const diffMs = Math.max(0, ts - Date.now());
+  const totalMins = Math.max(1, Math.round(diffMs / 60_000));
+  const days = Math.floor(totalMins / (24 * 60));
+  const hours = Math.floor((totalMins % (24 * 60)) / 60);
+  const mins = totalMins % 60;
+  if (days > 0) return `${days} ngày, ${hours} giờ`;
+  if (hours > 0) return `${hours} giờ, ${mins} phút`;
+  return `${mins} phút`;
+}
 function limitRow(rows, w) {
   const usedPct = Math.round(w.pct || 0);
   const leftPct = Math.max(0, 100 - usedPct);
   const m = el('span', 'hl-m'), bar = el('span', 'hl-bar'), fill = el('b', limitLevel(w.pct));
-  fill.style.width = `${Math.min(100, Math.max(1, w.pct))}%`; bar.append(fill);
-  m.append(el('span', null, w.label), bar, el('em', null, `Còn ${leftPct}% (${usedPct}%)`));
-  rows.append(m, el('small', 'plan-reset', w.resetsAt ? tr('mac.plan.resets', { when: resetText(w.resetsAt) }) : ''));
+  fill.style.width = `${Math.min(100, Math.max(2, leftPct))}%`; bar.append(fill);
+  m.append(el('span', null, `${w.label} còn lại`), bar, el('em', null, `${leftPct}% (đã dùng ${usedPct}%)`));
+  const refreshCountdown = w.resetsAt ? fmtRefreshIn(w.resetsAt) : '';
+  rows.append(
+    m,
+    el(
+      'small',
+      'plan-reset',
+      w.resetsAt
+        ? `Làm mới hoàn toàn sau ${refreshCountdown} (${resetText(w.resetsAt)})`
+        : '',
+    ),
+  );
 }
 // the other accounts on this Mac (their own config folders): a heading each, then their limits
 function renderOthers(rows) {
@@ -74,7 +106,14 @@ function renderOthers(rows) {
     for (const w of ws) limitRow(block, w);
     if (o.stats) {
       const st = o.stats;
+      const cg5 = st.claudeGptLeft5hPct ?? 100;
+      const cg7 = st.claudeGptLeftWeekPct ?? 100;
       block.append(
+        el(
+          'small',
+          'plan-reset',
+          `🤖 Claude & GPT models: Tuần còn ${cg7}% · 5 giờ còn ${cg5}%`,
+        ),
         el(
           'small',
           'plan-reset',
@@ -134,7 +173,8 @@ async function saveOrder(rows, slug) {
   if (state.limits?.auto) state.limits.auto.order = order;
   const r = await post('/api/accounts/order', { order });
   if (!r.ok) { toast(tr('mac.plan.useFailed')); return; }
-  if (state.limits) state.limits.auto = r;
+  if (r.limits) state.limits = r.limits;
+  else if (state.limits) state.limits.auto = r;
   renderLimits();
   $('plan-rows').querySelector(`.acct-block[data-slug="${CSS.escape(slug)}"] .acct-grip`)?.focus();
   const nameOf = (s) => acctName(s, s ? state.limits?.others?.find((o) => o.name === s)?.label : state.limits?.label);
@@ -219,7 +259,10 @@ function renameIn(head, slug, label) {
     if (save && v !== (label || '')) {
       const o = slug ? state.limits?.others?.find((x) => x.name === slug) : state.limits;   // (at once; the server sends the card again)
       if (o) { o.label = v; o.email = v; }
-      post('/api/accounts/rename', { name: slug, label: v, email: v }).then((r) => { if (!r.ok) toast(tr('mac.plan.renameFailed')); });
+      post('/api/accounts/rename', { name: slug, label: v, email: v }).then((r) => {
+        if (!r.ok) { toast(tr('mac.plan.renameFailed')); return; }
+        if (r.limits) { state.limits = r.limits; renderLimits(); }
+      });
     }
     renderLimits();
   };
@@ -242,7 +285,8 @@ async function useAccount(slug, label, btn) {
   btn.disabled = true;
   const r = await post('/api/accounts/use', { name: slug });
   if (!r.ok) { btn.disabled = false; toast(tr('mac.plan.useFailed')); return; }
-  if (state.limits) state.limits.auto = r;
+  if (r.limits) state.limits = r.limits;
+  else if (state.limits) state.limits.auto = r;
   renderLimits();
   toast(tr(r.editors?.length || !r.on && !r.pick ? 'mac.plan.usingNow' : 'mac.plan.usingTerminal', { name: acctName(slug, label) }), 7000);
 }
@@ -255,7 +299,8 @@ function autoRow() {
     sw.disabled = true;
     const r = await post('/api/accounts/auto', { on: !a.on });
     if (!r.ok) { sw.disabled = false; toast(tr('mac.plan.useFailed')); return; }
-    if (state.limits) state.limits.auto = r;
+    if (r.limits) state.limits = r.limits;
+    else if (state.limits) state.limits.auto = r;
     renderLimits();
     toast(tr(r.on ? 'mac.plan.autoNowOn' : 'mac.plan.autoNowOff'), 6000);
   });
@@ -334,7 +379,7 @@ function renderAdd() {
   }
   const card = el('div', 'pa-step');
   if (adding.step === 'name') {
-    const f = el('form', 'pa-form'), lab = el('label', null), inp = el('input'); inp.maxLength = 24; inp.placeholder = tr('mac.add.namePh'); inp.value = adding.name; inp.autocomplete = 'off';
+    const f = el('form', 'pa-form'), lab = el('label', null), inp = el('input'); inp.maxLength = 64; inp.placeholder = tr('mac.add.namePh'); inp.value = adding.name; inp.autocomplete = 'off';
     lab.append(el('span', null, tr('mac.add.nameLabel')), inp);
     const chips = el('div', 'pa-chips');   // (a name in one click)
     for (const n of tr(isAgy ? 'mac.add.suggestAgy' : 'mac.add.suggest', null, 'list')) { const c = el('button', 'pa-chip', n); c.type = 'button'; c.addEventListener('click', () => { inp.value = n; inp.focus(); }); chips.append(c); }
@@ -391,26 +436,38 @@ function renderAdd() {
   box.replaceChildren(card);
 }
 export function renderLimits() {
-  const scopedAssistant = isAssistantRestricted() || !!state.limits?.scopedToAssistant;
-  if (isAssistantRestricted() && $('btn-mac')) { $('btn-mac').hidden = true; drM.hidden = true; }
+  const restricted = isAssistantRestricted();
+  const scopedAssistant = restricted || !!state.limits?.scopedToAssistant;
+  const btnMac = $('btn-mac');
+  if (btnMac && btnMac.hidden !== restricted) btnMac.hidden = restricted;
+  if (restricted && drM) drM.hidden = true;
   const ws = liveWindows(), box = $('plan-card'), others = scopedAssistant ? [] : (state.limits?.others || []), none = !ws.length && !others.length;
   box.classList.toggle('is-empty', none);
-  { // the pill shows the total account quota percentage (5h), coloured by how close it is
-    const pill = $('btn-plan'), top = tightest(ws), w5 = ws.find((w) => w.key === 'session' || w.key === '5h') || top;
+  { // the pill shows the active account's quota percentage (5h), coloured by how close it is
+    const pill = $('btn-plan');
+    const activeSlug = switchOn() ? (state.limits?.auto?.now || '') : '';
+    const activeOther = activeSlug ? others.find((o) => o.name === activeSlug) : null;
+    const activeWs = activeOther ? liveOf(activeOther) : ws;
+    const top = tightest(activeWs), w5 = activeWs.find((w) => w.key === 'session' || w.key === '5h') || top;
+    const w7 = activeWs.find((w) => w.key === 'weekly' || w.key === '7d');
     pill.hidden = false;
     const w5Pct = w5 ? Math.round(w5.pct || 0) : 0;
     const w5Left = Math.max(0, 100 - w5Pct);
-    const more = others.map((o) => {
-      const ows = liveOf(o);
-      const t = ows.find((w) => w.key === 'session' || w.key === '5h') || tightest(ows);
-      if (!t) return '';
-      const u = Math.round(t.pct || 0);
-      return ` · ${o.email || o.label || o.name}: 5h ${u}%`;
-    }).join('');
-    $('plan-mini').textContent = (w5 ? `5h ${w5Pct}% (Còn ${w5Left}%)` : state.limitsNote ? tr('mac.plan.unread') : tr('mac.plan.reading')) + more;
-    $('plan-bar').style.width = `${top ? Math.min(100, Math.max(2, top.pct)) : 0}%`;
+    const w7Left = w7 ? Math.max(0, 100 - Math.round(w7.pct || 0)) : null;
+    const activePrefix = activeOther ? `${activeOther.label || activeOther.email || activeOther.name} · ` : '';
+    const more = others
+      .filter((o) => o !== activeOther)
+      .map((o) => {
+        const ows = liveOf(o);
+        const t = ows.find((w) => w.key === 'session' || w.key === '5h') || tightest(ows);
+        if (!t) return '';
+        const left = Math.max(0, 100 - Math.round(t.pct || 0));
+        return ` · ${o.label || o.email || o.name}: 5h ${left}%`;
+      }).join('');
+    $('plan-mini').textContent = (w5 ? `${activePrefix}5h: ${w5Left}%${w7Left != null ? ` · Tuần: ${w7Left}%` : ''}` : state.limitsNote ? tr('mac.plan.unread') : tr('mac.plan.reading')) + more;
+    $('plan-bar').style.width = `${w5 ? Math.min(100, Math.max(2, w5Left)) : 0}%`;
     pill.dataset.level = top ? limitLevel(top.pct) : 'normal';
-    pill.title = top ? tr('mac.plan.pillTitle', { text: `${ws.map((w) => { const u = Math.round(w.pct || 0); return `${w.label}: Còn ${Math.max(0, 100 - u)}% (${u}% đã dùng)`; }).join(' · ')}${top.resetsAt ? ` · ${tr('mac.plan.labelResets', { label: top.label, when: resetText(top.resetsAt) })}` : ''}` }) : state.limitsNote || tr('mac.plan.title');
+    pill.title = top ? tr('mac.plan.pillTitle', { text: `${activeWs.map((w) => { const u = Math.round(w.pct || 0); return `${w.label}: Còn ${Math.max(0, 100 - u)}% (${u}% đã dùng)`; }).join(' · ')}${top.resetsAt ? ` · Làm mới sau ${fmtRefreshIn(top.resetsAt)}` : ''}` }) : state.limitsNote || tr('mac.plan.title');
   }
   const acc = state.limits?.account, accText = acc ? [acc.plan, acc.org].filter(Boolean).join(' · ') : '';
   $('plan-acct').hidden = true;   // (the plan sits in the main account's heading)
@@ -425,7 +482,14 @@ export function renderLimits() {
   for (const w of ws) limitRow(mainRows, w);
   if (state.limits?.stats) {
     const st = state.limits.stats;
+    const cg5 = st.claudeGptLeft5hPct ?? 100;
+    const cg7 = st.claudeGptLeftWeekPct ?? 100;
     mainRows.append(
+      el(
+        'small',
+        'plan-reset',
+        `🤖 Claude & GPT models: Tuần còn ${cg7}% · 5 giờ còn ${cg5}%`,
+      ),
       el(
         'small',
         'plan-reset',
@@ -453,10 +517,13 @@ export function renderLimits() {
 }
 let lastMacMiniSig = '';
 function renderMacButton() {
+  const restricted = isAssistantRestricted();
+  const btnMac = $('btn-mac');
+  if (btnMac && btnMac.hidden !== restricted) btnMac.hidden = restricted;
+  if (restricted) { if (drM) drM.hidden = true; return; }
   const s = macSnap; if (!s?.mem) return;
   const pct = Math.round((s.mem.used / s.mem.total) * 100);
   const lv = level(s);
-  const btnMac = $('btn-mac');
   if (btnMac.dataset.level !== lv) btnMac.dataset.level = lv;
   const gpuPct = s.gpu ? s.gpu.percent : null;
   const swapStr = gpuPct == null && s.mem.swapUsed > GB ? fmtBytes(s.mem.swapUsed) : '';

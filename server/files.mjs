@@ -114,7 +114,7 @@ export function resolveAllowedFilePath(rawPath, allowedWorkspaces, opts = {}) {
   } catch {
     return null;
   }
-  const allowLocalGemini = Boolean(isLocal || viewer?.isDirector);
+  const allowLocalGemini = Boolean(isLocal || viewer?.isDirector || viewer?.isDirectorDevice || viewer?.role === 'Phó Giám đốc');
   const baseName = path.basename(resolved);
   if (isSensitiveSegment(baseName, allowLocalGemini)) return null;
 
@@ -124,7 +124,7 @@ export function resolveAllowedFilePath(rawPath, allowedWorkspaces, opts = {}) {
     if (!wsPath) continue;
     const resolvedWs = path.resolve(wsPath);
     if (isInsideRoot(resolved, resolvedWs)) {
-      if (access && !isLocal && !viewer?.isDirector && !access.canSeeWorkspace(viewer, resolvedWs)) {
+      if (access && !isLocal && !viewer?.isDirector && !viewer?.isDirectorDevice && !access.canSeeWorkspace(viewer, resolvedWs)) {
         continue;
       }
       if (hasSensitivePathPart(resolved, resolvedWs, allowLocalGemini)) {
@@ -222,7 +222,7 @@ function extractZipText(entries, entryName) {
       return entry.data.toString('utf8');
     }
     if (entry.compression === 8) {
-      return zlib.inflateRawSync(entry.data).toString('utf8');
+      return zlib.inflateRawSync(entry.data, { maxOutputLength: 50 * 1024 * 1024 }).toString('utf8');
     }
   } catch {
     return null;
@@ -553,12 +553,13 @@ function sanitizeFileName(name) {
 
 export async function handleFilesApi(req, res, url, ctx) {
   const { viewer, isLocal, access, getWorkspaces, readJson, json } = ctx;
-  const canEditFiles = Boolean(isLocal || viewer?.isDirector || viewer?.canEditFiles);
+  const isFullDirector = Boolean(isLocal || viewer?.isDirector || viewer?.isDirectorDevice || viewer?.role === 'Phó Giám đốc');
+  const canEditFiles = Boolean(isFullDirector || viewer?.canEditFiles);
   const allWorkspaces = typeof getWorkspaces === 'function' ? getWorkspaces() : [];
   const allowedWorkspaces = allWorkspaces.filter((ws) => {
     const p = typeof ws === 'string' ? ws : ws?.path;
     if (!p) return false;
-    return isLocal || viewer?.isDirector || (access && access.canSeeWorkspace(viewer, p));
+    return isFullDirector || (access && access.canSeeWorkspace(viewer, p));
   });
 
   // 1. GET /api/files/workspaces
@@ -590,7 +591,7 @@ export async function handleFilesApi(req, res, url, ctx) {
         json(res, { ok: false, error: 'not_a_directory' }, 400);
         return true;
       }
-      const allowLocalGemini = Boolean(isLocal || viewer?.isDirector);
+      const allowLocalGemini = isFullDirector;
       const dirents = await fsp.readdir(resolved.fullPath, { withFileTypes: true });
       const items = [];
       for (const d of dirents) {
@@ -779,6 +780,7 @@ export async function handleFilesApi(req, res, url, ctx) {
         'Cache-Control': 'no-cache',
       });
       const stream = fs.createReadStream(resolved.fullPath);
+      res.on('close', () => stream.destroy());
       stream.on('error', () => {
         if (!res.headersSent) res.writeHead(500);
         res.end();
@@ -810,7 +812,7 @@ export async function handleFilesApi(req, res, url, ctx) {
     }
     const saved = [];
     try {
-      const allowLocalGemini = Boolean(isLocal || viewer?.isDirector);
+      const allowLocalGemini = isFullDirector;
       for (const f of files.slice(0, 25)) {
         const cleanName = sanitizeFileName(f?.name);
         if (!cleanName || isSensitiveSegment(cleanName, allowLocalGemini)) continue;
@@ -846,7 +848,7 @@ export async function handleFilesApi(req, res, url, ctx) {
       json(res, { ok: false, error: 'forbidden_or_invalid_path' }, 403);
       return true;
     }
-    const allowLocalGemini = Boolean(isLocal || viewer?.isDirector);
+    const allowLocalGemini = isFullDirector;
 
     try {
       if (action === 'mkdir') {

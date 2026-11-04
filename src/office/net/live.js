@@ -2,12 +2,13 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { state } from '../core/state.js';
-import { $, HQ, el, short } from '../core/env.js';
+import { $, HQ, el, nowMs, short } from '../core/env.js';
 import { scene } from '../scene/renderer.js';
-import { CHAIR_IDLE, DESKS, PODS, UNITS, chairs, unitOfDesk } from '../world/desks.js';
+import { CHAIR_IDLE, DESKS, PODS, UNITS, chairs, deskKit, unitOfDesk } from '../world/desks.js';
 import { canvasTex } from '../scene/blocks.js';
 import { DEPTS } from '../world/layout.js';
 import { ACCENTS, DEPT_SIGNS, DEPT_TITLE_KEYS } from '../world/pro/wing.js';
+import { DESK_SPOTS, releaseOverflowDesk } from '../people/navigation.js';
 import { PALETTE, addWorker, classifyDept, deptWorkers, dn, dropSub, hash, leaving, leavingIds, rekeySub, sessions, spawnSub, subs, workers } from '../people/workers.js';
 import { queueUi } from '../ui/activity.js';
 import { closeSession } from '../ui/session-drawer.js';
@@ -35,11 +36,44 @@ function remember(proj, u) {
   try { localStorage.setItem(AREAS_KEY, JSON.stringify(homes)); } catch { /* storage blocked */ }
 }
 const near = (a, b) => { const A = UNITS[a], B = UNITS[b]; return A.pod != null && B.pod != null ? Math.abs(A.pod - B.pod) * 2 + (A.side === B.side ? 0 : 1) : Math.abs(a - b); };
+function isSessionAway(s) {
+  if (!s) return true;
+  const w = workers.get(s.id);
+  if (w) return Boolean(w.away || w.homeBound);
+  if (s.status !== 'rest' || s.bg?.length) return false;
+  const last = Math.max(s.doneAt || 0, s.lastAt || 0);
+  return last > 0 && nowMs() - last >= 8 * 3600e3;
+}
+function reclaimAwayDesk(preferProj) {
+  let victimId = null, victimDesk = -1, oldestTs = Infinity;
+  for (const [id, d] of deskOf.entries()) {
+    if (d < 0 || d >= DESKS.length) continue;
+    const other = sessions.get(id);
+    if (!isSessionAway(other)) continue;
+    const ts = Math.max(other?.doneAt || 0, other?.lastAt || 0);
+    const sameProj = other && projOf(other) === preferProj;
+    const score = ts - (sameProj ? 365 * 24 * 3600e3 : 0);
+    if (score < oldestTs) { oldestTs = score; victimId = id; victimDesk = d; }
+  }
+  if (victimId == null || victimDesk < 0) return -1;
+  deskOf.set(victimId, -1);
+  const vs = sessions.get(victimId);
+  if (vs) vs.desk = -1;
+  if (deskKit[victimDesk] && deskKit[victimDesk].id === victimId) deskKit[victimDesk] = null;
+  if (chairs[victimDesk]) chairs[victimDesk].color.set(CHAIR_IDLE);
+  if (![...deskOf.values()].some((x) => x >= 0 && x < DESKS.length && unitOfDesk[x] === unitOfDesk[victimDesk])) {
+    rowTeam.delete(unitOfDesk[victimDesk]);
+  }
+  return victimDesk;
+}
 function proDesk(s) {
   if (deskOf.has(s.id)) {
     const d0 = deskOf.get(s.id);
-    if (d0 >= 0 && d0 < DESKS.length && unitOfDesk[d0] != null) rowTeam.set(unitOfDesk[d0], projOf(s));
-    return d0 >= 0 && d0 < DESKS.length ? d0 : -1;
+    if (d0 >= 0 && d0 < DESKS.length) {
+      if (unitOfDesk[d0] != null) rowTeam.set(unitOfDesk[d0], projOf(s));
+      return d0;
+    }
+    if (isSessionAway(s)) return -1;
   }
   const used = new Set(deskOf.values()), proj = projOf(s);
   for (const sw of subs.values()) if (sw.subDesk >= 0) used.add(sw.subDesk);
@@ -69,14 +103,37 @@ function proDesk(s) {
     if (deptUnit != null) d = claim(deptUnit);
   }
   if (d < 0) { let best = -1, most = 0; for (const u of all) if (free(u).length > most) { most = free(u).length; best = u; } if (best >= 0) d = free(best)[0]; }   // 4. every area taken: share
+  if ((d == null || d < 0 || d >= DESKS.length) && !isSessionAway(s)) {
+    const reclaimed = reclaimAwayDesk(proj);
+    if (reclaimed >= 0) {
+      d = reclaimed;
+      if (unitOfDesk[d] != null) { rowTeam.set(unitOfDesk[d], proj); remember(proj, unitOfDesk[d]); }
+    }
+  }
   if (d == null || d >= DESKS.length) d = -1;
   deskOf.set(s.id, d);
   return d;
+}
+export function rebalanceDesks() {
+  for (const s of sessions.values()) {
+    if ((deskOf.get(s.id) ?? -1) >= 0 || isSessionAway(s)) continue;
+    const d = proDesk(s);
+    if (d < 0) continue;
+    s.desk = d;
+    const w = workers.get(s.id);
+    if (w) {
+      releaseOverflowDesk(w);
+      if (!w.away && !w.leaving && !w.homeBound && !w.chore && !w.want && !w.reportingToBoss && DESK_SPOTS[d]) {
+        w.goTo(DESK_SPOTS[d], () => { w.station = 'desk'; w.unpack(d); });
+      }
+    }
+  }
 }
 export function freeDesk(id) {
   if (!deskOf.has(id)) return;
   const d = deskOf.get(id); deskOf.delete(id);
   if (d >= 0 && d < DESKS.length && ![...deskOf.values()].some((x) => x >= 0 && x < DESKS.length && unitOfDesk[x] === unitOfDesk[d])) rowTeam.delete(unitOfDesk[d]);
+  rebalanceDesks();
 }
 export let teamTags;
 export function updateTeamTags() {

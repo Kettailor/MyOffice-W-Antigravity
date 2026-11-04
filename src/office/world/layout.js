@@ -34,6 +34,6 @@ export function setup() {
     racks: [-7.55, -1.47, Math.PI / 2], tv: [-7.96, 3.35, -1.47, Math.PI / 2], neon: [0.2, 3.62, -7.97, 0], rocket: [13.15, 1.75],
     coffee: [10.6, -7.45, Math.PI], aq: [10.45, 8.45], arc: [13.4, 8.45], prn: [-3.15, 0.55],
     lost: [-5.2, -0.62, Math.PI / 2 - 0.5], lostTag: [-5.2, 0.85, -0.3], sofa: [11.0, 3.95, 2.2, Math.PI], gameTv: [11.0, 0.9],
-    bil: [12.85, 6.2], ktv: [-1.55, 7.35, Math.PI],   // the pool table (the lounge's right side) and the karaoke box (where the front phone booth was)
+    bil: [12.85, 6.2], ktv: [-0.85, 7.85, Math.PI],   // the pool table (the lounge's right side) and the karaoke box (south-west entertainment zone)
   };
 }

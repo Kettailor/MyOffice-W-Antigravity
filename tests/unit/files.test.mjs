@@ -166,6 +166,27 @@ test('Files API & resolveAllowedFilePath: workspace scoping, path traversal prot
     assert.equal(allowedWrite.status, 200);
     assert.equal(allowedWrite.payload.ok, true);
     assert.equal(fs.readFileSync(txtPath, 'utf8'), 'Nội dung đã cập nhật hợp lệ');
+
+    // 8. Deputy Director (isDirectorDevice: true / role: 'Phó Giám đốc') sees all workspaces and canEditFiles=true
+    const deputyViewer = {
+      id: 'deputy-1',
+      name: 'Phó Giám đốc',
+      role: 'Phó Giám đốc',
+      isDirectorDevice: true,
+      allowedWorkspaces: [],
+    };
+    const deputyWsRes = await callFilesApi('GET', '/api/files/workspaces', null, deputyViewer);
+    assert.equal(deputyWsRes.status, 200);
+    assert.equal(deputyWsRes.payload.canEditFiles, true);
+    assert.equal(deputyWsRes.payload.workspaces.length, 2);
+
+    const deputySecretResolved = resolveAllowedFilePath(secretFile, allWorkspaces, {
+      isLocal: false,
+      viewer: deputyViewer,
+      access,
+    });
+    assert.ok(deputySecretResolved, 'Deputy Director must have access to all workspaces');
+    assert.equal(deputySecretResolved.fullPath, path.resolve(secretFile));
   } finally {
     await fsp.rm(rootTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
   }

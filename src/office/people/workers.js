@@ -13,7 +13,7 @@ import { lift, liftArrive, liftCall } from '../world/entrance.js';
 import { BAGS, CHAIR_IDLE, COATS, chairs, deskKit } from '../world/desks.js';
 import { CLAUDE_MARK, PRO_FX } from '../world/pro/pieces.js';
 import { MEET_ROOMS, MEET_SEATS_BY_ROOM } from '../world/furniture/meeting.js';
-import { DESK_SPOTS, DOOR_IN, DOOR_OUT, NODES, STATIONS, allocate, faceTo, nearestNode, route } from './navigation.js';
+import { DESK_SPOTS, DOOR_IN, DOOR_OUT, NODES, STATIONS, allocate, allocateOverflowDesk, faceTo, nearestNode, releaseOverflowDesk, route } from './navigation.js';
 import { COFFEE_Q, hideMeal, joinCoffee, leaveCoffee, showMeal } from './breaks.js';
 import { blocked, fp } from '../interact/first-person.js';
 import { sfx } from '../audio/sfx.js';
@@ -518,15 +518,16 @@ function runSubBriefing(parent) {
 export function addWorker(s, walkIn) {
   const w = new Worker({ name: s.name, ...lookOf(s) }, { id: s.id });
   if (s.desk >= 0 && s.desk < chairs.length && chairs[s.desk]) chairs[s.desk].color.set(colorOf(s));
-  const home = w.homeSpot();
   if (w.lateRest(s)) {   // opened or discovered while idle >= 8h: stays at home, never rides the lift or calls HR
     w.away = true; w.station = 'away'; w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.spot = DOOR_OUT; w.dress(true); w.hush();
     awayHooks.change?.(w);
   } else if (walkIn) {
+    const home = w.homeSpot();
     w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT;
     w.dress(true); liftArrive(w); clockHooks.newcomer?.(w);
     viaClock('in', w, () => w.goTo(home, () => { w.station = 'desk'; w.anim = 'type'; if (home === DESK_SPOTS[s.desk]) w.unpack(s.desk); else w.dress(false); }));
   } else {
+    const home = w.homeSpot();
     if (home && 'by' in home) home.by = w;
     w.pos.set(home.x, home.z); w.spot = home; w.face = w.faceTarget = home.face; w.pose = home.sit ? 'sit' : 'stand'; w.station = 'desk';
     if (s.desk >= 0 && s.desk < DESK_SPOTS.length) deskKit[s.desk] = w;
@@ -996,7 +997,12 @@ export function setup() {
         return allocate('meeting', this);
       }
       const d = sessions.get(this.id)?.desk ?? -1;
-      return d >= 0 && d < DESK_SPOTS.length ? DESK_SPOTS[d] : allocate('meeting', this);
+      if (d >= 0 && d < DESK_SPOTS.length) {
+        releaseOverflowDesk(this);
+        return DESK_SPOTS[d];
+      }
+      if (this.away) return DOOR_OUT;
+      return allocateOverflowDesk(this);
     }
     goTo(spot, cb) {
       if (!spot) { cb && cb(); return; }
@@ -1356,7 +1362,7 @@ export function setup() {
     }
     goHomeNow() {
       this.homeBound = true; this.hush(); this.restAt = Infinity; this.station = 'out';
-      this.walkOut(() => { this.homeBound = false; this.away = true; this.station = 'away'; this.hush(); if (this.spot?.by === this) this.spot.by = null; awayHooks.change?.(this); });
+      this.walkOut(() => { this.homeBound = false; this.away = true; this.station = 'away'; this.hush(); releaseOverflowDesk(this); if (this.spot?.by === this) this.spot.by = null; awayHooks.change?.(this); });
     }
     comeBack() {
       this.away = false; this.station = 'arriving';
@@ -1382,6 +1388,7 @@ export function setup() {
       this.liftHold = false; this.liftWait = this.liftRide = null;
       if (this.queued) leaveCoffee(this);
       if (this.mealBox) hideMeal(this);
+      releaseOverflowDesk(this);
       if (this.spot && this.spot.by === this) this.spot.by = null;
       scene.remove(this.root);
       this.tagEl?.remove();

@@ -6,7 +6,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createPrefs } from '../server/prefs.mjs';
 import { serviceFor } from './service.mjs';
 
@@ -187,7 +187,7 @@ function start() {
   if (LAN) process.env.OFFICE_HOST = '0.0.0.0';
   ensureBuild();
   process.env.NODE_ENV ||= 'production';
-  return import(SERVER);
+  return import(pathToFileURL(SERVER).href);
 }
 const run = { start, install, uninstall, doctor, pin }[cmd];
 if (!run) { console.log(tr('cli.usage')); process.exit(1); }

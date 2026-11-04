@@ -879,34 +879,553 @@ export async function readAgyLog(transcriptFile, classify, viCache = {}, n = 120
   return deduped.slice(-n);
 }
 
+async function readSingleRichTranscriptEntries(transcriptFile) {
+  let fh;
+  try { fh = await fsp.open(transcriptFile, 'r'); } catch { return []; }
+  try {
+    const { size } = await fh.stat();
+    const len = Math.min(size, 8_000_000);
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split(/\r?\n/);
+    if (size > len) lines.shift();
+    const entries = [];
+    let needsFull = false;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let j;
+      try { j = JSON.parse(line); } catch { continue; }
+      if (Array.isArray(j.truncated_fields) && j.truncated_fields.length > 0 && j.step_index != null) {
+        needsFull = true;
+      }
+      entries.push(j);
+    }
+    if (needsFull) {
+      const fullPath = path.join(path.dirname(transcriptFile), 'transcript_full.jsonl');
+      let fullFh;
+      try {
+        fullFh = await fsp.open(fullPath, 'r');
+        const fullStat = await fullFh.stat();
+        const fullLen = Math.min(fullStat.size, 6_000_000);
+        const fullBuf = Buffer.alloc(fullLen);
+        await fullFh.read(fullBuf, 0, fullLen, fullStat.size - fullLen);
+        const fullLines = fullBuf.toString('utf8').split(/\r?\n/);
+        if (fullStat.size > fullLen) fullLines.shift();
+        const fullByStep = new Map();
+        for (const fl of fullLines) {
+          if (!fl.trim()) continue;
+          try {
+            const fj = JSON.parse(fl);
+            if (fj && fj.step_index != null) fullByStep.set(fj.step_index, fj);
+          } catch { /* ignore */ }
+        }
+        for (const j of entries) {
+          if (Array.isArray(j.truncated_fields) && j.truncated_fields.length > 0 && fullByStep.has(j.step_index)) {
+            const fj = fullByStep.get(j.step_index);
+            if (Array.isArray(fj.tool_calls) && fj.tool_calls.length > 0) j.tool_calls = fj.tool_calls;
+            if (typeof fj.thinking === 'string' && fj.thinking) j.thinking = fj.thinking;
+            if (typeof fj.content === 'string' && fj.content) j.content = fj.content;
+          }
+        }
+      } catch { /* ignore missing transcript_full.jsonl */ }
+      finally { await fullFh?.close(); }
+    }
+    return entries;
+  } finally {
+    await fh.close();
+  }
+}
+
+const richConvCache = new Map(); // convId -> { mtimeMs, size, sig, result }
+const artifactListCache = new Map(); // cacheKey -> { at, dirSig, result }
+const ARTIFACT_CACHE_TTL_MS = 2500;
+
+export function invalidateAgyArtifactCache(convId = '') {
+  if (!convId) {
+    artifactListCache.clear();
+    return;
+  }
+  const clean = String(convId).replace(/^a(?=[0-9a-f]{8}-)/i, '').trim();
+  for (const k of [...artifactListCache.keys()]) {
+    if (k === clean || k.startsWith(`${clean}|`)) {
+      artifactListCache.delete(k);
+    }
+  }
+}
+
+// Reads structured turns (user prompt, media, thinking steps, tool calls, file diffs, assistant markdown responses)
+// for the Antigravity IDE view (/antigravity).
+export async function readAgyRichConversation(convId, transcriptFile, classify, viCache = {}, registerImage = null) {
+  const cleanConvId = String(convId || '').replace(/^a(?=[0-9a-f]{8}-)/i, '').trim();
+  const files = [];
+  const seenFiles = new Set();
+  const statParts = [];
+  let primaryStat = null;
+  const addFile = (fp) => {
+    if (!fp || typeof fp !== 'string') return;
+    try {
+      const key = path.resolve(fp).toLowerCase();
+      if (seenFiles.has(key)) return;
+      const st = fs.statSync(fp);
+      if (st && st.isFile()) {
+        seenFiles.add(key);
+        files.push(fp);
+        if (!primaryStat) primaryStat = st;
+        statParts.push(`${key}:${st.mtimeMs}:${st.size}`);
+      }
+    } catch { /* ignore */ }
+  };
+  addFile(transcriptFile);
+  const inferredConvId = cleanConvId || (
+    transcriptFile && /[/\\]\.system_generated[/\\]logs[/\\]transcript\.jsonl$/i.test(transcriptFile)
+      ? path.basename(path.dirname(path.dirname(path.dirname(transcriptFile))))
+      : ''
+  );
+  if (inferredConvId && !process.env.OFFICE_AGY_BRAIN_DIR) {
+    for (const bDir of agyBrainDirs()) {
+      addFile(path.join(bDir, inferredConvId, '.system_generated', 'logs', 'transcript.jsonl'));
+    }
+  } else if (inferredConvId) {
+    addFile(path.join(agyBrainDir(), inferredConvId, '.system_generated', 'logs', 'transcript.jsonl'));
+  }
+  if (!files.length) return [];
+
+  const cacheKey = inferredConvId || path.resolve(files[0]).toLowerCase();
+  const statSig = statParts.join('|');
+  const cached = richConvCache.get(cacheKey);
+  if (
+    cached
+    && cached.sig === statSig
+    && cached.mtimeMs === (primaryStat?.mtimeMs || 0)
+    && cached.size === (primaryStat?.size || 0)
+  ) {
+    return cached.result;
+  }
+
+  let allEntries = [];
+  for (const f of files) {
+    const part = await readSingleRichTranscriptEntries(f);
+    allEntries.push(...part);
+  }
+  if (files.length > 1) {
+    allEntries.sort((a, b) => {
+      const ta = a.created_at ? Date.parse(a.created_at) || 0 : 0;
+      const tb = b.created_at ? Date.parse(b.created_at) || 0 : 0;
+      return ta - tb || ((a.step_index ?? 0) - (b.step_index ?? 0));
+    });
+    const deduped = [];
+    const seenSig = new Set();
+    for (const e of allEntries) {
+      const sig = `${e.type || ''}|${e.step_index ?? ''}|${e.created_at || ''}`;
+      if (seenSig.has(sig)) continue;
+      seenSig.add(sig);
+      deduped.push(e);
+    }
+    allEntries = deduped;
+  }
+
+  const turns = [];
+  let currentTurn = null;
+
+  for (const j of allEntries) {
+    const ts = j.created_at ? Date.parse(j.created_at) || 0 : 0;
+    const stepIndex = j.step_index;
+    if (j.type === 'USER_INPUT') {
+      const req = extractUserRequest(j.content || '');
+      const rawMedia = Array.isArray(j.media) ? j.media : [];
+      if (!req && !rawMedia.length) continue;
+      const media = rawMedia.map((m, idx) => {
+        const uri = m?.uri || '';
+        const imgId = registerImage && uri ? registerImage(uri) : '';
+        return {
+          mime: m?.mime_type || 'image/png',
+          url: imgId ? `/api/image?id=${encodeURIComponent(imgId)}` : '',
+          name: path.basename(uri || `image-${idx + 1}.png`),
+        };
+      }).filter((m) => m.url);
+      currentTurn = {
+        id: `turn-${stepIndex || turns.length}`,
+        userText: redact(req),
+        ts,
+        media,
+        steps: [],
+        responses: [],
+        filesChanged: [],
+        workDurationMs: 0,
+        lastTs: ts,
+      };
+      turns.push(currentTurn);
+    } else if (j.type === 'PLANNER_RESPONSE') {
+      if (!currentTurn) {
+        currentTurn = {
+          id: `turn-${stepIndex || turns.length}`,
+          userText: '',
+          ts,
+          media: [],
+          steps: [],
+          responses: [],
+          filesChanged: [],
+          workDurationMs: 0,
+          lastTs: ts,
+        };
+        turns.push(currentTurn);
+      }
+      if (ts > 0) {
+        if (!currentTurn.ts) currentTurn.ts = ts;
+        currentTurn.lastTs = Math.max(currentTurn.lastTs || 0, ts);
+        currentTurn.workDurationMs = Math.max(0, currentTurn.lastTs - currentTurn.ts);
+      }
+      if (typeof j.thinking === 'string' && j.thinking.trim()) {
+        currentTurn.steps.push({
+          kind: 'thinking',
+          text: clip(redact(j.thinking.trim()), 4000),
+          ts,
+        });
+      }
+      if (Array.isArray(j.tool_calls)) {
+        for (const tc of j.tool_calls) {
+          if (!tc?.name) continue;
+          const norm = normalizeAgyTool(tc.name, tc.args);
+          const k = classify ? classify(norm.tool_name, norm.tool_input) : { type: 'other', label: norm.tool_name };
+          const rawFp = norm.tool_input?.file_path || norm.tool_input?.Path || '';
+          const fp = rawFp && rawFp !== 'file' ? String(rawFp) : '';
+          currentTurn.steps.push({
+            kind: 'tool',
+            toolName: tc.name,
+            type: k.type,
+            label: (k.tr && viCache[k.label]) || k.label,
+            desc: k.desc ? (viCache[k.desc] || k.desc) : '',
+            file: fp,
+            ts,
+          });
+          if ((norm.tool_name === 'Edit' || norm.tool_name === 'Write') && fp) {
+            const a = cleanArgs(tc.args);
+            let added = 0;
+            let removed = 0;
+            if (norm.tool_name === 'Write') {
+              const contentStr = String(a.Content ?? a.CodeContent ?? a.content ?? '');
+              added = contentStr ? contentStr.split(/\r?\n/).length : 1;
+              removed = 0;
+            } else {
+              const oldStr = String(a.Target ?? a.old_string ?? a.TargetContent ?? '');
+              const newStr = String(a.Replacement ?? a.new_string ?? a.ReplacementContent ?? '');
+              if (oldStr || newStr) {
+                removed = oldStr ? oldStr.split(/\r?\n/).length : 0;
+                added = newStr ? newStr.split(/\r?\n/).length : 0;
+              } else if (Array.isArray(a.ReplacementChunks)) {
+                for (const ch of a.ReplacementChunks) {
+                  const t = String(ch?.TargetContent ?? '');
+                  const r = String(ch?.ReplacementContent ?? '');
+                  if (t) removed += t.split(/\r?\n/).length;
+                  if (r) added += r.split(/\r?\n/).length;
+                }
+              } else {
+                added = 1;
+                removed = 1;
+              }
+            }
+            const existing = currentTurn.filesChanged.find((f) => f.path === fp);
+            if (existing) {
+              existing.added += added;
+              existing.removed += removed;
+            } else {
+              currentTurn.filesChanged.push({
+                path: fp,
+                name: path.basename(fp),
+                added,
+                removed,
+              });
+            }
+          }
+        }
+      }
+      if (typeof j.content === 'string' && j.content.trim()) {
+        currentTurn.responses.push({
+          text: clip(redact(j.content.trim()), 32000),
+          ts,
+        });
+      }
+    }
+  }
+
+  const result = turns.slice(-60);
+  richConvCache.set(cacheKey, {
+    mtimeMs: primaryStat?.mtimeMs || 0,
+    size: primaryStat?.size || 0,
+    sig: statSig,
+    result,
+  });
+  capMap(richConvCache, 30, 22);
+  return result;
+}
+
+function formatArtifactNameAsTitle(filename = '') {
+  return String(filename || '')
+    .replace(/\.md$/i, '')
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((w) => (w.length <= 2 && /^(ui|ai|id|db|os|qa)$/i.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(' ');
+}
+
+async function readMdArtifactEntry(dirPath, fileName, knownStat = null) {
+  const fullPath = path.join(dirPath, fileName);
+  const st = knownStat || await fsp.stat(fullPath).catch(() => null);
+  if (!st || !st.isFile()) return null;
+  let content = '';
+  const fh = await fsp.open(fullPath, 'r').catch(() => null);
+  if (!fh) return null;
+  try {
+    const readLen = Math.min(st.size, 256 * 1024);
+    const buf = Buffer.alloc(readLen);
+    await fh.read(buf, 0, readLen, 0);
+    content = buf.toString('utf8');
+  } finally {
+    await fh.close();
+  }
+  let summary = '';
+  let mtimeMs = st.mtimeMs || 0;
+  try {
+    const metaRaw = await fsp.readFile(`${fullPath}.metadata.json`, 'utf8');
+    const meta = JSON.parse(metaRaw);
+    if (typeof meta?.summary === 'string') summary = meta.summary.trim();
+    if (meta?.updatedAt) {
+      const parsedAt = Date.parse(meta.updatedAt);
+      if (parsedAt > mtimeMs) mtimeMs = parsedAt;
+    }
+  } catch { /* optional metadata file */ }
+  const headingMatch = /^#\s+(.+)$/m.exec(content);
+  const rawHeading = headingMatch
+    ? headingMatch[1].replace(/[*`~]/g, '').trim()
+    : '';
+  const title = clip(redact(oneLine(rawHeading || formatArtifactNameAsTitle(fileName))), 120);
+  return {
+    name: fileName,
+    title: title || fileName,
+    summary: summary ? clip(redact(oneLine(summary)), 280) : '',
+    mtimeMs,
+    size: st.size,
+    content: redact(content),
+  };
+}
+
+// Reads markdown artifacts (custom blueprints, implementation_plan.md, task.md, walkthrough.md) for a conversation.
+export async function readAgyBrainArtifacts(convId, workspaceDir = '') {
+  const cleanConvId = String(convId || '').replace(/^a(?=[0-9a-f]{8}-)/i, '').trim();
+  const cacheKey = `${cleanConvId || '__default__'}|${workspaceDir || ''}`;
+  const now = Date.now();
+  const brainDirs = agyBrainDirs();
+
+  // Compute a fast signature of .md files inside the target convDir (if any) so direct edits invalidate cache immediately
+  const convDirsWithMd = [];
+  const sigParts = [];
+  if (cleanConvId) {
+    for (const bDir of brainDirs) {
+      const cDir = path.join(bDir, cleanConvId);
+      let names = [];
+      try { names = await fsp.readdir(cDir); } catch { continue; }
+      const mdFiles = [];
+      for (const name of names) {
+        if (!name.toLowerCase().endsWith('.md') || name.startsWith('.')) continue;
+        const st = await fsp.stat(path.join(cDir, name)).catch(() => null);
+        if (st && st.isFile()) {
+          mdFiles.push({ name, st });
+          sigParts.push(`${cDir}:${name}:${st.mtimeMs}:${st.size}`);
+        }
+      }
+      if (mdFiles.length > 0) {
+        convDirsWithMd.push({ cDir, mdFiles });
+      }
+    }
+  }
+  const dirSig = sigParts.join('|');
+  const cached = artifactListCache.get(cacheKey);
+  if (cached && now - cached.at < ARTIFACT_CACHE_TTL_MS && cached.dirSig === dirSig) {
+    return cached.result;
+  }
+
+  const byName = new Map();
+
+  for (const { cDir, mdFiles } of convDirsWithMd) {
+    for (const { name, st } of mdFiles) {
+      const low = name.toLowerCase();
+      const item = await readMdArtifactEntry(cDir, name, st);
+      if (!item) continue;
+      const prev = byName.get(low);
+      if (!prev || item.mtimeMs > prev.mtimeMs) {
+        byName.set(low, item);
+      }
+    }
+  }
+
+  // Only fallback to scanning recent brain conversation folders when the target conversation has no artifacts (byName.size === 0)
+  if (byName.size === 0) {
+    const scanConvDir = async (cDir) => {
+      let names = [];
+      try { names = await fsp.readdir(cDir); } catch { return; }
+      for (const name of names) {
+        if (!name.toLowerCase().endsWith('.md') || name.startsWith('.')) continue;
+        const low = name.toLowerCase();
+        const item = await readMdArtifactEntry(cDir, name);
+        if (!item) continue;
+        const prev = byName.get(low);
+        if (!prev || item.mtimeMs > prev.mtimeMs) {
+          byName.set(low, item);
+        }
+      }
+    };
+
+    const recentConvDirs = [];
+    for (const bDir of brainDirs) {
+      let entries = [];
+      try { entries = await fsp.readdir(bDir, { withFileTypes: true }); } catch { continue; }
+      for (const ent of entries) {
+        if (!ent.isDirectory() || ent.name.startsWith('.') || ent.name === cleanConvId) continue;
+        const fullDir = path.join(bDir, ent.name);
+        const st = await fsp.stat(fullDir).catch(() => null);
+        if (st) recentConvDirs.push({ dir: fullDir, mtimeMs: st.mtimeMs || 0 });
+      }
+    }
+    recentConvDirs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const rc of recentConvDirs.slice(0, 5)) {
+      await scanConvDir(rc.dir);
+      if (byName.size >= 4) break;
+    }
+  }
+
+  // Check workspace root for blueprint/plan markdown artifacts if still empty
+  if (byName.size === 0) {
+    const candidateRoots = [workspaceDir, process.cwd()].filter(Boolean);
+    for (const root of candidateRoots) {
+      let names = [];
+      try { names = await fsp.readdir(root); } catch { continue; }
+      for (const name of names) {
+        if (!name.toLowerCase().endsWith('.md')) continue;
+        if (/^(readme|agents|changelog|license|contributing)\.md$/i.test(name)) continue;
+        const item = await readMdArtifactEntry(root, name);
+        if (item && !byName.has(name.toLowerCase())) {
+          byName.set(name.toLowerCase(), item);
+        }
+      }
+    }
+  }
+
+  const STD_RANK = {
+    'implementation_plan.md': 1,
+    'task.md': 2,
+    'walkthrough.md': 3,
+  };
+  const result = [...byName.values()].sort((a, b) => {
+    const ra = STD_RANK[a.name.toLowerCase()] ?? 0;
+    const rb = STD_RANK[b.name.toLowerCase()] ?? 0;
+    if (ra !== rb) return ra - rb;
+    return (b.mtimeMs || 0) - (a.mtimeMs || 0);
+  });
+
+  artifactListCache.set(cacheKey, {
+    at: Date.now(),
+    dirSig,
+    result,
+  });
+  capMap(artifactListCache, 40, 30);
+  return result;
+}
+
 // Quota weight of a single prompt or planner response step in the 5-hour rolling window.
 // Calibrated against real Antigravity IDE (Gemini Models) usage (~26 tasks & ~1113 steps => 20% 5h used / 80% left, 12% weekly used / 88% left):
 // - Assigning a new task (USER_INPUT) increments quota (+0.035% 5h window)
 // - Every agent step (PLANNER_RESPONSE) increments quota based on step count + fresh/cached tokens
 function stepQuotaUnits5h(step) {
   if (!step) return 0;
-  if (step.kind === 'prompt') return 0.035;
+  if (step.kind === 'prompt') return 0.035 * 1.15;
   const base = 0.013;
   const freshWeight = ((Number(step.inp) || 0) + (Number(step.out) || 0)) / 50_000 * 0.02;
   const cacheWeight = (Number(step.cr) || 0) / 2_500_000 * 0.01;
-  return base + freshWeight + cacheWeight;
+  return (base + freshWeight + cacheWeight) * 1.15;
+}
+
+export function readAgyUseAiCredits() {
+  try {
+    const cfgPath = path.join(os.homedir(), '.gemini', 'config', 'config.json');
+    if (!fs.existsSync(cfgPath)) return false;
+    const j = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    return Boolean(j?.userSettings?.useAiCredits);
+  } catch {
+    return false;
+  }
+}
+
+export async function writeAgyUseAiCredits(enabled) {
+  try {
+    const cfgPath = path.join(os.homedir(), '.gemini', 'config', 'config.json');
+    let j = {};
+    if (fs.existsSync(cfgPath)) {
+      j = JSON.parse(await fsp.readFile(cfgPath, 'utf8'));
+    }
+    j.userSettings = { ...(j.userSettings || {}), useAiCredits: Boolean(enabled) };
+    await fsp.mkdir(path.dirname(cfgPath), { recursive: true });
+    await fsp.writeFile(cfgPath, `${JSON.stringify(j, null, 2)}\n`, 'utf8');
+    return { ok: true, useAiCredits: Boolean(enabled) };
+  } catch (err) {
+    return { ok: false, message: String(err?.message || err) };
+  }
 }
 
 let cachedAgyAccountEmail = '';
 let cachedAgyAccountEmailAt = 0;
 
+export function clearAgyAccountEmailCache() {
+  cachedAgyAccountEmail = '';
+  cachedAgyAccountEmailAt = 0;
+}
+
 export function detectAgyAccountEmail() {
   const now = Date.now();
-  if (cachedAgyAccountEmail && now - cachedAgyAccountEmailAt < 10 * 60_000) {
+  if (cachedAgyAccountEmail && now - cachedAgyAccountEmailAt < 60_000) {
     return cachedAgyAccountEmail;
   }
+  const isRealEmail = (val) => {
+    const s = String(val || '').trim();
+    return s.includes('@') && !/@users\.noreply\.github\.com$/i.test(s) && !/@antigravity\.local$/i.test(s);
+  };
   const envEmail = String(process.env.OFFICE_AGY_EMAIL || '').trim();
-  if (envEmail && envEmail.includes('@')) {
+  if (isRealEmail(envEmail)) {
     cachedAgyAccountEmail = envEmail;
     cachedAgyAccountEmailAt = now;
     return envEmail;
   }
   const home = os.homedir();
+  const appData = process.env.APPDATA || (
+    process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : path.join(home, '.config')
+  );
+  const appStorageFiles = [
+    path.join(appData, 'Antigravity', 'app_storage.json'),
+    path.join(home, 'AppData', 'Roaming', 'Antigravity', 'app_storage.json'),
+    path.join(home, 'Library', 'Application Support', 'Antigravity', 'app_storage.json'),
+    path.join(home, '.config', 'Antigravity', 'app_storage.json'),
+  ];
+  for (const fp of appStorageFiles) {
+    try {
+      if (!fs.existsSync(fp)) continue;
+      const raw = fs.readFileSync(fp, 'utf8');
+      const data = JSON.parse(raw);
+      const loginUser = data?.['jetski.onboarding.lastLoginUsername'] || data?.lastLoginUsername || data?.email;
+      if (isRealEmail(loginUser)) {
+        cachedAgyAccountEmail = String(loginUser).trim();
+        cachedAgyAccountEmailAt = now;
+        return cachedAgyAccountEmail;
+      }
+      const matches = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      const firstReal = matches.find(isRealEmail);
+      if (firstReal) {
+        cachedAgyAccountEmail = firstReal.trim();
+        cachedAgyAccountEmailAt = now;
+        return cachedAgyAccountEmail;
+      }
+    } catch { /* ignore */ }
+  }
   const candFiles = [
     path.join(home, '.gemini', 'google_accounts.json'),
     path.join(home, '.gemini', 'accounts.json'),
@@ -918,18 +1437,18 @@ export function detectAgyAccountEmail() {
       const raw = fs.readFileSync(fp, 'utf8');
       const data = JSON.parse(raw);
       if (data && typeof data === 'object') {
-        if (typeof data.active === 'string' && data.active.includes('@')) {
+        if (isRealEmail(data.active)) {
           cachedAgyAccountEmail = data.active.trim();
           cachedAgyAccountEmailAt = now;
           return cachedAgyAccountEmail;
         }
-        if (typeof data.email === 'string' && data.email.includes('@')) {
+        if (isRealEmail(data.email)) {
           cachedAgyAccountEmail = data.email.trim();
           cachedAgyAccountEmailAt = now;
           return cachedAgyAccountEmail;
         }
         if (Array.isArray(data.accounts)) {
-          const acc = data.accounts.find((a) => a && typeof a.email === 'string' && a.email.includes('@'));
+          const acc = data.accounts.find((a) => a && isRealEmail(a.email));
           if (acc) {
             cachedAgyAccountEmail = acc.email.trim();
             cachedAgyAccountEmailAt = now;
@@ -940,7 +1459,7 @@ export function detectAgyAccountEmail() {
           const parts = data.id_token.split('.');
           if (parts[1]) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-            if (payload && typeof payload.email === 'string' && payload.email.includes('@')) {
+            if (payload && isRealEmail(payload.email)) {
               cachedAgyAccountEmail = payload.email.trim();
               cachedAgyAccountEmailAt = now;
               return cachedAgyAccountEmail;
@@ -948,9 +1467,10 @@ export function detectAgyAccountEmail() {
           }
         }
       }
-      const emailMatch = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (emailMatch) {
-        cachedAgyAccountEmail = emailMatch[0];
+      const matches = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      const firstReal = matches.find(isRealEmail);
+      if (firstReal) {
+        cachedAgyAccountEmail = firstReal;
         cachedAgyAccountEmailAt = now;
         return cachedAgyAccountEmail;
       }
@@ -962,16 +1482,41 @@ export function detectAgyAccountEmail() {
       timeout: 1500,
       windowsHide: true,
     }).trim();
-    if (gitEmail && gitEmail.includes('@')) {
+    if (isRealEmail(gitEmail)) {
       cachedAgyAccountEmail = gitEmail;
       cachedAgyAccountEmailAt = now;
       return gitEmail;
     }
   } catch { /* ignore */ }
-  const fallback = `${process.env.USERNAME || process.env.USER || 'director'}@antigravity.local`;
+  const fallback = `${process.env.USERNAME || process.env.USER || 'director'}@gmail.com`;
   cachedAgyAccountEmail = fallback;
   cachedAgyAccountEmailAt = now;
   return fallback;
+}
+
+let cachedHasUltraConfig = null;
+let cachedHasUltraConfigAt = 0;
+function hasLocalUltraConfig() {
+  const now = Date.now();
+  if (cachedHasUltraConfig !== null && now - cachedHasUltraConfigAt < 60_000) {
+    return cachedHasUltraConfig;
+  }
+  const home = os.homedir();
+  const appData = process.env.APPDATA || (
+    process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : path.join(home, '.config')
+  );
+  const candidates = [
+    path.join(home, '.gemini', 'config', 'config.json'),
+    path.join(appData, 'Antigravity', 'app_storage.json'),
+    path.join(home, 'AppData', 'Roaming', 'Antigravity', 'app_storage.json'),
+  ];
+  cachedHasUltraConfig = candidates.some((fp) => {
+    try { return fs.existsSync(fp); } catch { return false; }
+  });
+  cachedHasUltraConfigAt = now;
+  return cachedHasUltraConfig;
 }
 
 // Computes real-time Antigravity 5-hour quota and 7-day weekly quota aggregated by Account Email!
@@ -996,6 +1541,77 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
   let oldest7d = 0;
 
   const byProject = new Map(); // dir -> project stats
+  const stepTimestamps = [];
+  for (const s of sessions.values()) {
+    if (!s.isAgy) continue;
+    const dir = s.cwd || path.join(process.cwd(), 'antigravity');
+    if (allowedFilter && !allowedFilter(dir)) continue;
+    const stepList = Array.isArray(s.agySteps) ? s.agySteps : [];
+    for (const st of stepList) {
+      if (!st || !st.ts || st.ts < cutoff7d) continue;
+      if (accountSlug !== null) {
+        const stAcct = st.acct ?? s.agyAccount ?? '';
+        if (stAcct !== accountSlug) continue;
+      }
+      stepTimestamps.push(st.ts);
+    }
+  }
+  stepTimestamps.sort((a, b) => a - b);
+
+  // Weekly & 5-hour quota cycles: uses local Google AI Ultra anchor when local config & historical transcript steps exist,
+  // otherwise dynamic rolling cycles from the session's own transcript steps.
+  const ANCHOR_WEEK_MS = Date.parse('2026-11-04T02:49:00Z');
+  const ANCHOR_5H_MS = Date.parse('2026-11-04T13:30:00Z');
+  const isPrimaryUltraAnchor = !accountEmail
+    && (accountSlug === null || accountSlug === '')
+    && hasLocalUltraConfig()
+    && stepTimestamps.some((ts) => ts <= ANCHOR_5H_MS);
+
+  let activeWeekStartMs = cutoff7d;
+  let activeReset7dMs = now + sevenDaysMs;
+  if (isPrimaryUltraAnchor && now >= ANCHOR_WEEK_MS && stepTimestamps.length > 0) {
+    const elapsedWeeks = Math.max(0, Math.floor((now - ANCHOR_WEEK_MS) / sevenDaysMs));
+    activeWeekStartMs = ANCHOR_WEEK_MS + elapsedWeeks * sevenDaysMs;
+    activeReset7dMs = activeWeekStartMs + sevenDaysMs;
+  } else if (stepTimestamps.length > 0) {
+    let cycleReset7d = 0;
+    for (const ts of stepTimestamps) {
+      if (ts >= cycleReset7d) {
+        activeWeekStartMs = ts;
+        cycleReset7d = ts + sevenDaysMs;
+      }
+    }
+    activeReset7dMs = cycleReset7d > now ? Math.max(now + 60_000, cycleReset7d) : now + sevenDaysMs;
+  }
+
+  let cycleStart5h = 0;
+  let cycleReset5h = 0;
+  if (isPrimaryUltraAnchor && now >= ANCHOR_5H_MS && stepTimestamps.some((ts) => ts >= ANCHOR_5H_MS)) {
+    const elapsed5hBlocks = Math.max(0, Math.floor((now - ANCHOR_5H_MS) / fiveHoursMs));
+    const blockStart = ANCHOR_5H_MS + elapsed5hBlocks * fiveHoursMs;
+    const hasStepInBlock = stepTimestamps.some((ts) => ts >= blockStart);
+    if (hasStepInBlock) {
+      cycleStart5h = blockStart;
+      cycleReset5h = blockStart + fiveHoursMs;
+    }
+  }
+  if (!cycleReset5h) {
+    for (const ts of stepTimestamps) {
+      if (ts >= cycleReset5h) {
+        cycleStart5h = ts;
+        cycleReset5h = ts + fiveHoursMs;
+      }
+    }
+  }
+  const hasActive5h = cycleReset5h > now;
+  const activeCutoff5h = hasActive5h ? Math.max(cutoff5h, cycleStart5h) : now + 1;
+  const activeReset5hMs = hasActive5h
+    ? Math.max(now + 60_000, cycleReset5h)
+    : now + fiveHoursMs;
+
+  let unitsWeekCycle = 0;
+  let claudeUnits5h = 0;
+  let claudeUnitsWeek = 0;
 
   for (const s of sessions.values()) {
     if (!s.isAgy) continue;
@@ -1056,8 +1672,13 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
       }
       const w = stepQuotaUnits5h(st);
       const tok = (Number(st.inp) || 0) + (Number(st.cr) || 0) + (Number(st.out) || 0);
+      const isClaudeOrGpt = /claude|sonnet|opus|gpt/i.test(String(st.model || s.model || ''));
       units7d += w;
       proj.units7d += w;
+      if (st.ts >= activeWeekStartMs) {
+        if (isClaudeOrGpt) claudeUnitsWeek += w;
+        else unitsWeekCycle += w;
+      }
       if (!oldest7d || st.ts < oldest7d) oldest7d = st.ts;
       if (st.kind === 'prompt') prompts7d++;
       else {
@@ -1076,8 +1697,9 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
         }
       }
 
-      if (st.ts >= cutoff5h) {
-        units5h += w;
+      if (st.ts >= activeCutoff5h) {
+        if (isClaudeOrGpt) claudeUnits5h += w;
+        else units5h += w;
         proj.units5h += w;
         sessUnits5h += w;
         if (!oldest5h || st.ts < oldest5h) oldest5h = st.ts;
@@ -1112,12 +1734,17 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
   }
 
   const pct = Math.min(100, units5h > 0 ? Math.max(1, Math.round(units5h)) : 0);
-  // Weekly budget calibrated to Antigravity Gemini Models weekly limit (~1.7x the 5-hour unit scale)
-  const weekPct = Math.min(100, Math.max(pct > 0 ? 1 : 0, Math.round(units7d / 1.7)));
+  // Google AI Ultra weekly budget (~3.97x the 5-hour unit scale in the active weekly cycle)
+  const weekPct = Math.min(100, unitsWeekCycle > 0 ? Math.max(1, Math.round(unitsWeekCycle / 3.97)) : 0);
   const left5hPct = Math.max(0, 100 - pct);
   const leftWeekPct = Math.max(0, 100 - weekPct);
-  const resetsAt = new Date((oldest5h || now) + fiveHoursMs).toISOString();
-  const weekResetsAt = new Date((oldest7d || now) + sevenDaysMs).toISOString();
+  const claudeGptPct5h = Math.min(100, claudeUnits5h > 0 ? Math.max(1, Math.round(claudeUnits5h)) : 0);
+  const claudeGptLeft5hPct = Math.max(0, 100 - claudeGptPct5h);
+  const claudeGptWeekPct = Math.min(100, claudeUnitsWeek > 0 ? Math.max(1, Math.round(claudeUnitsWeek / 3.97)) : 0);
+  const claudeGptLeftWeekPct = Math.max(0, 100 - claudeGptWeekPct);
+  const resetsAt = new Date(activeReset5hMs).toISOString();
+  const weekResetsAt = new Date(activeReset7dMs).toISOString();
+  const useAiCredits = readAgyUseAiCredits();
 
   const projects = [...byProject.values()]
     .map((p) => {
@@ -1167,14 +1794,19 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
   return {
     source: 'agy',
     email: resolvedEmail,
-    planName: 'Antigravity (Gemini Models)',
-    billingCycle: `5g: còn ${Math.max(0, 100 - pct)}% · Tuần: còn ${Math.max(0, 100 - weekPct)}%`,
+    planName: 'Google AI Ultra',
+    billingCycle: `5g: còn ${left5hPct}% · Tuần: còn ${leftWeekPct}%`,
     pct,
     left5hPct,
     resetsAt,
     weekPct,
     leftWeekPct,
     weekResetsAt,
+    claudeGptPct5h,
+    claudeGptLeft5hPct,
+    claudeGptWeekPct,
+    claudeGptLeftWeekPct,
+    useAiCredits,
     prompts5h,
     steps5h,
     tokens5h,
@@ -1182,7 +1814,7 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
     steps7d,
     tokens7d,
     cost7d: Math.round(cost7d * 100) / 100,
-    extraEnabled: false,
+    extraEnabled: useAiCredits,
     extraPct: null,
     extraUsed: null,
     extraLimit: null,

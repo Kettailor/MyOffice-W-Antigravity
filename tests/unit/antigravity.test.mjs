@@ -12,6 +12,9 @@ import {
   extractUserRequest,
   readAgyTodos,
   readAgyLog,
+  readAgyRichConversation,
+  readAgyBrainArtifacts,
+  invalidateAgyArtifactCache,
   decodeWorkspaceUri,
   normalizeWorkspacePath,
   computeAgyQuota,
@@ -723,4 +726,169 @@ test('Antigravity Watcher: creates s.waitCard when ask_question runs with CASCAD
     await fsp.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
   }
 });
+
+test('Antigravity IDE: readAgyRichConversation hydrates transcript_full.jsonl, computes filesChanged diffs, and readAgyBrainArtifacts ranks artifacts', async () => {
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'work-office-rich-conv-'));
+  const prevBrainEnv = process.env.OFFICE_AGY_BRAIN_DIR;
+  try {
+    const brainDir = path.join(tmpDir, 'brain');
+    const convId = '11112222-3333-4444-5555-666677778888';
+    const convDir = path.join(brainDir, convId);
+    const logDir = path.join(convDir, '.system_generated', 'logs');
+    await fsp.mkdir(logDir, { recursive: true });
+    process.env.OFFICE_AGY_BRAIN_DIR = brainDir;
+
+    const t0 = new Date(Date.now() - 15_000).toISOString();
+    const t1 = new Date(Date.now() - 5_000).toISOString();
+
+    // 1. Write transcript.jsonl with truncated_fields on step_index 1
+    const transcriptPath = path.join(logDir, 'transcript.jsonl');
+    const transcriptLines = [
+      JSON.stringify({
+        step_index: 0,
+        type: 'USER_INPUT',
+        created_at: t0,
+        content: '<USER_REQUEST>\nXây dựng trang /antigravity IDE\n</USER_REQUEST>',
+        media: [{ uri: 'C:\\tmp\\mockup.png', mime_type: 'image/png' }],
+      }),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        created_at: t1,
+        truncated_fields: ['thinking', 'content', 'tool_calls'],
+        thinking: 'truncated...',
+        content: 'truncated...',
+        tool_calls: [],
+      }),
+    ];
+    await fsp.writeFile(transcriptPath, `${transcriptLines.join('\n')}\n`, 'utf8');
+
+    // 2. Write transcript_full.jsonl with complete thinking, content, and Write/Edit tool_calls
+    const fullTranscriptPath = path.join(logDir, 'transcript_full.jsonl');
+    const fullLines = [
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        created_at: t1,
+        thinking: 'Phân tích bố cục 3 cột cho trang Antigravity IDE',
+        content: 'Đã hoàn thiện giao diện Antigravity IDE.',
+        tool_calls: [
+          {
+            id: 'tc_write',
+            name: 'default_api:write_file',
+            args: {
+              Path: 'e:\\WorkOffice\\app\\antigravity\\page.tsx',
+              Content: 'line1\nline2\nline3',
+            },
+          },
+          {
+            id: 'tc_edit',
+            name: 'default_api:edit_file',
+            args: {
+              Path: 'e:\\WorkOffice\\src\\styles\\antigravity.css',
+              Target: 'old1\nold2',
+              Replacement: 'new1\nnew2\nnew3\nnew4',
+            },
+          },
+        ],
+      }),
+    ];
+    await fsp.writeFile(fullTranscriptPath, `${fullLines.join('\n')}\n`, 'utf8');
+
+    const turns = await readAgyRichConversation(
+      `a${convId}`,
+      transcriptPath,
+      (name, input) => ({ type: name.toLowerCase(), label: `${name} ${input?.file_path || ''}`.trim() }),
+      {},
+      () => 'img-mockup-1',
+    );
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0].userText, 'Xây dựng trang /antigravity IDE');
+    assert.equal(turns[0].media.length, 1);
+    assert.equal(turns[0].media[0].url, '/api/image?id=img-mockup-1');
+    assert.equal(turns[0].workDurationMs, 10_000);
+    assert.equal(turns[0].responses[0].text, 'Đã hoàn thiện giao diện Antigravity IDE.');
+    assert.ok(turns[0].steps.some((st) => st.kind === 'thinking' && st.text.includes('Phân tích bố cục 3 cột')));
+    assert.deepEqual(turns[0].filesChanged, [
+      {
+        path: 'e:\\WorkOffice\\app\\antigravity\\page.tsx',
+        name: 'page.tsx',
+        added: 3,
+        removed: 0,
+      },
+      {
+        path: 'e:\\WorkOffice\\src\\styles\\antigravity.css',
+        name: 'antigravity.css',
+        added: 4,
+        removed: 2,
+      },
+    ]);
+
+    // 3. Write brain artifacts + .metadata.json and verify ordering (custom -> implementation_plan.md -> task.md -> walkthrough.md)
+    await fsp.writeFile(path.join(convDir, 'walkthrough.md'), '# Walkthrough Kết quả\nChi tiết kiểm thử', 'utf8');
+    await fsp.writeFile(path.join(convDir, 'task.md'), '# Danh sách Công việc\n- [x] Hoàn tất UI', 'utf8');
+    await fsp.writeFile(path.join(convDir, 'implementation_plan.md'), '# Kế hoạch Triển khai IDE\nChi tiết kiến trúc', 'utf8');
+    await fsp.writeFile(
+      path.join(convDir, 'implementation_plan.md.metadata.json'),
+      JSON.stringify({ summary: 'Bản thiết kế Antigravity IDE toàn màn hình', updatedAt: t1 }),
+      'utf8',
+    );
+
+    invalidateAgyArtifactCache(convId);
+    const artifacts = await readAgyBrainArtifacts(`a${convId}`, tmpDir);
+    assert.equal(artifacts.length, 3);
+    assert.deepEqual(
+      artifacts.map((a) => a.name),
+      ['implementation_plan.md', 'task.md', 'walkthrough.md'],
+    );
+    assert.equal(artifacts[0].title, 'Kế hoạch Triển khai IDE');
+    assert.equal(artifacts[0].summary, 'Bản thiết kế Antigravity IDE toàn màn hình');
+  } finally {
+    if (prevBrainEnv === undefined) delete process.env.OFFICE_AGY_BRAIN_DIR;
+    else process.env.OFFICE_AGY_BRAIN_DIR = prevBrainEnv;
+    await fsp.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
+  }
+});
+
+test('Antigravity Quota: separates Gemini Ultra vs Claude/GPT 5h and weekly quota buckets', () => {
+  const now = Date.now();
+  const sessions = new Map();
+  sessions.set('a-gemini', {
+    id: 'a-gemini',
+    isAgy: true,
+    cwd: 'e:\\WorkOffice',
+    name: 'WorkOffice',
+    title: 'Gemini Task',
+    status: 'work',
+    model: 'Gemini 3.1 Pro (High)',
+    agyAccount: 'main',
+    agySteps: [
+      { ts: now - 60_000, kind: 'prompt', inp: 0, cr: 0, out: 0, cost: 0, model: 'Gemini 3.1 Pro (High)' },
+      { ts: now - 30_000, kind: 'step', inp: 25_000, cr: 500_000, out: 5_000, cost: 0.25, model: 'Gemini 3.1 Pro (High)' },
+    ],
+  });
+  sessions.set('a-claude', {
+    id: 'a-claude',
+    isAgy: true,
+    cwd: 'e:\\WorkOffice',
+    name: 'WorkOffice',
+    title: 'Claude Task',
+    status: 'work',
+    model: 'Claude Sonnet 4.6 (Thinking)',
+    agyAccount: 'main',
+    agySteps: [
+      { ts: now - 45_000, kind: 'prompt', inp: 0, cr: 0, out: 0, cost: 0, model: 'Claude Sonnet 4.6 (Thinking)' },
+      { ts: now - 20_000, kind: 'step', inp: 40_000, cr: 200_000, out: 10_000, cost: 0.45, model: 'Claude Sonnet 4.6 (Thinking)' },
+    ],
+  });
+
+  const q = computeAgyQuota(sessions, null, 'main', 'tester@example.com');
+  assert.equal(q.planName, 'Google AI Ultra');
+  assert.ok(q.pct >= 1, 'Gemini 5h pct should be >= 1');
+  assert.equal(q.left5hPct, 100 - q.pct);
+  assert.ok(q.claudeGptPct5h >= 1, 'Claude/GPT 5h pct should be tracked separately and >= 1');
+  assert.equal(q.claudeGptLeft5hPct, 100 - q.claudeGptPct5h);
+  assert.ok(q.claudeGptWeekPct >= 1, 'Claude/GPT weekly pct should be >= 1');
+});
+
 

@@ -30,7 +30,7 @@ function reportIncoming(D) {
 // the aisle spots of the pods with the most people at their desks (two or three), in pod order: a loop round the floor
 function stops() {
   const list = [];
-  PODS.slice(0, 3).forEach(([cx, cz], p) => {
+  PODS.slice(0, 4).forEach(([cx, cz], p) => {
     let best = null;
     for (const k of [`P${p}b0`, `P${p}b1`, `P${p}f0`, `P${p}f1`]) {
       if (!NODES[k]) continue;

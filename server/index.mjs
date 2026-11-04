@@ -26,7 +26,7 @@ import { createGit } from './git.mjs';
 import { weekSummary } from './wrapped.mjs';
 import { createPrefs } from './prefs.mjs';
 import { pickLang, createT } from '../src/i18n/index.js';
-import { createAntigravityWatcher, agyBrainDir, normalizeAgyHookPayload, readAgyLog, computeAgyQuota, detectAgyAccountEmail, findNativeRustBin } from './antigravity.mjs';
+import { createAntigravityWatcher, agyBrainDir, agyBrainDirs, normalizeAgyHookPayload, readAgyLog, readAgyRichConversation, readAgyBrainArtifacts, invalidateAgyArtifactCache, computeAgyQuota, detectAgyAccountEmail, clearAgyAccountEmailCache, readAgyUseAiCredits, writeAgyUseAiCredits, findNativeRustBin } from './antigravity.mjs';
 import { createAccessManager, renderRemoteAccessPage, DEFAULT_ROLE } from './access.mjs';
 import { createMcpManager } from './mcp.mjs';
 import { handleFilesApi } from './files.mjs';
@@ -252,10 +252,15 @@ function registerImageVariants(realAbs, folderHint = '', filenameHint = '') {
   const n = filenameHint || (m ? m[2] : '');
   const variants = new Set([realAbs]);
   if (folder && n) {
-    variants.add(`E:\\WorkOffice\\data\\${folder}\\${n}`);
-    variants.add(`e:\\WorkOffice\\data\\${folder}\\${n}`);
+    const rootDataFile = path.join(ROOT, 'data', folder, n);
+    variants.add(rootDataFile);
+    if (/^[A-Za-z]:\\/.test(rootDataFile)) {
+      variants.add(rootDataFile[0].toUpperCase() + rootDataFile.slice(1));
+      variants.add(rootDataFile[0].toLowerCase() + rootDataFile.slice(1));
+      const mntForm = `/mnt/${rootDataFile[0].toLowerCase()}/${rootDataFile.slice(3).replace(/\\/g, '/')}`;
+      variants.add(mntForm);
+    }
     variants.add(`/app/data/${folder}/${n}`);
-    variants.add(`/mnt/e/WorkOffice/data/${folder}/${n}`);
   }
   let changed = false;
   for (const v of variants) {
@@ -1494,6 +1499,76 @@ function getBrowseRoots() {
 }
 
 /* ---------- Remote Tailscale / LAN Access Control & Pre-Execution Task Approval ---------- */
+const WORKSPACE_SKIP_DIRS = new Set([
+  '$recycle.bin',
+  'system volume information',
+  'recovery',
+  'msocache',
+  'perflogs',
+  'windows',
+  'program files',
+  'program files (x86)',
+  'programdata',
+  'users',
+  'appdata',
+  'node_modules',
+  '.git',
+  '.next',
+  '.claude',
+  '.gemini',
+  '.vscode',
+  '.idea',
+  '__pycache__',
+  'dist',
+  'build',
+  '.turbo',
+  '.cache',
+]);
+let agyHubDirsCache = { at: 0, dirs: [] };
+function getAgyHubWorkspaceDirs() {
+  const now = Date.now();
+  if (now - agyHubDirsCache.at < 30_000 && agyHubDirsCache.dirs.length > 0) {
+    return agyHubDirsCache.dirs;
+  }
+  const out = [];
+  const seen = new Set();
+  try {
+    const pbFile = path.join(os.homedir(), '.gemini', 'antigravity', 'agyhub_summaries_proto.pb');
+    if (fs.existsSync(pbFile)) {
+      const buf = fs.readFileSync(pbFile);
+      const needle = Buffer.from('file:///');
+      let pos = 0;
+      while (pos < buf.length) {
+        const idx = buf.indexOf(needle, pos);
+        if (idx === -1) break;
+        const len = idx > 0 ? buf[idx - 1] : 0;
+        if (len >= 10 && len <= 200 && idx + len <= buf.length) {
+          const rawUri = buf.subarray(idx, idx + len).toString('utf8');
+          if (/^file:\/\/\/[A-Za-z0-9_:/%\\.-]+$/.test(rawUri)) {
+            try {
+              const decoded = decodeURIComponent(rawUri.slice('file:///'.length));
+              const hostPath = /^[A-Za-z]:/.test(decoded)
+                ? decoded.replace(/\//g, '\\').replace(/\\+$/, '')
+                : `/${decoded.replace(/^\/+/, '').replace(/\/+$/, '')}`;
+              const key = hostPath.toLowerCase();
+              if (!seen.has(key) && !WORKSPACE_SKIP_DIRS.has(path.basename(hostPath).toLowerCase())) {
+                const localDir = toContainerDir(hostPath);
+                if (fs.existsSync(localDir) && fs.statSync(localDir).isDirectory()) {
+                  seen.add(key);
+                  out.push(toHostDir(localDir));
+                }
+              }
+            } catch { /* ignore malformed URI */ }
+          }
+        }
+        pos = idx + 8;
+      }
+    }
+  } catch { /* ignore */ }
+  agyHubDirsCache = { at: now, dirs: out };
+  return out;
+}
+
 const allKnownWorkspaces = () => {
   const explicitKeys = new Set(knownDirs.filter((d) => !isRemovedProjectDir(d)).map((d) => normProjectDirKey(d)).filter(Boolean));
   const activeRoots = [...new Set([...sessions.values()].map((s) => s.cwd).filter((d) => d && !isRemovedProjectDir(d) && fs.existsSync(toContainerDir(d))))];
@@ -1514,6 +1589,8 @@ const allKnownWorkspaces = () => {
   };
   for (const d of knownDirs) addDir(d, true);
   for (const r of activeRoots) addDir(r, false);
+  addDir(ROOT, true);
+  for (const hubDir of getAgyHubWorkspaceDirs()) addDir(hubDir, true);
   // Keep top-level roots, plus any folder explicitly added in knownDirs
   const list = [...byKey.values()];
   return list
@@ -1621,6 +1698,21 @@ const agyWatcher = createAntigravityWatcher({
 
 async function doScan() {
   await agyWatcher.scan().catch((err) => console.error('agy scan', err));
+  if (
+    !planLimits
+    || planLimits.source === 'agy'
+    || /@users\.noreply\.github\.com$/i.test(planLimits?.email || '')
+  ) {
+    const firstWin = planLimits?.windows?.[0];
+    if (
+      !planLimits?.at
+      || Date.now() - planLimits.at > 20_000
+      || (firstWin?.resetsAt && firstWin.resetsAt <= Date.now() + 10_000)
+      || /@users\.noreply\.github\.com$/i.test(planLimits?.email || '')
+    ) {
+      fetchPlanUsage(true);
+    }
+  }
   let files = [];
   try { files = (await fsp.readdir(SESS_DIR)).filter((f) => f.endsWith('.json')); } catch { return; }
   const live = new Set();
@@ -1702,8 +1794,12 @@ function dropSession(key, s) {
   if (s.sid && sidToKey.get(s.sid) === key) sidToKey.delete(s.sid);
   broadcast({ k: 'gone', id: s.id, cwd: s.cwd || '' });
 }
+let scanIdleTick = 0;
 setInterval(() => {
-  scanSessions();
+  scanIdleTick = (scanIdleTick + 1) % 3;
+  if (!scanning && (watching() || clients.size > 0 || scanIdleTick === 0)) {
+    scanSessions();
+  }
   rollDay();
   const now = Date.now();
   for (const [key, s] of sessions) {
@@ -2445,9 +2541,19 @@ const LIMITS_FILE = path.join(DATA_DIR, 'limits.json');
 let planLimits = null, statusAt = 0;
 try { planLimits = JSON.parse(fs.readFileSync(LIMITS_FILE, 'utf8')); } catch { /* none yet */ }
 const numOr = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+function sanitizeAcctEmail(raw) {
+  const s = String(raw || '').trim();
+  if (!s || /@users\.noreply\.github\.com$/i.test(s) || /@antigravity\.local$/i.test(s)) return '';
+  return s;
+}
 // windows: [{ key, label, pct, resetsAt, weekOf? }]; `five` / `seven` stay for the TV and older pages
 function setLimits(windows, source, account = planLimits?.account || null, extra = {}) {
-  const email = extra.email || account?.email || planLimits?.email || detectAgyAccountEmail();
+  const customMain = acctLabel('');
+  const email = customMain
+    || sanitizeAcctEmail(extra.email)
+    || sanitizeAcctEmail(account?.email)
+    || sanitizeAcctEmail(planLimits?.email)
+    || detectAgyAccountEmail();
   const next = {
     at: Date.now(),
     source,
@@ -2474,11 +2580,15 @@ const winLabel = (w) => clip(String(w.key === 'session' ? tr('server.limits.five
 function limitsOut(viewer = null) {
   const isRestrictedAssistant = viewer && !viewer.isDirectorDevice && viewer.role !== 'Phó Giám đốc';
   const l = planLimits;
-  const email = l?.email || l?.account?.email || detectAgyAccountEmail();
+  const customMain = acctLabel('');
+  const email = customMain
+    || sanitizeAcctEmail(l?.email)
+    || sanitizeAcctEmail(l?.account?.email)
+    || detectAgyAccountEmail();
   const more = isRestrictedAssistant ? [] : othersOut();
   const main = {
     email,
-    label: acctLabel('') || email,
+    label: customMain || email,
     until: blockedUntil(l?.windows, hits.get('')),
     auto: isRestrictedAssistant ? null : autoOut(),
   };
@@ -2490,9 +2600,16 @@ function limitsOut(viewer = null) {
         label: winLabel(w),
       }))
     : l.windows;
+  const billingSuffix = l.account?.org && l.account.org.includes('·')
+    ? l.account.org.split('·').slice(1).join('·').trim()
+    : '';
   return {
     ...restL,
     email,
+    useAiCredits: readAgyUseAiCredits(),
+    account: l.account
+      ? { ...l.account, plan: l.account.plan === 'Antigravity' ? 'Google AI Ultra' : l.account.plan, email, org: billingSuffix ? `${email} · ${billingSuffix}` : (l.account.org || email) }
+      : { id: 'antigravity:local', plan: 'Google AI Ultra', email },
     scopedToAssistant: !!isRestrictedAssistant,
     windows,
     five: l.five && { ...l.five, label: tr('server.limits.fiveHour') },
@@ -2572,7 +2689,8 @@ function fetchPlanUsage(force = false) {
       if (fs.existsSync(agyBrainDir())) {
         const qAll = computeAgyQuota(sessions);
         const q = agyAccounts.length > 0 ? computeAgyQuota(sessions, null, '') : qAll;
-        const email = q.email || qAll.email || detectAgyAccountEmail();
+        const customMain = acctLabel('');
+        const email = customMain || detectAgyAccountEmail() || q.email || qAll.email;
         usageNote = null;
         setLimits(
           [
@@ -2580,19 +2698,24 @@ function fetchPlanUsage(force = false) {
             { key: 'weekly', label: tr('server.limits.week'), pct: q.weekPct, resetsAt: q.weekResetsAt ? Date.parse(q.weekResetsAt) : null },
           ],
           'agy',
-          { id: 'antigravity:local', plan: 'Antigravity', email, org: `${email} · ${q.billingCycle}` },
+          { id: 'antigravity:local', plan: q.planName || 'Google AI Ultra', email, org: `${email} · ${q.billingCycle}` },
           {
             email,
+            useAiCredits: q.useAiCredits,
             stats: {
               left5hPct: q.left5hPct,
               leftWeekPct: q.leftWeekPct,
-              prompts5h: qAll.prompts5h,
-              steps5h: qAll.steps5h,
-              tokens5h: qAll.tokens5h,
-              prompts7d: qAll.prompts7d,
-              steps7d: qAll.steps7d,
-              tokens7d: qAll.tokens7d,
-              cost7d: qAll.cost7d,
+              claudeGptPct5h: q.claudeGptPct5h,
+              claudeGptLeft5hPct: q.claudeGptLeft5hPct,
+              claudeGptWeekPct: q.claudeGptWeekPct,
+              claudeGptLeftWeekPct: q.claudeGptLeftWeekPct,
+              prompts5h: agyAccounts.length > 0 ? q.prompts5h : qAll.prompts5h,
+              steps5h: agyAccounts.length > 0 ? q.steps5h : qAll.steps5h,
+              tokens5h: agyAccounts.length > 0 ? q.tokens5h : qAll.tokens5h,
+              prompts7d: agyAccounts.length > 0 ? q.prompts7d : qAll.prompts7d,
+              steps7d: agyAccounts.length > 0 ? q.steps7d : qAll.steps7d,
+              tokens7d: agyAccounts.length > 0 ? q.tokens7d : qAll.tokens7d,
+              cost7d: agyAccounts.length > 0 ? q.cost7d : qAll.cost7d,
             },
           },
         );
@@ -2679,22 +2802,35 @@ function othersOut() {
   const agyOthers = agyAccounts
     .filter((a) => a.slug && !claudeSlugs.has(a.slug))
     .map((a) => {
-      const hintEmail = (a.email && String(a.email).includes('@'))
-        ? a.email
-        : (a.name && String(a.name).includes('@'))
-          ? a.name
-          : (a.slug && String(a.slug).includes('@') ? a.slug : '');
+      const customLabel = acctLabel(a.slug);
+      const hintEmail = [customLabel, a.email, a.name, a.slug].find((v) => v && String(v).includes('@')) || '';
       const { q, windows } = agyWindowsForSlug(a.slug, hintEmail);
-      const email = q.email || hintEmail || detectAgyAccountEmail();
+      const displayLabel = customLabel || hintEmail || a.name || a.slug;
+      const email = hintEmail || displayLabel;
       return {
         name: a.slug,
         email,
-        label: acctLabel(a.slug) || a.name || email || a.slug,
+        label: displayLabel,
         until: blockedUntil(windows, hits.get(a.slug)),
         at: Date.now(),
         isAgy: true,
-        account: { id: `antigravity:${a.slug}`, plan: 'Antigravity', email, org: `${email} · ${q.billingCycle}` },
+        account: { id: `antigravity:${a.slug}`, plan: q.planName || 'Google AI Ultra', email, org: `${displayLabel} · ${q.billingCycle}` },
         windows: windows.map((w) => ({ ...w, label: winLabel(w) })),
+        stats: {
+          left5hPct: q.left5hPct,
+          leftWeekPct: q.leftWeekPct,
+          claudeGptPct5h: q.claudeGptPct5h,
+          claudeGptLeft5hPct: q.claudeGptLeft5hPct,
+          claudeGptWeekPct: q.claudeGptWeekPct,
+          claudeGptLeftWeekPct: q.claudeGptLeftWeekPct,
+          prompts5h: q.prompts5h,
+          steps5h: q.steps5h,
+          tokens5h: q.tokens5h,
+          prompts7d: q.prompts7d,
+          steps7d: q.steps7d,
+          tokens7d: q.tokens7d,
+          cost7d: q.cost7d,
+        },
         note: '',
       };
     });
@@ -2840,30 +2976,37 @@ function watchLogins() {   // every 4 s for 15 minutes: the new account appears 
   watchTimer.unref();
 }
 async function prepareAccount(name) {
-  const slug = slugOf(name);
+  const rawInput = oneLine(name).trim();
+  const slugSource = rawInput.includes('@') ? rawInput.split('@')[0] || rawInput : rawInput;
+  const slug = slugOf(slugSource) || slugOf(rawInput);
   if (!slug) return { ok: false, message: tr('server.account.badName') };
   const isAgyMode = planLimits?.source === 'agy' || (fs.existsSync(agyBrainDir()) && !(await keychainLogin().catch(() => null))?.accessToken);
   if (isAgyMode) {
     const agyDir = path.join(os.homedir(), '.gemini', 'accounts', slug);
     await fsp.mkdir(agyDir, { recursive: true }).catch(() => {});
-    const label = clip(oneLine(name), 24) || slug;
+    const label = clip(rawInput, 64) || slug;
+    const email = rawInput.includes('@') ? label : '';
     const existing = agyAccounts.find((a) => a.slug === slug);
     if (existing) {
       existing.name = label;
+      if (email) existing.email = email;
       existing.dir = agyDir;
     } else {
-      agyAccounts.push({ slug, name: label, dir: agyDir, addedAt: Date.now() });
+      agyAccounts.push({ slug, name: label, ...(email ? { email } : {}), dir: agyDir, addedAt: Date.now() });
     }
     saveAgyAccounts();
+    fsp.writeFile(path.join(agyDir, 'account.json'), JSON.stringify({ slug, name: label, email, updatedAt: Date.now() }, null, 2)).catch(() => {});
     const names = { ...(prefs.get('accountNames') || {}) };
     if (label && label !== slug) names[slug] = label;
     prefs.set('accountNames', Object.keys(names).length ? names : undefined);
     repick();
-    broadcast({ k: 'limits', limits: limitsOut(), note: noteText() });
+    const outLimits = limitsOut();
+    broadcast({ k: 'limits', limits: outLimits, note: noteText() });
     return {
       ok: true,
       name: slug,
       label: acctLabel(slug) || label,
+      email: email || label,
       dir: `~/.gemini/accounts/${slug}`,
       isAgy: true,
       loggedIn: true,
@@ -2871,6 +3014,8 @@ async function prepareAccount(name) {
       win: false,
       run: `agy --account ${slug}`,
       alias: `agy-${slug}`,
+      limits: outLimits,
+      auto: autoOut(),
     };
   }
   const dir = path.join(os.homedir(), `.claude-${slug}`), settings = path.join(dir, 'settings.json');
@@ -2911,7 +3056,7 @@ const usageAfterTurn = () => { clearTimeout(usageSoon); usageSoon = setTimeout(f
    session on any account has the same history, memory and settings. A running session stays on its account (Claude
    Code reads its folder once, at start): when it runs out, closing and reopening it continues it on the one picked. */
 // (declared as functions: the first scan of the accounts, further up, already calls them)
-function acctLabel(slug) { return clip(String(prefs.get('accountNames')?.[slug] || ''), 24); }
+function acctLabel(slug) { return clip(String(prefs.get('accountNames')?.[slug] || ''), 64); }
 function acctShown(slug) { return acctLabel(slug) || slug || tr('server.account.main'); }
 function mainModel() {   // the model the sessions use (settings.json "model"): its own week counts too
   if (Date.now() - modelAt > 60e3) { modelAt = Date.now(); try { modelNow = String(JSON.parse(fs.readFileSync(path.join(CLAUDE_DIR, 'settings.json'), 'utf8')).model || '').toLowerCase(); } catch { modelNow = ''; } }
@@ -3097,8 +3242,9 @@ function setSwitch({ auto, pick, order, move } = {}) {
   switchAlias = bin ? `alias claude='${SWITCH_FILE} "${bin.file}"'` : '';
   if (on && prefs.get('autoSwitch')) for (const d of otherDirs) shareWithMain(d);
   repick(pick !== undefined || order !== undefined ? 'pick' : 'auto');
-  broadcast({ k: 'limits', limits: limitsOut(), note: noteText() });
-  return { ok: true, ...autoOut() };
+  const outLimits = limitsOut();
+  broadcast({ k: 'limits', limits: outLimits, note: noteText() });
+  return { ok: true, ...autoOut(), limits: outLimits };
 }
 if (switching() || pinned().length) setSwitch();   // (the script written again, in case the office moved)
 
@@ -4611,41 +4757,77 @@ const server = http.createServer((req, res) => {
     readJson(req).then(async (b) => {
       if (url.pathname === '/api/accounts') { json(res, 200, await prepareAccount(b?.name)); return; }
       if (url.pathname === '/api/accounts/remove') {
-        const which = b?.name ? slugOf(b.name) : '';
+        const rawWhich = String(b?.name || '').trim();
+        const which = (agyAccounts.find((a) => a.slug === rawWhich)?.slug) || slugOf(rawWhich);
         if (!which) { json(res, 400, { ok: false }); return; }
         agyAccounts = agyAccounts.filter((a) => a.slug !== which);
         saveAgyAccounts();
+        fsp.rm(path.join(os.homedir(), '.gemini', 'accounts', which), { recursive: true, force: true }).catch(() => {});
         const names = { ...(prefs.get('accountNames') || {}) };
         delete names[which];
         prefs.set('accountNames', Object.keys(names).length ? names : undefined);
         const curOrder = prefs.get('accountOrder');
         if (Array.isArray(curOrder)) prefs.set('accountOrder', curOrder.filter((s) => s !== which));
+        for (const s of sessions.values()) {
+          if (s.isAgy && s.agyAccount === which) s.agyAccount = '';
+        }
         repick();
-        broadcast({ k: 'limits', limits: limitsOut(), note: noteText() });
-        json(res, 200, { ok: true, ...autoOut() });
+        const outLimits = limitsOut();
+        broadcast({ k: 'limits', limits: outLimits, note: noteText() });
+        json(res, 200, { ok: true, ...autoOut(), limits: outLimits });
         return;
       }
       if (url.pathname === '/api/accounts/auto') { json(res, 200, setSwitch({ ...(b?.on !== undefined && { auto: !!b.on }), ...(b?.move !== undefined && { move: !!b.move }) })); return; }
       if (url.pathname === '/api/accounts/move') {   // { id: the session, to: the account ('' = the main one) }
-        const s = [...sessions.values()].find((x) => x.id === String(b?.id || '')), to = b?.to ? slugOf(b.to) : '';
+        const rawTo = String(b?.to || '').trim();
+        const to = rawTo ? ((agyAccounts.find((a) => a.slug === rawTo)?.slug) || slugOf(rawTo)) : '';
+        const s = [...sessions.values()].find((x) => x.id === String(b?.id || ''));
         json(res, 200, s ? await moveSession(s, to) : { ok: false, message: tr('server.move.notOpen') });
         return;
       }
       if (url.pathname === '/api/accounts/order') {   // (every account once: '' is the main one)
-        const all = orderOf(), order = Array.isArray(b?.order) ? b.order.map((s) => (s ? slugOf(s) : '')) : [];
+        const all = orderOf();
+        const order = Array.isArray(b?.order)
+          ? b.order.map((s) => {
+              const raw = String(s || '').trim();
+              if (!raw) return '';
+              return (agyAccounts.find((a) => a.slug === raw)?.slug) || slugOf(raw);
+            })
+          : [];
         if (order.length !== all.length || !all.every((s) => order.includes(s))) { json(res, 400, { ok: false }); return; }
         json(res, 200, setSwitch({ order }));
         return;
       }
       if (/\/(rename|use)$/.test(url.pathname)) {   // ('' = the main account)
-        const which = b?.name ? slugOf(b.name) : '';
+        const rawWhich = String(b?.name || '').trim();
+        const which = rawWhich ? ((agyAccounts.find((a) => a.slug === rawWhich)?.slug) || slugOf(rawWhich)) : '';
         if (which && !dirOfSlug(which)) { json(res, 404, { ok: false }); return; }
-        if (url.pathname.endsWith('/use')) { json(res, 200, setSwitch({ pick: which })); return; }
-        const label = clip(oneLine(b?.label), 24), names = { ...(prefs.get('accountNames') || {}) };
+        if (url.pathname.endsWith('/use')) {
+          const sw = setSwitch({ pick: which });
+          json(res, 200, sw);
+          return;
+        }
+        const label = clip(oneLine(b?.label || b?.email || ''), 64);
+        const names = { ...(prefs.get('accountNames') || {}) };
         if (label && label !== which) names[which] = label; else delete names[which];
         prefs.set('accountNames', Object.keys(names).length ? names : undefined);
-        broadcast({ k: 'limits', limits: limitsOut(), note: noteText() });
-        json(res, 200, { ok: true, label: acctLabel(which) });
+        if (which) {
+          const agyItem = agyAccounts.find((a) => a.slug === which);
+          if (agyItem) {
+            agyItem.name = label || which;
+            if (label.includes('@')) agyItem.email = label;
+            else delete agyItem.email;
+            saveAgyAccounts();
+          }
+        } else {
+          clearAgyAccountEmailCache();
+          if (planLimits) {
+            planLimits.email = label || detectAgyAccountEmail();
+          }
+        }
+        const outLimits = limitsOut();
+        broadcast({ k: 'limits', limits: outLimits, note: noteText() });
+        json(res, 200, { ok: true, label: acctLabel(which), limits: outLimits, auto: autoOut() });
         return;
       }
       const slug = slugOf(b?.name), L = logins.get(slug);
@@ -4726,7 +4908,9 @@ const server = http.createServer((req, res) => {
             'X-Content-Type-Options': 'nosniff',
           });
           if (req.method === 'HEAD') { res.end(); return; }
-          fs.createReadStream(targetFile).on('error', () => res.destroy()).pipe(res);
+          const stream = fs.createReadStream(targetFile);
+          res.on('close', () => stream.destroy());
+          stream.on('error', () => res.destroy()).pipe(res);
         }).catch(() => {
           Promise.resolve(nextHandle(req, res)).catch(() => {});
         });
@@ -4807,6 +4991,97 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/api/antigravity/artifact') {
+    if (!authorized(req, url)) { json(res, 401, { ok: false, message: tr('server.pin.needed') }); return; }
+    if (!sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    const local = isLoopback(req);
+    const viewer = viewerOf(req);
+    if (viewer) markMemberSeen(viewer);
+    readJson(req, 512_000).then(async (b) => {
+      if (!b || typeof b !== 'object') {
+        json(res, 400, { ok: false, message: tr('server.badRequest') });
+        return;
+      }
+      const safeBaseName = path.basename(String(b?.name || '').trim());
+      if (!safeBaseName || !/^[A-Za-z0-9._-]+\.md$/i.test(safeBaseName)) {
+        json(res, 400, { ok: false, message: 'Tên tệp Artifact không hợp lệ (chỉ hỗ trợ tệp .md).' });
+        return;
+      }
+      const rawId = String(b?.id || b?.sid || '').trim();
+      const s = (rawId && byId(rawId)) || (rawId.startsWith('a') ? byId(rawId.slice(1)) : null) || null;
+      const isFullDirector = local || !viewer || Boolean(viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc');
+      if (!isFullDirector && !(viewer?.canEditFiles && (!s?.cwd || access.canSeeWorkspace(viewer, s.cwd))) && !access.canControlSession(viewer, 'edit', s?.cwd || '')) {
+        json(res, 403, { ok: false, message: tr('server.forbidden') });
+        return;
+      }
+      const convId = String(s?.sid || rawId.replace(/^a(?=[0-9a-f]{8}-)/i, '') || '').trim();
+      if (!convId || !/^[A-Za-z0-9_-]{4,80}$/.test(convId)) {
+        json(res, 400, { ok: false, message: 'Không xác định được hội thoại cần lưu Artifact.' });
+        return;
+      }
+      let targetDir = '';
+      for (const bDir of agyBrainDirs()) {
+        const cand = path.join(bDir, convId);
+        if (fs.existsSync(cand)) {
+          targetDir = cand;
+          break;
+        }
+      }
+      if (!targetDir) {
+        targetDir = path.join(agyBrainDir(), convId);
+      }
+      await fsp.mkdir(targetDir, { recursive: true });
+      const targetFile = path.join(targetDir, safeBaseName);
+      const nextContent = String(b?.content ?? '');
+      await fsp.writeFile(targetFile, nextContent, 'utf8');
+      invalidateAgyArtifactCache(convId);
+      const st = await fsp.stat(targetFile).catch(() => null);
+      json(res, 200, {
+        ok: true,
+        id: s?.id || `a${convId}`,
+        sid: convId,
+        name: safeBaseName,
+        size: st?.size ?? Buffer.byteLength(nextContent, 'utf8'),
+        mtimeMs: st?.mtimeMs ?? Date.now(),
+      });
+    }).catch((err) => {
+      json(res, 500, { ok: false, message: err?.message || 'Lỗi lưu Artifact.' });
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/antigravity/credits') {
+    if (!authorized(req, url)) { json(res, 401, { ok: false, message: tr('server.pin.needed') }); return; }
+    if (!sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    const local = isLoopback(req);
+    const viewer = viewerOf(req);
+    const isFullDirector = local || !viewer || Boolean(viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc');
+    if (!isFullDirector) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    readJson(req, 16_000).then(async (b) => {
+      const wantEnabled = Boolean(b?.enabled);
+      const r = await writeAgyUseAiCredits(wantEnabled);
+      if (r && r.ok === false) {
+        json(res, 500, { ok: false, message: r.message || 'Không thể cập nhật cài đặt AI Credits.' });
+        return;
+      }
+      const enabled = r?.useAiCredits !== undefined ? Boolean(r.useAiCredits) : wantEnabled;
+      if (planLimits) planLimits.useAiCredits = enabled;
+      const outLimits = limitsOut(viewer);
+      broadcast({ k: 'limits', limits: outLimits, note: noteText() });
+      json(res, 200, { ok: true, useAiCredits: enabled, limits: outLimits });
+    }).catch(() => {
+      json(res, 500, { ok: false, message: 'Không thể cập nhật cài đặt AI Credits.' });
+    });
+    return;
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return; }
   if (url.pathname === '/health') {
     json(res, 200, {
@@ -4824,7 +5099,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (!authorized(req, url)) {
-    if (url.pathname === '/' || url.pathname === '/index.html') res.writeHead(303, { Location: '/pin' }).end();
+    if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/antigravity' || url.pathname === '/antigravity/') res.writeHead(303, { Location: '/pin' }).end();
     else json(res, 401, { ok: false, message: tr('server.pin.needed') });
     return;
   }
@@ -4937,7 +5212,9 @@ const server = http.createServer((req, res) => {
     fsp.stat(file).then((st) => {
       if (!st.isFile() || st.size > 40e6) { sendBlankGif(); return; }
       res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'private, max-age=30', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-      fs.createReadStream(file).on('error', () => {
+      const stream = fs.createReadStream(file);
+      res.on('close', () => stream.destroy());
+      stream.on('error', () => {
         if (!res.headersSent) sendBlankGif();
         else res.destroy();
       }).pipe(res);
@@ -5022,6 +5299,168 @@ const server = http.createServer((req, res) => {
     readLog(s, 120, url.searchParams.get('agent')).then((items) => json(res, 200, { items })).catch(() => json(res, 200, { items: [] }));
     return;
   }
+  if (url.pathname === '/api/antigravity/conversation') {
+    const local = isLoopback(req);
+    const viewer = viewerOf(req);
+    if (viewer) markMemberSeen(viewer);
+    const reqId = String(url.searchParams.get('id') || url.searchParams.get('sid') || '').trim();
+    (async () => {
+      if (sessions.size === 0) {
+        await scanSessions().catch(() => {});
+      }
+      let s = null;
+      if (reqId) {
+        s = byId(reqId) || (reqId.startsWith('a') ? byId(reqId.slice(1)) : null) || null;
+        if (!local && viewer && s?.cwd && !access.canSeeWorkspace(viewer, s.cwd)) {
+          json(res, 403, { ok: false, message: tr('server.forbidden') });
+          return;
+        }
+      } else {
+        const visible = [...sessions.values()].filter((x) => local || !viewer || !x.cwd || access.canSeeWorkspace(viewer, x.cwd));
+        visible.sort((a, b) => (
+          (Number(Boolean(b.busy || b.status === 'work')) - Number(Boolean(a.busy || a.status === 'work')))
+          || ((b.lastEventAt || b.createdAt || 0) - (a.lastEventAt || a.createdAt || 0))
+        ));
+        s = visible.find((x) => x.isAgy) || visible[0] || null;
+      }
+
+      let convId = String(s?.sid || reqId.replace(/^a(?=[0-9a-f]{8}-)/i, '') || '').trim();
+      let transcriptFile = s?.transcript || '';
+
+      if (!transcriptFile && convId) {
+        for (const bDir of agyBrainDirs()) {
+          const cand = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+          if (fs.existsSync(cand)) {
+            transcriptFile = cand;
+            break;
+          }
+        }
+      }
+
+      if (!convId && !s) {
+        let newestMtime = 0;
+        for (const bDir of agyBrainDirs()) {
+          let entries = [];
+          try { entries = await fsp.readdir(bDir, { withFileTypes: true }); } catch { continue; }
+          for (const ent of entries) {
+            if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
+            const tf = path.join(bDir, ent.name, '.system_generated', 'logs', 'transcript.jsonl');
+            const st = await fsp.stat(tf).catch(() => null);
+            if (st && st.mtimeMs > newestMtime) {
+              newestMtime = st.mtimeMs;
+              convId = ent.name;
+              transcriptFile = tf;
+            }
+          }
+        }
+      }
+
+      let turns = [];
+      const isAgyConv = Boolean(s?.isAgy || (transcriptFile && transcriptFile.includes('antigravity')) || (!s && convId));
+      if (isAgyConv) {
+        turns = await readAgyRichConversation(convId, transcriptFile, classify, viCache, imageId);
+      } else if (s) {
+        const items = await readLog(s, 120).catch(() => []);
+        let currentTurn = null;
+        for (const it of items) {
+          const ts = it.ts || 0;
+          if (it.role === 'user' || it.role === 'summary') {
+            currentTurn = {
+              id: `turn-${turns.length}`,
+              userText: it.text || '',
+              ts,
+              media: [],
+              steps: [],
+              responses: [],
+              filesChanged: [],
+              workDurationMs: 0,
+              lastTs: ts,
+            };
+            turns.push(currentTurn);
+          } else {
+            if (!currentTurn) {
+              currentTurn = {
+                id: `turn-${turns.length}`,
+                userText: '',
+                ts,
+                media: [],
+                steps: [],
+                responses: [],
+                filesChanged: [],
+                workDurationMs: 0,
+                lastTs: ts,
+              };
+              turns.push(currentTurn);
+            }
+            if (ts > 0) {
+              if (!currentTurn.ts) currentTurn.ts = ts;
+              currentTurn.lastTs = Math.max(currentTurn.lastTs || 0, ts);
+              currentTurn.workDurationMs = Math.max(0, currentTurn.lastTs - currentTurn.ts);
+            }
+            if (it.role === 'tool') {
+              currentTurn.steps.push({
+                kind: 'tool',
+                toolName: it.type || 'tool',
+                type: it.type || 'other',
+                label: it.label || '',
+                desc: it.desc || '',
+                file: '',
+                ts,
+              });
+            } else if (it.text) {
+              currentTurn.responses.push({
+                text: it.text,
+                ts,
+              });
+            }
+          }
+        }
+      }
+
+      const artifacts = await readAgyBrainArtifacts(convId, s?.cwd || ROOT);
+      const savedModelId = getSavedModel(s?.sid || convId, s?.cwd || '') || s?.preferredModel || '';
+      const savedModelMeta = savedModelId ? AGY_MODELS.find((m) => m.id === savedModelId) : null;
+      const modelLabel = savedModelMeta?.label || s?.preferredModelLabel || s?.usage?.model || s?.model || 'Gemini 3.1 Pro';
+      const gitInfo = s ? gitOf(s) : null;
+      const customName = s ? getCustomSessionName(s) : '';
+      const isFullDirector = local || !viewer || Boolean(viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc');
+      const targetCwd = s?.cwd || '';
+      const permissions = {
+        isDirector: isFullDirector,
+        canStop: isFullDirector || access.canControlSession(viewer, 'stop', targetCwd),
+        canRename: isFullDirector || access.canControlSession(viewer, 'edit', targetCwd),
+        canDelete: isFullDirector || access.canControlSession(viewer, 'delete', targetCwd),
+        canEditFiles: isFullDirector || Boolean(viewer?.canEditFiles && (!targetCwd || access.canSeeWorkspace(viewer, targetCwd))),
+        canAddProject: isFullDirector || (prefs.get('phoneTasks') !== false && access.canControlSession(viewer, 'edit', '')),
+        canManageMcp: isFullDirector,
+        allowedWorkspaces: isFullDirector ? ['*'] : (Array.isArray(viewer?.allowedWorkspaces) ? viewer.allowedWorkspaces : []),
+      };
+
+      json(res, 200, {
+        ok: true,
+        id: s?.id || (convId ? `a${convId}` : ''),
+        sid: convId,
+        title: customName || s?.customTitle || s?.title || s?.name || (turns.at(-1)?.userText ? clip(oneLine(turns.at(-1).userText), 70) : 'Antigravity Session'),
+        project: base(s?.cwd || '') || 'Workspace',
+        dir: s?.cwd || '',
+        branch: gitInfo?.branch || s?.git?.branch || 'main',
+        status: s?.status || 'rest',
+        busy: Boolean(s?.busy || s?.status === 'work'),
+        model: modelLabel,
+        selectedModel: savedModelId,
+        usage: s?.usage || null,
+        subs: s ? Object.values(s.subs || {}).map(pubSub) : [],
+        todos: s?.todos || [],
+        turns,
+        artifacts,
+        viewer: viewer ? access.pubMember(viewer) : { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true, isDirectorDevice: true, canEditFiles: true },
+        permissions,
+      });
+    })().catch((err) => {
+      json(res, 500, { ok: false, error: String(err?.message || err), turns: [], artifacts: [] });
+    });
+    return;
+  }
   if (url.pathname === '/api/timeline') {
     const to = Math.min(Number(url.searchParams.get('to')) || Date.now(), Date.now()), from = Math.max(Number(url.searchParams.get('from')) || to - 3600e3, to - 2 * 86400e3);
     const dayOf = (t) => new Date(t).toLocaleDateString('sv-SE');
@@ -5048,7 +5487,7 @@ const server = http.createServer((req, res) => {
     sysSnapshot({ open: url.searchParams.has('open') }).then((snap) => json(res, 200, { ...snap, auto: { hours: prefs.autoClose(), last: autoLast[0] || null } })).catch((err) => json(res, 500, { error: String(err.message || err) }));
     return;
   }
-  if (url.pathname === '/' || url.pathname === '/index.html') {
+  if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/antigravity' || url.pathname === '/antigravity/') {
     // the office page itself is rendered by Next.js (app/page.tsx); our headers go on before it starts the response
     res.setHeader('Referrer-Policy', 'no-referrer');
     // a phone in by a token link gets a cookie; a remembered one, renewed once a month, so it stays while it's used
@@ -5069,6 +5508,7 @@ const server = http.createServer((req, res) => {
       if (cookiesToSet.length) res.setHeader('Set-Cookie', cookiesToSet);
     }
     if (url.pathname === '/index.html') req.url = '/' + url.search;
+    else if (url.pathname === '/antigravity/') req.url = '/antigravity' + url.search;
     req.headers['x-office-lang'] = pickLang(url.searchParams.get('lang') || prefs.lang());   // ?lang=vi: one visit in another language
     Promise.resolve(nextHandle(req, res)).catch(() => {});
     return;

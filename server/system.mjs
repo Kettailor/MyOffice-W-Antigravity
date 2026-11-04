@@ -324,12 +324,32 @@ setInterval(() => { scanCleanups(); }, 15 * 60 * 1000).unref();
 let cache = null;
 let cacheAt = 0;
 let building = null;
+let buildingOpen = false;
 let cacheLang = '';
+const SNAPSHOT_TTL_MS = 2500;
 // open: the Mac panel is open, so the memory footprints are read again if older than 25 s (top costs ~1.3 s of CPU);
 // for the top bar's reading alone (every 30 s from each open page) the 15-second sampler's, up to 2 minutes old, do
 export async function sysSnapshot({ open = false } = {}) {
-  if (cache && Date.now() - cacheAt < 3000 && cacheLang === langOf() && (!open || cache.open)) return cache;
-  building ??= buildSnapshot(open).then((s) => { s.open = open; return s; }).then((s) => { cache = s; cacheAt = Date.now(); cacheLang = langOf(); return s; }).finally(() => { building = null; });
+  const wantOpen = Boolean(open);
+  if (cache && Date.now() - cacheAt < SNAPSHOT_TTL_MS && cacheLang === langOf() && (!wantOpen || cache.open)) {
+    return cache;
+  }
+  if (building && (!wantOpen || buildingOpen)) {
+    return building;
+  }
+  buildingOpen = wantOpen;
+  building = buildSnapshot(wantOpen)
+    .then((s) => {
+      s.open = wantOpen;
+      cache = s;
+      cacheAt = Date.now();
+      cacheLang = langOf();
+      return s;
+    })
+    .finally(() => {
+      building = null;
+      buildingOpen = false;
+    });
   return building;
 }
 async function buildSnapshot(open = true) {

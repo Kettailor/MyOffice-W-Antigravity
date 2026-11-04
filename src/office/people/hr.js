@@ -232,7 +232,7 @@ function startParty() {
 
 /* ---------- HR herself ---------- */
 let hr = null, SEAT = null, GREET = null;
-const HR_DESK = { x: 5.45, z: 7.3 };   // (the admin corner beside the front pod, next to the accountant's (people/accountant.js), off every walkway)
+const HR_DESK = { x: 5.35, z: 8.1 };   // (the admin corner in the south-east zone, next to the accountant's (people/accountant.js), off every walkway)
 const queue = [];
 function newcomer(w) {
   const s = sessions.get(w.id);

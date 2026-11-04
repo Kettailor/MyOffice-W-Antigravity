@@ -1,24 +1,23 @@
-/* Your to-dos, agent tasks, and shared office to-dos on the whiteboard card. */
-.board-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 3px; margin: 0 4px 10px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line-2); }
-.board-tab { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 6px 6px; border-radius: 7px; font: 600 .72rem/1.15 var(--font); color: var(--muted); text-align: center; transition: background .15s, color .15s; }
-.board-tab:hover { color: var(--ink); background: rgba(255, 255, 255, .04); }
-.board-tab.is-active { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-line); }
+/* Your to-dos, agent tasks, and shared office to-dos on the whiteboard card — 21st.dev Task Board style. */
+.board-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 3.5px; margin: 0 4px 10px; border-radius: 11px; background: rgba(11, 16, 26, 0.8); border: 1px solid var(--line-2); }
+.board-tab { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 7px 6px; border-radius: 8px; font: 600 .72rem/1.15 var(--font); color: var(--muted); text-align: center; transition: background .15s, color .15s, box-shadow .15s; }
+.board-tab:hover { color: var(--ink); background: rgba(255, 255, 255, .05); }
+.board-tab.is-active { background: linear-gradient(180deg, rgba(249, 115, 22, 0.22), rgba(249, 115, 22, 0.1)); color: #FFF; box-shadow: inset 0 0 0 1px var(--accent-line), 0 2px 6px rgba(0, 0, 0, .2); }
 .board-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .board-tab-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.board-tab-count { flex: none; min-width: 16px; height: 16px; padding: 0 4px; display: inline-grid; place-items: center; border-radius: 999px; font: 700 .64rem/1 var(--font); background: rgba(255, 255, 255, .08); color: var(--muted); }
+.board-tab-count { flex: none; min-width: 17px; height: 17px; padding: 0 4.5px; display: inline-grid; place-items: center; border-radius: 999px; font: 700 .63rem/1 var(--mono); background: rgba(255, 255, 255, .08); color: var(--muted); }
 .board-tab.is-active .board-tab-count { background: var(--accent); color: var(--on-accent); }
 .board-tab-count[data-count="0"] { opacity: .55; }
 .board-panel[hidden] { display: none !important; }
-/* your to-dos & shared to-dos */
-.todo-add { display: flex; gap: 6px; margin: 0 4px 6px; }
-.todo-add input { all: unset; box-sizing: border-box; flex: 1; min-width: 0; height: 34px; padding: 0 12px; border-radius: 9px; background: var(--bg); border: 1px solid var(--line-2); font-size: .8rem; color: var(--ink); }
+.todo-add { display: flex; gap: 6px; margin: 0 4px 8px; }
+.todo-add input { all: unset; box-sizing: border-box; flex: 1; min-width: 0; height: 35px; padding: 0 12px; border-radius: 10px; background: rgba(11, 16, 26, 0.85); border: 1px solid var(--line-2); font-size: .8rem; color: var(--ink); transition: border-color .15s, box-shadow .15s; }
 .todo-add input::placeholder { color: var(--faint); }
 .todo-add input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
-.todo-add .btn { height: 34px; }
-.todo-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
-.todo-list li { display: flex; align-items: flex-start; gap: 10px; padding: 6px 6px; border-radius: 9px; }
-.todo-list li:hover { background: var(--card-2); }
-.todo-check { all: unset; width: 18px; height: 18px; flex: none; margin-top: 1px; display: grid; place-items: center; border-radius: 6px; border: 1.5px solid var(--faint); color: transparent; cursor: pointer; }
+.todo-add .btn { height: 35px; }
+.todo-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.todo-list li { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; border-radius: 10px; border: 1px solid transparent; transition: background .15s, border-color .15s; }
+.todo-list li:hover { background: var(--card-2); border-color: var(--line); }
+.todo-check { all: unset; width: 18px; height: 18px; flex: none; margin-top: 1px; display: grid; place-items: center; border-radius: 6px; border: 1.5px solid var(--faint); color: transparent; cursor: pointer; transition: border-color .15s, background .15s; }
 .todo-check svg { width: 12px; height: 12px; }
 .todo-check:hover { border-color: var(--green); }
 .todo-check:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

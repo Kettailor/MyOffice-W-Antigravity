@@ -215,7 +215,7 @@ function buildSeason() {
 
 export function setup() {
   SEASON_SPOT = PRO ? {
-    centre: [5.8, 7.1], lounge: [13.35, 5.9],
+    centre: [0.4, 6.75], lounge: [13.35, 5.9],
     candy: [-6.8, 1.1, 1.9], counterPumpkin: [-7.45, 1.1, 1.85],
     floorPumpkins: [[-5.15, 4.95, 1.0], [-4.85, 4.6, 0.62], [12.55, 2.7, 0.9], [12.95, 3.2, 0.6], ...PODS.map(([cx, cz]) => [cx + 1.72, cz - 0.02, 0.5, 0.62])],
     strings: [[[-2.35, 3.3, -7.93], [2.75, 3.3, -7.93]], [[10.25, 3.22, -7.93], [13.85, 3.22, -7.93]]],

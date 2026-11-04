@@ -1,6 +1,6 @@
 // Project File Manager & Remote Document Viewer (.docx, .xlsx, .csv, .pdf, images, code/text).
 import { state } from '../core/state.js';
-import { $, el, hhmm, pad2 } from '../core/env.js';
+import { $, el, fmtBytes, hhmm, pad2 } from '../core/env.js';
 import { sessions } from '../people/workers.js';
 import { canSeeSession } from './group-chat.js';
 import { toast } from './activity.js';
@@ -51,17 +51,6 @@ function fileCategoryIcon(cat, ext = '') {
   if (cat === 'audio') return '🎵';
   if (cat === 'code') return '💻';
   return '📄';
-}
-
-function fmtFileSize(bytes) {
-  const b = Math.max(0, Number(bytes) || 0);
-  if (b < 1024) return `${b} B`;
-  const kb = b / 1024;
-  if (kb < 1024) return `${kb >= 10 ? Math.round(kb) : kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
-  const gb = mb / 1024;
-  return `${gb.toFixed(1)} GB`;
 }
 
 function fmtFileDate(ms) {
@@ -310,7 +299,7 @@ function renderTree() {
     const nameEl = el('b', 'fm-item-name', item.name);
     const metaText = item.isDir
       ? `Thư mục · ${fmtFileDate(item.mtimeMs)}`
-      : `${fmtFileSize(item.size || 0)} · ${fmtFileDate(item.mtimeMs)}`;
+      : `${fmtBytes(item.size || 0)} · ${fmtFileDate(item.mtimeMs)}`;
     const metaEl = el('small', 'fm-item-meta', metaText);
     main.append(nameEl, metaEl);
     row.append(ico, main);
@@ -335,7 +324,7 @@ async function selectFile(item) {
   titleWrap.append(
     el('span', 'fm-file-ico', fileCategoryIcon(item.category, item.ext)),
     el('b', 'fm-file-name', item.name),
-    el('small', 'fm-file-meta', `${fmtFileSize(item.size || 0)} · ${fmtFileDate(item.mtimeMs)}`),
+    el('small', 'fm-file-meta', `${fmtBytes(item.size || 0)} · ${fmtFileDate(item.mtimeMs)}`),
   );
 
   const actionsWrap = el('div', 'fm-file-actions');
@@ -854,13 +843,13 @@ export async function openFileManager(initialDir = '') {
 
 export function setupFileManager() {
   ensureFileManagerModal();
-  const topbarRight = document.querySelector('.topbar .tb-actions') || document.querySelector('#topbar .tb-right');
+  const topbarRight = document.querySelector('.topbar .tb-group--primary') || document.querySelector('.topbar .tb-actions') || document.querySelector('#topbar .tb-right');
   if (topbarRight && !$('btn-files-top')) {
     const btn = el('button', 'tb-btn tb-btn--files');
     btn.id = 'btn-files-top';
     btn.type = 'button';
     btn.title = 'Mở trình quản lý & xem trực tiếp file dự án (.docx, .xlsx, .pdf, ảnh, code)';
-    btn.append(el('span', 'tb-files-ico', '📁'), el('span', null, 'File Dự Án'));
+    btn.append(el('span', 'tb-files-ico', '📁'), el('span', 'lbl', 'File Dự Án'));
     btn.addEventListener('click', () => openFileManager());
     const anchorBtn = $('btn-mcp') || $('btn-task');
     if (anchorBtn && anchorBtn.parentElement === topbarRight) {

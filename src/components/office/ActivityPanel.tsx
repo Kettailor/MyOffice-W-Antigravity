@@ -30,6 +30,18 @@ export default async function ActivityPanel() {
           <button type="button" id="flt-all" aria-pressed="true"><span data-icon="list"></span><span>{t('ui.activityPanel.all')}</span></button>
           <button type="button" id="flt-att" aria-pressed="false"><i className="red-dot"></i><span>{t('ui.activityPanel.attention')}</span><b id="att-count" hidden></b></button>
         </div>
+        <div className="feed-search-wrap">
+          <label className="search feed-search">
+            <span data-icon="search"></span>
+            <input
+              id="feed-search"
+              type="search"
+              placeholder={t('ui.activityPanel.searchPlaceholder')}
+              autoComplete="off"
+              aria-label={t('ui.activityPanel.searchPlaceholder')}
+            />
+          </label>
+        </div>
         <div className="type-chips" id="type-chips" role="group" aria-label={t('ui.activityPanel.types')}>
           <button type="button" data-k="cmd" aria-pressed="false"><span data-icon="terminal"></span>{t('ui.activityPanel.cmd')}</button>
           <button type="button" data-k="edit" aria-pressed="false"><span data-icon="pencil"></span>{t('ui.activityPanel.edit')}</button>

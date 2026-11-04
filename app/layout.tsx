@@ -30,6 +30,7 @@ import '@/styles/tips.css';
 import '@/styles/settings.css';
 import '@/styles/responsive.css';
 import '@/styles/phone.css';
+import '@/styles/antigravity.css';
 
 /* The page's title, description and share card (the image and icons are files in app/: opengraph-image.jpg,
    twitter-image.jpg, icon.svg, favicon.ico, apple-icon.png). The online demo knows its address (OFFICE_SITE_URL, set by

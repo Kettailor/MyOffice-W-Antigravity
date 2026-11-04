@@ -1,7 +1,7 @@
 // The render loop and its frame budget.
 import * as THREE from 'three';
 import { state } from './state.js';
-import { reduceMotion, replay } from './env.js';
+import { $, reduceMotion, replay } from './env.js';
 import { HOME, SOFTWARE_GL, camera, controls, fpCam, labels, renderer, resize, restoreRenderer, scene } from '../scene/renderer.js';
 import { updateExtras } from '../world/props/update.js';
 import { leaving, npcs, subs, updateZs, workers } from '../people/workers.js';
@@ -71,10 +71,16 @@ const activeWorkWalking = () => {
   }
   return flights.length > 0;
 };
+let appEl = null;
+const isFocusMode = () => {
+  if (!appEl || !appEl.isConnected) appEl = $('app');
+  return appEl?.dataset?.wsMode === 'focus';
+};
 function frameGap(now) {
   if (SOFTWARE_GL) return 1000 / 5;
   if (document.hidden) return 1000 / 4;
   if (recorder || state.clip) return 1000 / 30;
+  if (isFocusMode() && !fp.on && !camGliding && panKeys.size === 0) return 1000 / 12;
   const activeMoving = activeWorkWalking() || rocketState.t >= 0 || (replay.on && replay.playing);
   if (phoneLike()) {
     return activeMoving || now - lastInput < 1200 ? 1000 / 30 : 1000 / 12;
@@ -150,9 +156,12 @@ export function loop(now = 0) {
   if (now - lastFrame < gap - 2) return;
   if (lastFrame && !fp.on && !state.clip) adaptResolution(now - lastFrame, gap, Math.min(0.1, (now - lastFrame) / 1000));
   lastFrame = now; frameNo++;
-  // the shadow map is redrawn every other frame while active work chibis walk, every sixth otherwise:
+  const focusMode = isFocusMode();
+  const interacting = fp.on || camGliding || panKeys.size > 0 || state.zoomGoal !== null || (!focusMode && now - lastInput < 1200);
+  const runSecondary = interacting || frameNo % 2 === 0;
+  // the shadow map is redrawn every other frame while active work chibis walk, every sixth otherwise (every 12th in focus mode):
   // furniture never moves, and the shadow pass costs as many draw calls again as the picture
-  if (frameNo % (fp.on || activeWorkWalking() ? 2 : 6) === 0) renderer.shadowMap.needsUpdate = true;
+  if (frameNo % (focusMode ? 12 : (fp.on || activeWorkWalking() ? 2 : 6)) === 0) renderer.shadowMap.needsUpdate = true;
   const dt0 = Math.min(clock.getDelta(), 0.1) * (reduceMotion ? 0.7 : 1);
   replayTick();
   const dt = dt0 * (replay.on && replay.playing ? REPLAY_MOTION : 1) * (state.speed || 1);   // (state.speed: a timelapse clip)
@@ -180,13 +189,15 @@ export function loop(now = 0) {
   updateGaming(dt);
   updateBilliards(dt);
   updateKaraoke(dt);
-  updateBoard(state.sim);
-  updatePlaces(now);
+  if (runSecondary) {
+    updateBoard(state.sim);
+    updatePlaces(now);
+    updateWeather(dt0);
+    updateAltar(dt0);
+  }
   updateTeam();
-  updateWeather(dt0);
   updateNap(dt0);
   updateQuota(dt0);
-  updateAltar(dt0);
   updateTests(state.sim);
   updatePost(dt);
   updateIncident(state.sim);
@@ -195,7 +206,7 @@ export function loop(now = 0) {
   if (PERF) lap('street');
   updateZs(dt);
   updateMarkers(state.sim);
-  updateTips();
+  if (runSecondary) updateTips();
   if (fp.on) {
     fpUpdate(dt0);
     updateWorld(scene, needFullWorldUpdate); needFullWorldUpdate = false; if (PERF) lap('world');

@@ -940,9 +940,18 @@ function renderEditor() {
     const cancelBtn = el('button', 'btn btn--sm', tr('ui.mcp.cancel'));
     cancelBtn.type = 'button';
 
+    const parseLooseClientJson = (rawText) => {
+      let s = String(rawText || '').trim().replace(/,\s*$/, '');
+      if (/^"[^"]+"\s*:\s*\{[\s\S]*\}$/.test(s)) {
+        s = `{${s}}`;
+      }
+      s = s.replace(/,\s*([}\]])/g, '$1');
+      return JSON.parse(s);
+    };
+
     formatBtn.addEventListener('click', () => {
       try {
-        const parsed = JSON.parse(ta.value.trim());
+        const parsed = parseLooseClientJson(ta.value);
         ta.value = JSON.stringify(parsed, null, 2);
       } catch {
         toast(tr('ui.mcp.invalidJson'));
@@ -961,8 +970,9 @@ function renderEditor() {
         ta.focus();
         return;
       }
+      let normalizedJson = raw;
       try {
-        JSON.parse(raw);
+        normalizedJson = JSON.stringify(parseLooseClientJson(raw), null, 2);
       } catch {
         toast(tr('ui.mcp.invalidJson'));
         ta.focus();
@@ -970,7 +980,7 @@ function renderEditor() {
       }
       importBtn.disabled = true;
       importBtn.textContent = tr('ui.mcp.saving');
-      const res = await postMcp({ action: 'importJson', json: raw, enabled: true });
+      const res = await postMcp({ action: 'importJson', json: normalizedJson, enabled: true });
       importBtn.disabled = false;
       importBtn.textContent = tr('ui.mcp.importJsonBtn');
       if (res?.ok) {

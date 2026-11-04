@@ -358,9 +358,9 @@ function buildProFloor() {
     potPlant(cx + 1.72, cz + 0.32, 0.4, 'snake', 0.62); trinket('books', cx + 1.72, 0.62, cz - 0.3, 0.3);
   }
   // a phone booth for calls, felt walls, a glass door facing the pods, a stool and a light inside (the karaoke box
-  // beside it: world/props/karaoke.js)
-  for (const z of [6.0]) {
-    const b = new THREE.Group(); b.position.set(-0.75, 0, z); scene.add(b);
+  // beside it in the south-west booth zone: world/props/karaoke.js)
+  for (const z of [7.85]) {
+    const b = new THREE.Group(); b.position.set(0.55, 0, z); b.rotation.y = Math.PI / 2; scene.add(b);
     const fm = mat('#7E9A82', { roughness: 0.95 }), fr = mat('#2B2F36', { roughness: 0.5 });
     put(b, rbox(1.0, 0.08, 1.15, fr, 0.02), 0, 0.04, 0); put(b, rbox(1.0, 0.1, 1.15, fr, 0.02), 0, 2.2, 0);
     put(b, rbox(0.06, 2.12, 1.15, fm, 0.02), -0.47, 1.1, 0);

@@ -5,6 +5,7 @@ import { STATUS_LABEL, verb } from './event-text.js';
 import { TYPE_ICON, TYPE_TONE, icon } from './icons.js';
 import { hoverRing, selRing } from '../interact/rings.js';
 import { AGENT_NAME, agentMark, agentOf, awayHooks, colorOf, dn, dnOf, npcs, sessions, subs, workers } from '../people/workers.js';
+import { rebalanceDesks } from '../net/live.js';
 import { renderLite } from './lite.js';
 import { canSessionPerm, deleteSession, openSession, renameSession, renderActivity, renderSessionHead, renderSubs, stopSession, tab, toggleSession } from './session-drawer.js';
 import { macSnap } from './mac-drawer.js';
@@ -19,6 +20,7 @@ import { t as tr, num } from '../../i18n/index.js';
 
 let feedFilter = 'all';
 let query = '';
+let feedQuery = '';
 let toastEl;
 let toastTimer;
 export function toast(msg, ms = 3400) { toastEl.textContent = msg; toastEl.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.hidden = true; }, ms); }
@@ -166,7 +168,13 @@ export function renderFeed() {
     }
     return nowMs() - e.ts < 3600e3 && latest.get(e.sess) === e.id;
   };
-  const rows = mainFeed.filter((e) => (feedFilter === 'all' || isLiveAtt(e)) && kindOk(e)).slice(-90).reverse();
+  const feedMatch = (e) => {
+    if (!feedQuery) return true;
+    const q = feedQuery.toLowerCase();
+    const text = `${dnOf(e) || ''} ${verb(e) || ''} ${e.label || ''} ${e.type || ''}`.toLowerCase();
+    return text.includes(q);
+  };
+  const rows = mainFeed.filter((e) => (feedFilter === 'all' || isLiveAtt(e)) && kindOk(e) && feedMatch(e)).slice(-90).reverse();
   const att = mainFeed.filter(isLiveAtt).length;
   const attEl = $('att-count');
   if (attEl) { attEl.hidden = !att; const attStr = String(att); if (attEl.textContent !== attStr) attEl.textContent = attStr; }
@@ -174,7 +182,7 @@ export function renderFeed() {
   if (feedFabCount) feedFabCount.textContent = String(att || rows.length);
   if (feedFabBtn) feedFabBtn.dataset.att = String(att);
   const waitSig = [...sessions.values()].filter((s) => s.status === 'wait').map((s) => s.id).join(',');
-  const sig = `${feedFilter}|${[...typeFilter].join(',')}|${state.streamer ? 1 : 0}|${att}|${waitSig}|${rows.map((e) => `${e.id}:${e.type}:${e.ts}:${dnOf(e)}`).join(';')}|${[...sessions.values()].filter((s) => s.status === 'work').map((s) => `${s.id}:${latest.get(s.id) || ''}`).join(',')}`;
+  const sig = `${feedFilter}|${feedQuery}|${[...typeFilter].join(',')}|${state.streamer ? 1 : 0}|${att}|${waitSig}|${rows.map((e) => `${e.id}:${e.type}:${e.ts}:${dnOf(e)}`).join(';')}|${[...sessions.values()].filter((s) => s.status === 'work').map((s) => `${s.id}:${latest.get(s.id) || ''}`).join(',')}`;
   if (sig === lastFeedSig) return;
   lastFeedSig = sig;
   list.replaceChildren();
@@ -880,12 +888,27 @@ export function setup() {
     });
   }
   syncRailToolbar();
+  $('feed-search')?.addEventListener('input', (e) => {
+    feedQuery = e.target.value.trim();
+    renderFeed();
+  });
   const appEl = $('app');
+  const syncWsModeButtons = () => {
+    if (!appEl) return;
+    const rCol = appEl.classList.contains('rail-collapsed');
+    const fCol = appEl.classList.contains('feed-collapsed');
+    const mode = rCol && fCol ? 'cinema' : rCol && !fCol ? 'focus' : 'balanced';
+    appEl.dataset.wsMode = mode;
+    for (const b of document.querySelectorAll('[data-ws-mode]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.wsMode === mode));
+    }
+  };
   const setRailCollapsed = (collapsed) => {
     if (!appEl) return;
     appEl.classList.toggle('rail-collapsed', collapsed);
     $('rail-toggle')?.setAttribute('aria-expanded', String(!collapsed));
     try { localStorage.setItem('office-rail-collapsed', collapsed ? '1' : '0'); } catch { /* storage blocked */ }
+    syncWsModeButtons();
     resize();
     setTimeout(() => { resize(); window.dispatchEvent(new Event('resize')); }, 260);
   };
@@ -902,6 +925,7 @@ export function setup() {
     appEl.classList.toggle('feed-collapsed', collapsed);
     $('feed-collapse-btn')?.setAttribute('aria-expanded', String(!collapsed));
     try { localStorage.setItem('office-feed-collapsed', collapsed ? '1' : '0'); } catch { /* storage blocked */ }
+    syncWsModeButtons();
     resize();
     setTimeout(() => { resize(); window.dispatchEvent(new Event('resize')); }, 260);
   };
@@ -916,6 +940,186 @@ export function setup() {
     setFeedCollapsed(!appEl?.classList.contains('feed-collapsed'));
   });
   $('feed-expand-fab')?.addEventListener('click', () => setFeedCollapsed(false));
+  const setWorkspaceMode = (mode) => {
+    if (mode === 'cinema') {
+      setRailCollapsed(true);
+      setFeedCollapsed(true);
+    } else if (mode === 'focus') {
+      setRailCollapsed(true);
+      setFeedCollapsed(false);
+    } else {
+      setRailCollapsed(false);
+      setFeedCollapsed(false);
+    }
+  };
+  $('workspace-mode-seg')?.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ws-mode]');
+    if (!b) return;
+    setWorkspaceMode(b.dataset.wsMode);
+  });
+  syncWsModeButtons();
+
+  /* ---------- Omni Command Palette (Ctrl+K / ⌘K — 21st.dev Command Menu #23173) ---------- */
+  const cmdModal = $('cmd-palette-modal');
+  const cmdInput = $('cmd-palette-input');
+  const cmdList = $('cmd-palette-list');
+  let cmdIdx = 0;
+  let cmdFlatItems = [];
+  const renderCmdPalette = () => {
+    if (!cmdList || cmdModal?.hidden) return;
+    const q = (cmdInput?.value || '').trim().toLowerCase();
+    cmdList.replaceChildren();
+    cmdFlatItems = [];
+
+    const visibleSessions = [...sessions.values()].filter((s) => !s.masked && canSeeSession(s));
+    const sessItems = visibleSessions
+      .filter((s) => !q || `${dn(s)} ${s.project || ''} ${s.cwd || ''}`.toLowerCase().includes(q))
+      .slice(0, 8)
+      .map((s) => ({
+        iconName: s.status === 'wait' ? 'alert' : s.status === 'work' ? 'terminal' : 'users',
+        title: dn(s),
+        sub: projInfoOf(s).name || s.status,
+        badge: tr(`ui.sessionRail.${uiStatusOf(s)}`),
+        tone: uiStatusOf(s),
+        run: () => { openSession(s.id); },
+      }));
+
+    const viewDefs = [
+      { v: 'home', ic: 'home', label: tr('ui.cameraToolbar.home'), kbd: '1' },
+      { v: 'desks', ic: 'monitor', label: tr('ui.cameraToolbar.desks'), kbd: '2' },
+      { v: 'meeting', ic: 'users', label: tr('ui.cameraToolbar.meeting'), kbd: '3' },
+      { v: 'server', ic: 'server', label: tr('ui.cameraToolbar.server'), kbd: '4' },
+      { v: 'lounge', ic: 'coffee', label: tr('places.chip.lounge'), kbd: '5' },
+    ];
+    const viewItems = viewDefs
+      .filter((d) => !q || d.label.toLowerCase().includes(q) || d.v.includes(q))
+      .map((d) => ({
+        iconName: d.ic,
+        title: d.label,
+        sub: tr('ui.cmdPalette.secViews'),
+        badge: d.kbd,
+        run: () => { document.querySelector(`.seg-btn[data-view="${d.v}"]`)?.click(); },
+      }));
+
+    const actDefs = [
+      { ic: 'clipboard', title: tr('ui.topBar.task'), sub: tr('ui.topBar.taskTitle'), badge: 'Task', run: () => $('btn-task')?.click() },
+      { ic: 'plug', title: tr('ui.topBar.mcp'), sub: tr('ui.topBar.mcpTitle'), badge: 'MCP', run: () => $('btn-mcp')?.click() },
+      { ic: 'chat', title: tr('chat.open'), sub: tr('chat.openTitle'), badge: 'Chat', run: () => $('btn-chat')?.click() },
+      { ic: 'maximize', title: tr('ui.topBar.modeCinema'), sub: tr('ui.topBar.modeCinemaTitle'), badge: '3D', run: () => setWorkspaceMode('cinema') },
+      { ic: 'sliders', title: tr('ui.topBar.modeBalanced'), sub: tr('ui.topBar.modeBalancedTitle'), badge: 'UI', run: () => setWorkspaceMode('balanced') },
+      { ic: 'terminal', title: tr('ui.topBar.modeFocus'), sub: tr('ui.topBar.modeFocusTitle'), badge: 'Focus', run: () => setWorkspaceMode('focus') },
+      { ic: 'walk', title: tr('ui.cameraToolbar.walkIn'), sub: tr('ui.cameraToolbar.walkInTitle'), badge: 'V', run: () => $('btn-fp')?.click() },
+      { ic: 'moon', title: tr('ui.topBar.nightLabel'), sub: tr('ui.topBar.nightTitle'), badge: 'Theme', run: () => $('btn-night')?.click() },
+    ].filter((a) => !q || `${a.title} ${a.sub} ${a.badge}`.toLowerCase().includes(q));
+
+    const appendSection = (secTitle, arr) => {
+      if (!arr.length) return;
+      const h = el('div', 'cmd-sec-title', secTitle);
+      cmdList.append(h);
+      for (const item of arr) {
+        const idx = cmdFlatItems.length;
+        const btn = el('button', 'cmd-item' + (idx === cmdIdx ? ' is-active' : ''));
+        btn.type = 'button';
+        btn.setAttribute('role', 'option');
+        btn.setAttribute('aria-selected', String(idx === cmdIdx));
+        const icWrap = el('span', 'cmd-item-ic');
+        if (item.tone) icWrap.dataset.tone = item.tone;
+        icWrap.append(icon(item.iconName || 'sparkle'));
+        const main = el('span', 'cmd-item-main');
+        main.append(el('b', 'cmd-item-title', item.title));
+        if (item.sub) main.append(el('small', 'cmd-item-sub', item.sub));
+        btn.append(icWrap, main);
+        if (item.badge) {
+          const bdg = el('kbd', 'cmd-item-badge', item.badge);
+          if (item.tone) bdg.dataset.tone = item.tone;
+          btn.append(bdg);
+        }
+        btn.addEventListener('mouseenter', () => {
+          cmdIdx = idx;
+          for (let i = 0; i < cmdFlatItems.length; i++) {
+            cmdFlatItems[i].el.classList.toggle('is-active', i === cmdIdx);
+            cmdFlatItems[i].el.setAttribute('aria-selected', String(i === cmdIdx));
+          }
+        });
+        btn.addEventListener('click', () => {
+          closeCmdPalette();
+          item.run();
+        });
+        cmdList.append(btn);
+        cmdFlatItems.push({ el: btn, run: item.run });
+      }
+    };
+
+    appendSection(tr('ui.cmdPalette.secSessions'), sessItems);
+    appendSection(tr('ui.cmdPalette.secViews'), viewItems);
+    appendSection(tr('ui.cmdPalette.secActions'), actDefs);
+
+    if (!cmdFlatItems.length) {
+      cmdList.append(el('div', 'cmd-empty', tr('ui.cmdPalette.empty')));
+    } else if (cmdIdx >= cmdFlatItems.length) {
+      cmdIdx = 0;
+      cmdFlatItems[0].el.classList.add('is-active');
+    }
+  };
+  const openCmdPalette = () => {
+    if (!cmdModal) return;
+    cmdModal.hidden = false;
+    if (cmdInput) cmdInput.value = '';
+    cmdIdx = 0;
+    renderCmdPalette();
+    requestAnimationFrame(() => cmdInput?.focus());
+  };
+  const closeCmdPalette = () => {
+    if (!cmdModal || cmdModal.hidden) return;
+    cmdModal.hidden = true;
+  };
+  $('btn-cmd-palette')?.addEventListener('click', openCmdPalette);
+  $('cmd-palette-close')?.addEventListener('click', closeCmdPalette);
+  cmdModal?.addEventListener('click', (e) => {
+    if (e.target === cmdModal) closeCmdPalette();
+  });
+  cmdInput?.addEventListener('input', () => {
+    cmdIdx = 0;
+    renderCmdPalette();
+  });
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (cmdModal?.hidden) openCmdPalette();
+      else closeCmdPalette();
+      return;
+    }
+    if (!cmdModal || cmdModal.hidden) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeCmdPalette();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (cmdFlatItems.length) {
+        cmdIdx = (cmdIdx + 1) % cmdFlatItems.length;
+        for (let i = 0; i < cmdFlatItems.length; i++) {
+          const active = i === cmdIdx;
+          cmdFlatItems[i].el.classList.toggle('is-active', active);
+          if (active) cmdFlatItems[i].el.scrollIntoView({ block: 'nearest' });
+        }
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (cmdFlatItems.length) {
+        cmdIdx = (cmdIdx - 1 + cmdFlatItems.length) % cmdFlatItems.length;
+        for (let i = 0; i < cmdFlatItems.length; i++) {
+          const active = i === cmdIdx;
+          cmdFlatItems[i].el.classList.toggle('is-active', active);
+          if (active) cmdFlatItems[i].el.scrollIntoView({ block: 'nearest' });
+        }
+      }
+    } else if (e.key === 'Enter' && cmdFlatItems[cmdIdx]) {
+      e.preventDefault();
+      const target = cmdFlatItems[cmdIdx];
+      closeCmdPalette();
+      target.run();
+    }
+  });
   grpEls = Object.fromEntries(GROUPS.map(([k]) => {
     const li = el('li', 'grp'); li.dataset.g = k;
     const b = el('button', 'grp-btn'); b.type = 'button'; b.dataset.g = k;
@@ -932,7 +1136,7 @@ export function setup() {
     for (const x of document.querySelectorAll('.st')) x.setAttribute('aria-pressed', String(x.dataset.st === railFilter));
     renderRail();
   });
-  awayHooks.change = () => queueUi();
+  awayHooks.change = () => { rebalanceDesks(); queueUi(); };
   // running timers tick every second without re-rendering the list
   let tick = 0;
   setInterval(() => {

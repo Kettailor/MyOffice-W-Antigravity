@@ -45,6 +45,6 @@
 
 /* Project File Manager Modal (.fm-modal / .fm-card / .fm-sheet-table / .fm-docx-page) */
 .fm-modal { z-index: 32; }
-.fm-card { width: min(1240px, 96vw); height: min(840px, 90vh); display: flex; flex-direction: column; align-items: stretch; text-align: left; gap: 0; }
+.fm-card { width: min(1160px, 96vw); height: min(820px, 90vh); display: flex; flex-direction: column; }
 .fm-sheet-table { width: 100%; border-collapse: collapse; }
 .fm-docx-page { width: min(794px, 100%); margin: 0 auto; background: #FFFFFF; color: #1E293B; }

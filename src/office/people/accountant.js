@@ -40,7 +40,7 @@ export function busyNow() {
 }
 
 /* ---------- the desk ---------- */
-const DESK = { x: 5.45, z: 6.15 };   // (the admin corner beside the front pod, with HR (people/hr.js): off every walkway, her back to the right aisle, her screen to the room)
+const DESK = { x: 5.35, z: 7.0 };   // (the admin corner in the south-east zone, with HR (people/hr.js): off every walkway, her back to the right aisle, her screen to the room)
 let SEAT, REPORT, screenTex, sheetKey = '', paperM, deskPaper;
 function buildDesk() {
   const g = new THREE.Group(); g.position.set(DESK.x, 0, DESK.z); g.rotation.y = Math.PI / 2; scene.add(g);   // (its front, and her chair, toward +x)
@@ -65,12 +65,12 @@ function buildDesk() {
   put(g, rbox(0.23, 0.045, 0.31, mat('#7A1F2B', { roughness: 0.7 }), 0.01), -0.3, 0.792, 0.2).rotation.y = -0.18;
   // the corner's low screen behind the two desks, its sign toward the room
   const felt = mat('#6F8A9A', { roughness: 0.95 });
-  put(scene, rbox(0.06, 1.2, 2.2, felt, 0.02), 5.0, 0.6, 6.72);
-  put(scene, rbox(0.07, 0.04, 2.24, mat('#9AA2AD', { roughness: 0.4, metalness: 0.4 }), 0.01), 5.0, 1.22, 6.72);
+  put(scene, rbox(0.06, 1.2, 2.15, felt, 0.02), 4.85, 0.6, 7.55);
+  put(scene, rbox(0.07, 0.04, 2.19, mat('#9AA2AD', { roughness: 0.4, metalness: 0.4 }), 0.01), 4.85, 1.22, 7.55);
   const signTex = canvasTex(512, 72, (c, w, h) => { c.fillStyle = '#1C2620'; c.fillRect(0, 0, w, h); c.fillStyle = '#F6EFE4'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = '800 36px "Be Vietnam Pro", system-ui, sans-serif'; fitText(c, tr('people.accountant.corner'), w - 30); c.fillText(tr('people.accountant.corner'), w / 2, h / 2 + 2); });
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.18), new THREE.MeshBasicMaterial({ map: signTex })); sign.position.set(5.036, 1.06, 6.72); sign.rotation.y = Math.PI / 2; sign.userData.noMerge = true; scene.add(sign);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.18), new THREE.MeshBasicMaterial({ map: signTex })); sign.position.set(4.886, 1.06, 7.55); sign.rotation.y = Math.PI / 2; sign.userData.noMerge = true; scene.add(sign);
   // a small printer on a cabinet behind the screen
-  const cab = new THREE.Group(); cab.position.set(4.66, 0, 6.0); cab.rotation.y = Math.PI / 2; scene.add(cab);
+  const cab = new THREE.Group(); cab.position.set(4.5, 0, 6.85); cab.rotation.y = Math.PI / 2; scene.add(cab);
   put(cab, rbox(0.45, 0.6, 0.42, mat('#D6D9DE', { roughness: 0.6 }), 0.02), 0, 0.3, 0);
   put(cab, rbox(0.38, 0.17, 0.32, mat('#EDEEF0', { roughness: 0.5 }), 0.02), 0, 0.685, 0);
   put(cab, rbox(0.26, 0.012, 0.14, white, 0.004), 0, 0.775, 0.1);
@@ -181,7 +181,7 @@ export function budgetWarn(force = false) {
   p.job = 'warn'; p.hush(); p.anim = 'idle';
   const d = sessions.get(w.id)?.desk ?? -1;
   let to;
-  if (d >= 0) { const ds = DESK_SPOTS[d], x = ds.x - 0.55, z = ds.z - 0.8; to = { x, z, face: faceTo(x, z, ds.x, ds.z), node: ds.node }; }
+  if (d >= 0 && d < DESK_SPOTS.length) { const ds = DESK_SPOTS[d], x = ds.x - 0.55, z = ds.z - 0.8; to = { x, z, face: faceTo(x, z, ds.x, ds.z), node: ds.node }; }
   else { to = nearBoss(w, p); to.face = Math.atan2(w.pos.x - to.x, w.pos.y - to.z); }
   const text = tr('people.accountant.warn', { pct: Math.round(win.pct), window: tr(`people.accountant.win.${win.key === 'weekly' ? 'weekly' : 'session'}`) });
   p.goTo(to, () => {

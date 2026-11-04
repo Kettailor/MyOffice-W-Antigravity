@@ -114,7 +114,7 @@ test('MCP Manager: upsert, toggle, duplicate, import/export, toggleAll, delete, 
     assert.equal(list.summary.enabled, 3);
     assert.equal(list.summary.disabled, 0);
 
-    // 7. Import JSON
+    // 7. Import JSON (both mcpServers wrapper and bare single-server object)
     const rImport = mgr.importJson(
       JSON.stringify({
         mcpServers: {
@@ -127,14 +127,64 @@ test('MCP Manager: upsert, toggle, duplicate, import/export, toggleAll, delete, 
     );
     assert.equal(rImport.ok, true);
     assert.equal(rImport.count, 1);
+
+    const rImportBare = mgr.importJson(
+      JSON.stringify({
+        command: 'C:\\Users\\lekie\\.local\\bin\\uvx.exe',
+        args: ['blender-mcp'],
+      }),
+    );
+    assert.equal(rImportBare.ok, true);
+    assert.deepEqual(rImportBare.imported, ['blender-mcp']);
+    list = mgr.listServers({ isFullDirector: true });
+    assert.equal(list.summary.total, 5);
+
+    // 7b. Import loose JSON snippet (no outer braces + trailing commas) and scoped/URL bare configs
+    const rImportLoose = mgr.importJson(
+      `"github": {\n  "command": "npx",\n  "args": ["-y", "@modelcontextprotocol/server-github",],\n},`,
+    );
+    assert.equal(rImportLoose.ok, true);
+    assert.deepEqual(rImportLoose.imported, ['github']);
+
+    const rImportScoped = mgr.importJson(
+      JSON.stringify({
+        command: 'npx',
+        args: ['-y', '@21st-dev/magic@latest'],
+      }),
+    );
+    assert.equal(rImportScoped.ok, true);
+    assert.deepEqual(rImportScoped.imported, ['@21st-dev/magic']);
+
+    const rImportUrl = mgr.importJson(
+      JSON.stringify({
+        serverUrl: 'https://composio.dev/mcp',
+      }),
+    );
+    assert.equal(rImportUrl.ok, true);
+    assert.deepEqual(rImportUrl.imported, ['composio']);
+
+    // 7c. Updating server with masked placeholder preserves original secret, and exportJson masks for non-directors
+    const rUpdateMasked = mgr.upsertServer({
+      name: 'figma',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'figma-developer-mcp', '--stdio'],
+      env: { FIGMA_API_KEY: maskSecret('figd_secret_1234567890') },
+      enabled: true,
+    });
+    assert.equal(rUpdateMasked.ok, true);
+    const exportedDirector = JSON.parse(mgr.exportJson({ isFullDirector: true }));
+    assert.equal(exportedDirector.mcpServers.figma.env.FIGMA_API_KEY, 'figd_secret_1234567890');
+    const exportedAssistant = JSON.parse(mgr.exportJson({ isFullDirector: false }));
+    assert.equal(exportedAssistant.mcpServers.figma.env.FIGMA_API_KEY, maskSecret('figd_secret_1234567890'));
+
+    // 8. Delete "stitch-copy", "github", "@21st-dev/magic", and "composio"
+    for (const delName of ['stitch-copy', 'github', '@21st-dev/magic', 'composio']) {
+      const rDel = mgr.deleteServer(delName);
+      assert.equal(rDel.ok, true);
+    }
     list = mgr.listServers({ isFullDirector: true });
     assert.equal(list.summary.total, 4);
-
-    // 8. Delete "stitch-copy"
-    const rDel = mgr.deleteServer('stitch-copy');
-    assert.equal(rDel.ok, true);
-    list = mgr.listServers({ isFullDirector: true });
-    assert.equal(list.summary.total, 3);
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }

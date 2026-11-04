@@ -3,7 +3,7 @@ import { HQ, PRO, V2, randInt } from '../core/env.js';
 import { LAY, inside, sofaAt } from '../world/layout.js';
 import { DZ, LIFT_X } from '../world/entrance.js';
 import { DESKS, PODS, TEAM_SIZE, dLocal } from '../world/desks.js';
-import { MEET, MEET_SEATS } from '../world/furniture/meeting.js';
+import { MEET, MEET_SEATS, MEET_SEATS_BY_ROOM } from '../world/furniture/meeting.js';
 import { npcs, subs, workers } from './workers.js';
 import { blocked, buildGrid, fp } from '../interact/first-person.js';
 
@@ -11,7 +11,7 @@ import { blocked, buildGrid, fp } from '../interact/first-person.js';
    People walk node to node, then straight to their spot; every edge is clear of furniture and walls, and rooms are
    entered through their doors. */
 // pro: around each pod, a walkway behind each pair of chairs (pods A and B share their aisles)
-const podAisle = (p, front) => PODS[p][1] + (front ? 1.8 : -1.8);
+const podAisle = (p, front) => PODS[p][1] + (front ? 1.75 : -1.75);
 let podNodes;
 export let NODES;
 let EDGES;
@@ -205,6 +205,43 @@ export function allocate(name, w, orNull = false) {
   return { x: pick.x, z: pick.z, face: pick.face || 0, sit: false, node: pick.node || nearestNode(P.set(pick.x, pick.z)) };
 }
 
+/* Overflow Hot-Desk allocation for sessions beyond the 16 primary desks:
+   1. South Wing Meeting Rooms (Room 3 -> Room 2 -> Room 1, so Room 1 stays free for Subagent briefings)
+   2. Pantry Co-working tables (DINING — 16 seats)
+   3. Library reading chairs & Lounge sofa */
+export function allocateOverflowDesk(w) {
+  if (!w) return allocate('meeting', w);
+  if (w.overflowSpot && (!w.overflowSpot.by || w.overflowSpot.by === w)) {
+    w.overflowSpot.by = w;
+    return w.overflowSpot;
+  }
+  const pools = [];
+  if (Array.isArray(MEET_SEATS_BY_ROOM) && MEET_SEATS_BY_ROOM.length) {
+    for (let r = MEET_SEATS_BY_ROOM.length - 1; r >= 0; r--) {
+      if (MEET_SEATS_BY_ROOM[r]) pools.push(...MEET_SEATS_BY_ROOM[r]);
+    }
+  } else if (Array.isArray(MEET_SEATS)) {
+    pools.push(...MEET_SEATS);
+  }
+  if (Array.isArray(DINING)) pools.push(...DINING);
+  if (STATIONS?.library) pools.push(...STATIONS.library.filter((s) => s.sit));
+  const freeSeat = pools.find((s) => s && (!s.by || s.by === w));
+  if (freeSeat) {
+    freeSeat.by = w;
+    w.overflowSpot = freeSeat;
+    return freeSeat;
+  }
+  const fallback = allocate('meeting', w);
+  w.overflowSpot = fallback;
+  return fallback;
+}
+
+export function releaseOverflowDesk(w) {
+  if (!w?.overflowSpot) return;
+  if (w.overflowSpot.by === w) w.overflowSpot.by = null;
+  w.overflowSpot = null;
+}
+
 export function setup() {
   podNodes = PRO ? Object.fromEntries(PODS.flatMap(([cx], p) => [0, 1].flatMap((k) => [[`P${p}b${k}`, [cx + (k ? 0.76 : -0.76), podAisle(p, false)]], [`P${p}f${k}`, [cx + (k ? 0.76 : -0.76), podAisle(p, true)]]]))) : {};
   NODES = PRO ? {
@@ -214,10 +251,10 @@ export function setup() {
     N1: [0.2, -2.2], DRi: [0.2, -2.2], DRd: [0.2, -3.55], DRw: [0.2, -5.5],
     DRs0: [-0.65, -6.6], DRs1: [-0.65, -4.3], DRs2: [1.45, -6.6], DRs3: [1.45, -4.3],
     LBd: [3.8, -2.3], LBi: [3.8, -3.8], LBf: [6.25, -3.45], LBm: [4.6, -5.6], CE: [7.4, -2.3],
-    L1: [-2.4, -0.3], L2: [-2.4, 3.3], L3: [-2.4, 4.8], L4: [-2.4, 8.4], R1: [7.4, -0.3], R2: [7.4, 3.3], R3: [7.4, 4.8], R4: [7.4, 8.4],
-    M1: [2.5, -0.3], M2: [2.5, 3.3], ...podNodes, ...(HQ ? wingGraph().nodes : {}),
+    L1: [-2.4, -1.5], L2: [-2.4, 2.2], L3: [-2.4, 5.9], L4: [-2.4, 8.4], R1: [7.4, -1.5], R2: [7.4, 2.2], R3: [7.4, 5.9], R4: [7.4, 8.4],
+    M1: [2.5, -1.5], M2: [2.5, 2.0], M3: [2.5, 2.4], M4: [2.5, 5.9], ...podNodes, ...(HQ ? wingGraph().nodes : {}),
     PA1: [9.3, -2.6], PA2: [9.3, -6.15], PA3: [11.7, -2.6], PA4: [11.7, -6.15], PA5: [9.3, 0.45], PA6: [11.7, 0.45],
-    LG1: [9.3, 1.6], LG2: [12.2, 1.5], LGs: [9.5, 3.7], LGr: [12.75, 3.9], LG3: [9.0, 6.0], BK: [0.32, 8.4],   // (BK: in front of the karaoke box's door)
+    LG1: [9.3, 1.6], LG2: [12.2, 1.5], LGs: [9.5, 3.7], LGr: [12.75, 3.9], LG3: [9.0, 6.0], BK: [-0.85, 6.45],   // (BK: in front of the karaoke box's door)
   } : {
     A: [-5.2, -3.3], BL: [-3.4, -3.15], T0: [-2.1, -3.15], T1: [0, -3.2], T2: [2.1, -3.15], D: [3.4, -3.1], E: [5.6, -3.2],
     F: [-6.3, -0.9], GL1: [-3.4, -0.9], U0: [-2.1, -0.9], U1: [0, -0.9], U2: [2.1, -0.9], GR1: [3.4, -0.9], P: [6.9, 0.6],
@@ -225,10 +262,13 @@ export function setup() {
     J: [-5.5, 3.6], K: [-3.4, 3.6], L: [0, 3.7], M: [3.0, 4.1],
   };
   EDGES = PRO ? [['O', 'I'], ['I', 'LB'], ['L0', 'SVo'], ['L1', 'SVo'], ['SVo', 'SVi'], ['LB', 'WCo'], ['WCo', 'WCi'], ['WCi', 'ST1'], ['WCi', 'ST2'], ['WCi', 'WCs'], ['ST1', 'ST2'],
-    ['LB', 'L2'], ['L0', 'L1'], ['L1', 'L2'], ['L2', 'L3'], ['L3', 'L4'], ['R1', 'R2'], ['R2', 'R3'], ['R3', 'R4'], ['M1', 'M2'],
+    ['LB', 'L2'], ['L0', 'L1'], ['L1', 'L2'], ['L2', 'L3'], ['L3', 'L4'], ['R1', 'R2'], ['R2', 'R3'], ['R3', 'R4'],
+    ['N1', 'M1'], ['M1', 'M2'], ['M2', 'M3'], ['M3', 'M4'], ['M4', 'R4'],
     ['L1', 'P0b0'], ['P0b0', 'P0b1'], ['P0b1', 'M1'], ['M1', 'P1b0'], ['P1b0', 'P1b1'], ['P1b1', 'R1'],
     ['L2', 'P0f0'], ['P0f0', 'P0f1'], ['P0f1', 'M2'], ['M2', 'P1f0'], ['P1f0', 'P1f1'], ['P1f1', 'R2'],
-    ['L3', 'P2b0'], ['P2b0', 'P2b1'], ['P2b1', 'R3'], ['L4', 'BK'], ['BK', 'P2f0'], ['P2f0', 'P2f1'], ['P2f1', 'R4'],
+    ['L2', 'P2b0'], ['P2b0', 'P2b1'], ['P2b1', 'M3'], ['M3', 'P3b0'], ['P3b0', 'P3b1'], ['P3b1', 'R2'],
+    ['L3', 'P2f0'], ['P2f0', 'P2f1'], ['P2f1', 'M4'], ['M4', 'P3f0'], ['P3f0', 'P3f1'], ['P3f1', 'R3'],
+    ['L3', 'BK'], ['BK', 'P2f0'], ['L4', 'BK'],
     ['L0', 'DR0i'], ['DR0i', 'DRc'], ['DRc', 'DRs'],
     ['L0', 'N1'], ['N1', 'DRi'], ['DRi', 'DRd'], ['DRd', 'DRw'], ['DRw', 'DRs0'], ['DRw', 'DRs1'], ['DRw', 'DRs2'], ['DRw', 'DRs3'],
     ['N1', 'LBd'], ['LBd', 'LBi'], ['LBi', 'LBf'], ['LBi', 'LBm'], ['LBd', 'CE'], ['CE', 'R1'],

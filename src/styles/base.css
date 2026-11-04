@@ -1,18 +1,34 @@
-/* Layout shell and design tokens. */
-/* Layout: dark control-room shell. Top bar 56px; left sidebar (sessions) 300px; right sidebar (activity) 340px;
-   the 3D office fills the middle with a floating camera toolbar; drawers slide over the right side.
-   ≤1100px the left sidebar becomes a chip row; ≤720px the activity column becomes a bottom sheet. */
+/* Layout shell and design tokens — OmniGlass 3D Command Center. */
 :root {
-  --bg: #0D1219; --bar: #111720; --side: #131922; --card: #18202B; --card-2: #1E2734; --card-3: #263040;
-  --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .13);
-  --ink: #E8ECF4; --muted: #8D97AA; --faint: #5E687B;
-  --green: #3DDC84; --green-ink: #8FEDB8; --green-soft: rgba(61, 220, 132, .11);
-  --amber: #F2B544; --amber-soft: rgba(242, 181, 68, .12);   /* status only: waiting for approval, warnings */
+  --bg: #080C12;
+  --bar: rgba(13, 18, 28, 0.9);
+  --side: rgba(14, 20, 30, 0.92);
+  --card: rgba(22, 30, 44, 0.88);
+  --card-2: rgba(30, 41, 59, 0.94);
+  --card-3: rgba(40, 53, 74, 0.96);
+  --line: rgba(255, 255, 255, 0.075);
+  --line-2: rgba(255, 255, 255, 0.14);
+  --glass-border: rgba(255, 255, 255, 0.11);
+  --glass-shine: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --ink: #F1F5F9;
+  --muted: #94A3B8;
+  --faint: #64748B;
+  --green: #34D399;
+  --green-ink: #A7F3D0;
+  --green-soft: rgba(52, 211, 153, 0.13);
+  --amber: #FBBF24;
+  --amber-soft: rgba(251, 191, 36, 0.14);   /* status only: waiting for approval, warnings */
   /* the interface's own accent (selection, focus, the main action): the coral of the My Office mark, so amber keeps meaning
      "someone is waiting for you" */
-  --accent: #EF8A5F; --accent-hi: #F5A07A; --accent-soft: rgba(239, 138, 95, .13); --accent-line: rgba(239, 138, 95, .6); --on-accent: #2A1307;
-  --red: #FF5F5F; --red-soft: rgba(255, 95, 95, .12);
-  --blue: #6AAEFF;
+  --accent: #F97316;
+  --accent-hi: #FB923C;
+  --accent-soft: rgba(249, 115, 22, 0.15);
+  --accent-line: rgba(249, 115, 22, 0.62);
+  --on-accent: #270F02;
+  --red: #F87171;
+  --red-soft: rgba(248, 113, 113, 0.14);
+  --blue: #60A5FA;
+  --violet: #A78BFA;
   --font: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: dark;
@@ -25,9 +41,18 @@ button, input { font: inherit; color: inherit; }
 svg.ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-#app { position: relative; height: 100%; display: grid; grid-template-columns: 330px minmax(0, 1fr) 350px; grid-template-rows: 56px minmax(0, 1fr); grid-template-areas: "top top top" "left stage right"; transition: grid-template-columns .24s cubic-bezier(.22, 1, .36, 1); }
+#app {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 336px minmax(0, 1fr) 356px;
+  grid-template-rows: 58px minmax(0, 1fr);
+  grid-template-areas: "top top top" "left stage right";
+  transition: grid-template-columns .28s cubic-bezier(.22, 1, .36, 1);
+}
 @media (min-width: 781px) {
-  #app.rail-collapsed { grid-template-columns: 0px minmax(0, 1fr) 350px; }
-  #app.feed-collapsed { grid-template-columns: 330px minmax(0, 1fr) 0px; }
+  #app.rail-collapsed { grid-template-columns: 0px minmax(0, 1fr) 356px; }
+  #app.feed-collapsed { grid-template-columns: 336px minmax(0, 1fr) 0px; }
   #app.rail-collapsed.feed-collapsed { grid-template-columns: 0px minmax(0, 1fr) 0px; }
+  #app[data-ws-mode="focus"]:not(.feed-collapsed) { grid-template-columns: 0px minmax(0, 1fr) 410px; }
 }
