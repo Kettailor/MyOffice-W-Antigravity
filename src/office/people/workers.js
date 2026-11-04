@@ -170,6 +170,7 @@ function checkBossSubsDone(boss) {
   if (activeCount === 0 && reportingCount === 0 && guestCount === 0 && !boss.inSubBrief && boss.waitingForSubs) {
     boss.waitingForSubs = false;
     boss.inSubBrief = false;
+    boss.hasCalledSubSupport = false;
     boss.briefRoomIdx = null;
     if (boss.deferredWork?.length) {
       const nextAct = popDeferredMainAction(boss);
@@ -177,6 +178,10 @@ function checkBossSubsDone(boss) {
     }
     if (!boss.want && !boss.leaving && (boss.station === 'phone' || boss.station === 'meeting')) {
       const s = sessions.get(boss.id);
+      if (s?.status !== 'wait') {
+        boss.hush();
+        boss.lastSay = null;
+      }
       if (s?.status === 'rest') {
         boss.goHomeAndRest();
       } else {
@@ -186,6 +191,10 @@ function checkBossSubsDone(boss) {
           boss.station = 'desk';
           boss.pose = home.sit ? 'sit' : 'stand';
           boss.anim = 'type';
+          if (s?.status !== 'wait') {
+            boss.hush();
+            boss.lastSay = null;
+          }
           if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = boss;
         });
       }
@@ -204,9 +213,15 @@ function pickBriefRoom(parent) {
 }
 
 function scheduleSubBriefing(parent) {
-  if (!parent || parent.leaving || parent.callingPhone || replay.on || reduceMotion || document.hidden) return;
+  if (!parent || parent.leaving || parent.callingPhone) return;
   parent.waitingForSubs = true;
+  parent.inSubBrief = true;
   if (parent.briefTimer) clearTimeout(parent.briefTimer);
+  if (replay.on) {
+    parent.briefTimer = null;
+    runSubBriefing(parent);
+    return;
+  }
   parent.briefTimer = setTimeout(() => {
     parent.briefTimer = null;
     runSubBriefing(parent);
@@ -215,7 +230,58 @@ function scheduleSubBriefing(parent) {
 
 function runSubBriefing(parent) {
   if (!parent || parent.leaving || parent.callingPhone || !workers.has(parent.id)) return;
-  const teamSubs = [...subs.values()].filter((sw) => sw.parent === parent && !sw.leaving && !sw.callingPhoneWait);
+  if (replay.on) {
+    parent.inSubBrief = false;
+    parent.hurry = false;
+    parent.hush();
+    parent.lastSay = null;
+    const home = parent.homeSpot();
+    const d = sessions.get(parent.id)?.desk ?? -1;
+    parent.pos.set(home.x, home.z);
+    parent.spot = home;
+    parent.face = parent.faceTarget = home.face;
+    parent.pose = home.sit ? 'sit' : 'stand';
+    parent.station = 'desk';
+    parent.phase = 'idle';
+    parent.path = [];
+    parent.onArrive = null;
+    parent.anim = 'type';
+    if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = parent;
+    for (const sw of [...subs.values()].filter((x) => x.parent === parent && !x.briefed)) {
+      sw.callingPhoneWait = false;
+      sw.offstage = false;
+      sw.enteringFromLift = false;
+      sw.inBriefing = false;
+      sw.briefed = true;
+      sw.liftHold = false;
+      sw.hurry = false;
+      sw.dress(false);
+      const seat = sw.homeSpot();
+      if (seat && 'by' in seat) seat.by = sw;
+      sw.pos.set(seat.x, seat.z);
+      sw.spot = seat;
+      sw.face = sw.faceTarget = seat.face;
+      sw.pose = seat.sit ? 'sit' : 'stand';
+      sw.station = 'meeting';
+      sw.phase = 'idle';
+      sw.path = [];
+      sw.onArrive = null;
+      sw.anim = 'type';
+      if (sw.deferredSubAct) {
+        const act = sw.deferredSubAct;
+        sw.deferredSubAct = null;
+        sw.push(act);
+      }
+      if (sw.pendingDropReport != null) {
+        const rep = sw.pendingDropReport;
+        sw.pendingDropReport = null;
+        dropSub(sw.id, rep);
+      }
+    }
+    checkBossSubsDone(parent);
+    return;
+  }
+  const teamSubs = [...subs.values()].filter((sw) => sw.parent === parent && !sw.leaving && !sw.callingPhoneWait && !sw.briefed);
   const participants = teamSubs.slice(0, 6);
   if (participants.length === 0) {
     parent.inSubBrief = false;
@@ -223,7 +289,10 @@ function runSubBriefing(parent) {
     for (const sw of [...subs.values()].filter((x) => x.parent === parent)) {
       sw.callingPhoneWait = false;
       sw.inBriefing = false;
+      sw.briefed = true;
       sw.offstage = false;
+      sw.enteringFromLift = false;
+      sw.liftHold = false;
       if (sw.pendingDropReport != null) {
         const rep = sw.pendingDropReport;
         sw.pendingDropReport = null;
@@ -232,12 +301,21 @@ function runSubBriefing(parent) {
     }
     checkBossSubsDone(parent);
     if (parent.station !== 'desk' && !parent.want && !parent.leaving) {
+      const s = sessions.get(parent.id);
+      if (s?.status !== 'wait') {
+        parent.hush();
+        parent.lastSay = null;
+      }
       const home = parent.homeSpot();
-      const d = sessions.get(parent.id)?.desk ?? -1;
+      const d = s?.desk ?? -1;
       parent.goTo(home, () => {
         parent.station = 'desk';
         parent.pose = home.sit ? 'sit' : 'stand';
         parent.anim = 'type';
+        if (s?.status !== 'wait') {
+          parent.hush();
+          parent.lastSay = null;
+        }
         if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = parent;
       });
     }
@@ -265,16 +343,26 @@ function runSubBriefing(parent) {
     const stillHasSubs = [...subs.values()].some((sw) => sw.parent === parent && !sw.leaving);
     if (!stillHasSubs) {
       parent.waitingForSubs = false;
+      parent.hasCalledSubSupport = false;
       parent.briefRoomIdx = null;
     }
     // Main Agent returns straight to sit at its own workspace desk after everyone finishes the meeting briefing
     if (workers.get(parent.id) === parent && !parent.leaving) {
+      const s = sessions.get(parent.id);
+      if (s?.status !== 'wait') {
+        parent.hush();
+        parent.lastSay = null;
+      }
       const home = parent.homeSpot();
-      const d = sessions.get(parent.id)?.desk ?? -1;
+      const d = s?.desk ?? -1;
       parent.goTo(home, () => {
         parent.station = 'desk';
         parent.pose = home.sit ? 'sit' : 'stand';
         parent.anim = 'type';
+        if (s?.status !== 'wait') {
+          parent.hush();
+          parent.lastSay = null;
+        }
         if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = parent;
         if (!parent.waitingForSubs && parent.deferredWork?.length) {
           const nextAct = popDeferredMainAction(parent);
@@ -282,15 +370,24 @@ function runSubBriefing(parent) {
         }
       });
     }
-    // Each Subagent starts its subsequent task/action after the meeting finishes
-    for (const sw of [...subs.values()].filter((x) => x.parent === parent)) {
+    // Each Subagent in this briefing starts its subsequent task/action after the meeting finishes
+    for (const sw of participants) {
+      if (!subs.has(sw.id) || sw.leaving) continue;
+      sw.callingPhoneWait = false;
+      sw.offstage = false;
+      sw.enteringFromLift = false;
+      sw.liftHold = false;
       sw.inBriefing = false;
+      sw.briefed = true;
       sw.hurry = false;
-      sw.dress(false);
+      if (sw.pos.x > -6.0) sw.dress(false);
+      const seat = sw.homeSpot();
       if (sw.deferredSubAct) {
         const act = sw.deferredSubAct;
         sw.deferredSubAct = null;
+        sw.dwellUntil = 0;
         sw.push(act);
+        if (sw.phase !== 'walk') sw.tick();
         if (sw.pendingDropReport != null) {
           const rep = sw.pendingDropReport;
           sw.pendingDropReport = null;
@@ -301,13 +398,17 @@ function runSubBriefing(parent) {
         sw.pendingDropReport = null;
         setTimeout(() => { if (subs.has(sw.id)) dropSub(sw.id, rep); }, 600);
       } else if (!sw.want) {
-        const seat = sw.homeSpot();
-        sw.goTo(seat, () => {
-          sw.station = 'meeting';
-          sw.pose = seat.sit ? 'sit' : 'stand';
-          sw.anim = 'type';
-          sw.say('agent', sw.desc || tr('people.subThinking'));
-        });
+        const alreadyGoingToSeat = sw.phase === 'walk' && sw.spot === seat;
+        const alreadyAtSeat = sw.spot === seat && Math.hypot(sw.pos.x - seat.x, sw.pos.y - seat.z) < 0.25;
+        if (!alreadyGoingToSeat && !alreadyAtSeat) {
+          sw.goTo(seat, () => {
+            sw.dress(false);
+            sw.station = 'meeting';
+            sw.pose = seat.sit ? 'sit' : 'stand';
+            sw.anim = 'type';
+            sw.say('agent', sw.desc || tr('people.subThinking'));
+          });
+        }
       }
     }
   };
@@ -328,7 +429,7 @@ function runSubBriefing(parent) {
 
   if (parent.briefWalkTimer) clearTimeout(parent.briefWalkTimer);
   if (parent.briefEndTimer) { clearTimeout(parent.briefEndTimer); parent.briefEndTimer = null; }
-  parent.briefWalkTimer = setTimeout(startMeetingHold, 2400);
+  parent.briefWalkTimer = setTimeout(startMeetingHold, 6200);
 
   if (parent.want) {
     deferMainAction(parent, parent.want);
@@ -349,22 +450,20 @@ function runSubBriefing(parent) {
     sw.meetSeat = seat;
     sw.inBriefing = true;
     sw.hurry = true;
-    const walkToSeat = () => {
+    sw.enteringFromLift = false;
+    const onSeatReached = () => {
       sw.dress(false);
-      sw.goTo(seat, () => {
-        sw.station = 'meeting';
-        sw.pose = seat.sit ? 'sit' : 'stand';
-        sw.faceTarget = faceTo(sw.pos.x, sw.pos.y, rm.x, rm.z);
-        sw.anim = idx % 2 === 0 ? 'idle' : 'read';
-        sw.say('agent', tr('people.subOnIt', { task: short(sw.desc || sw.subType || promptText || tr('people.subagent'), 44) }));
-        onMemberArrived();
-      });
+      sw.station = 'meeting';
+      sw.pose = seat.sit ? 'sit' : 'stand';
+      sw.faceTarget = faceTo(sw.pos.x, sw.pos.y, rm.x, rm.z);
+      sw.anim = idx % 2 === 0 ? 'idle' : 'read';
+      sw.say('agent', tr('people.subOnIt', { task: short(sw.desc || sw.subType || promptText || tr('people.subagent'), 44) }));
+      onMemberArrived();
     };
-    if (sw.enteringFromLift) {
-      sw.enteringFromLift = false;
-      sw.goTo(DOOR_IN, walkToSeat);
+    if (sw.phase === 'walk' && sw.spot === seat) {
+      sw.onArrive = onSeatReached;
     } else {
-      walkToSeat();
+      sw.goTo(seat, onSeatReached);
     }
   });
 }
@@ -372,13 +471,13 @@ export function addWorker(s, walkIn) {
   const w = new Worker({ name: s.name, ...lookOf(s) }, { id: s.id });
   if (s.desk >= 0 && s.desk < chairs.length && chairs[s.desk]) chairs[s.desk].color.set(colorOf(s));
   const home = w.homeSpot();
-  if (walkIn) {
+  if (w.lateRest(s)) {   // opened or discovered while idle >= 8h: stays at home, never rides the lift or calls HR
+    w.away = true; w.station = 'away'; w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.spot = DOOR_OUT; w.dress(true); w.hush();
+    awayHooks.change?.(w);
+  } else if (walkIn) {
     w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT;
     w.dress(true); liftArrive(w); clockHooks.newcomer?.(w);
     viaClock('in', w, () => w.goTo(home, () => { w.station = 'desk'; w.anim = 'type'; if (home === DESK_SPOTS[s.desk]) w.unpack(s.desk); else w.dress(false); }));
-  } else if (w.lateRest(s)) {   // opened late at night: those who went home are not here
-    w.away = true; w.station = 'away'; w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.spot = DOOR_OUT; w.dress(true); w.hush();
-    awayHooks.change?.(w);
   } else {
     if (home && 'by' in home) home.by = w;
     w.pos.set(home.x, home.z); w.spot = home; w.face = w.faceTarget = home.face; w.pose = home.sit ? 'sit' : 'stand'; w.station = 'desk';
@@ -391,12 +490,46 @@ export function addWorker(s, walkIn) {
   for (const sub of s.subs || []) spawnSub(w, sub.id, sub.type, !walkIn, sub);
   return w;
 }
+function releaseQueuedPhoneSubs(parent) {
+  if (!parent) return;
+  const batch = (parent.pendingPhoneSubs || []).splice(0);
+  for (const sw of batch) {
+    if (!subs.has(sw.id) || sw.leaving) continue;
+    sw.callingPhoneWait = false;
+    sw.offstage = false;
+    sw.enteringFromLift = true;
+    sw.inBriefing = true;
+    sw.hurry = true;
+    sw.dress(true);
+    liftArrive(sw);
+    sw.say('agent', pickList('people.phoneSupport.arrive'));
+  }
+}
+function hasAllExpectedSubs(parent) {
+  if (!parent) return true;
+  if ((parent.pendingPhoneSubs?.length || 0) > 0) return false;
+  const expected = sessions.get(parent.id)?.subs || [];
+  for (const x of expected) {
+    if (!x?.id) continue;
+    const sw = subs.get(x.id);
+    if (sw && sw.callingPhoneWait) return false;
+  }
+  return true;
+}
 export function spawnSub(parent, agentId, type, instant = false, info = null) {
   if (!agentId) return null;
   if (info?.prevId && subs.has(info.prevId)) {
     return rekeySub(info.prevId, agentId, { type, desc: info.desc });
   }
+  const x = () => info || sessions.get(parent.id)?.subs?.find((y) => y.id === agentId);
+  const initInfo = x();
+  const deptIdx = classifyDept(type || '', initInfo?.desc || '');
   if (!String(agentId).startsWith('prov-')) {
+    for (const [k, sw] of subs) {
+      if (sw.parent === parent && String(k).startsWith('prov-') && sw.dept === deptIdx) {
+        return rekeySub(k, agentId, { type, desc: info?.desc });
+      }
+    }
     for (const [k, sw] of subs) {
       if (sw.parent === parent && String(k).startsWith('prov-')) {
         return rekeySub(k, agentId, { type, desc: info?.desc });
@@ -405,9 +538,6 @@ export function spawnSub(parent, agentId, type, instant = false, info = null) {
   }
   if (subs.has(agentId)) return subs.get(agentId);
   const h = hash(agentId);
-  const x = () => info || sessions.get(parent.id)?.subs?.find((y) => y.id === agentId);
-  const initInfo = x();
-  const deptIdx = classifyDept(type || '', initInfo?.desc || '');
   const deptCfg = DEPT_INFO[deptIdx] || DEPT_INFO[0];
   const rawName = type || 'agent';
   const displayName = /^\[[A-Z]{2,3}\]/.test(rawName) ? rawName : `[${deptCfg.badge}] ${short(rawName, 22)}`;
@@ -442,12 +572,14 @@ export function spawnSub(parent, agentId, type, instant = false, info = null) {
   }
 
   const seated = () => {
+    w.briefed = true;
+    w.inBriefing = false;
     w.station = 'meeting';
     w.anim = 'type';
     const i = x();
     if (i?.last) w.say(i.last.type, i.last.label || verb(i.last)); else w.say('agent', i?.desc || type || 'agent');
   };
-  if (instant || document.hidden) {
+  if (instant || replay.on) {
     const seat = w.homeSpot();
     if (seat && 'by' in seat) seat.by = w;
     w.pos.set(seat.x, seat.z); w.spot = seat; w.face = w.faceTarget = seat.face; w.pose = seat.sit ? 'sit' : 'stand'; seated();
@@ -456,30 +588,103 @@ export function spawnSub(parent, agentId, type, instant = false, info = null) {
   }
 
   // Every time Main Agent assigns a task to a Subagent:
-  // 1) Main Agent walks to the Reception 3D Telephone to call support
+  // 1) Main Agent walks to the Reception 3D Telephone once per subagent wave to call support
   // 2) Subagent(s) arrive via the elevator
-  // 3) Main Agent and all Subagents walk into the Meeting Room and hold a briefing before starting subsequent tasks
+  // 3) Main Agent and unbriefed Subagents walk into the Meeting Room and hold a briefing before starting subsequent tasks
   parent.waitingForSubs = true;
+  const alreadySupported = Boolean(parent.hasCalledSubSupport)
+    || [...subs.values()].some((sw) => sw !== w && sw.parent === parent && !sw.leaving && (sw.briefed || (!sw.callingPhoneWait && !sw.inBriefing)));
+  if ((parent.inSubBrief || alreadySupported) && !parent.callingPhone && !parent.leaving) {
+    w.callingPhoneWait = false;
+    w.offstage = false;
+    w.enteringFromLift = true;
+    w.inBriefing = Boolean(parent.inSubBrief);
+    w.briefed = !parent.inSubBrief;
+    w.hurry = true;
+    w.dress(true);
+    liftCall(4.0);
+    liftArrive(w);
+    w.say('agent', pickList('people.phoneSupport.arrive'));
+    const seat = w.homeSpot();
+    w.goTo(seat, () => {
+      if (w.leaving) return;
+      w.enteringFromLift = false;
+      w.inBriefing = false;
+      w.briefed = true;
+      w.hurry = false;
+      w.dress(false);
+      w.station = 'meeting';
+      w.pose = seat.sit ? 'sit' : 'stand';
+      w.anim = 'type';
+      if (w.deferredSubAct) {
+        const act = w.deferredSubAct;
+        w.deferredSubAct = null;
+        w.dwellUntil = 0;
+        w.push(act);
+        w.tick();
+      }
+    });
+    return w;
+  }
+
   w.callingPhoneWait = true;
   w.inBriefing = true;
   w.offstage = true;
   w.pos.set(DOOR_OUT.x, DOOR_OUT.z); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT;
   (parent.pendingPhoneSubs ||= []).push(w);
 
-  const summonQueuedSubs = () => {
-    const batch = (parent.pendingPhoneSubs || []).splice(0);
-    for (const sw of batch) {
-      if (!subs.has(sw.id) || sw.leaving) continue;
-      sw.callingPhoneWait = false;
-      sw.offstage = false;
-      sw.enteringFromLift = true;
-      sw.inBriefing = true;
-      sw.hurry = true;
-      sw.dress(true);
-      liftArrive(sw);
-      sw.say('agent', pickList('people.phoneSupport.arrive'));
+  const finishPhoneCall = () => {
+    if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
+    if (parent.phoneTimer) { clearTimeout(parent.phoneTimer); parent.phoneTimer = null; }
+    parent._finishPhoneCall = null;
+    if (PRO_FX.phoneHandset) PRO_FX.phoneHandset.position.y = 0.036;
+    parent.callingPhone = false;
+    parent.hurry = false;
+    parent.hasCalledSubSupport = true;
+    parent.hush();
+    parent.lastSay = null;
+    releaseQueuedPhoneSubs(parent);
+    if (parent.leaving) return;
+    const unbriefedSubs = [...subs.values()].filter(
+      (sw) => sw.parent === parent && !sw.leaving && !sw.callingPhoneWait && !sw.briefed
+    );
+    if (unbriefedSubs.length > 0) {
+      scheduleSubBriefing(parent);
+    } else {
+      parent.inSubBrief = false;
+      const hasAnySub = [...subs.values()].some((sw) => sw.parent === parent && !sw.leaving);
+      if (!hasAnySub) checkBossSubsDone(parent);
+      if (!parent.want) {
+        const s = sessions.get(parent.id);
+        if (s?.status === 'rest' && !parent.waitingForSubs) {
+          parent.goHomeAndRest();
+        } else {
+          const home = parent.homeSpot();
+          const d = s?.desk ?? -1;
+          parent.goTo(home, () => {
+            parent.station = 'desk';
+            parent.pose = home.sit ? 'sit' : 'stand';
+            parent.anim = 'type';
+            parent.hush();
+            parent.lastSay = null;
+            if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = parent;
+          });
+        }
+      }
     }
-    scheduleSubBriefing(parent);
+  };
+
+  const holdCallAndWait3s = () => {
+    if (parent.leaving || !parent.callingPhone) return;
+    if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
+    parent.station = 'phone';
+    parent.anim = 'hand';
+    if (PRO_FX.phoneHandset) PRO_FX.phoneHandset.position.y = 0.085;
+    releaseQueuedPhoneSubs(parent);
+    if (hasAllExpectedSubs(parent)) {
+      if (parent.phoneTimer) clearTimeout(parent.phoneTimer);
+      parent.phoneTimer = setTimeout(parent._finishPhoneCall || finishPhoneCall, reduceMotion ? 250 : 3000);
+    }
   };
 
   const phoneSpot = STATIONS.phone?.[0];
@@ -490,36 +695,31 @@ export function spawnSub(parent, agentId, type, instant = false, info = null) {
       if (parent.briefWalkTimer) { clearTimeout(parent.briefWalkTimer); parent.briefWalkTimer = null; }
       if (parent.briefEndTimer) { clearTimeout(parent.briefEndTimer); parent.briefEndTimer = null; }
       if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
+      if (parent.phoneTimer) { clearTimeout(parent.phoneTimer); parent.phoneTimer = null; }
       parent.inSubBrief = false;
       parent.callingPhone = true;
       parent.hurry = true;
+      parent._finishPhoneCall = finishPhoneCall;
       if (parent.want) {
         deferMainAction(parent, parent.want);
         parent.want = null;
       }
-      const finishPhoneCall = () => {
-        if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
-        if (parent.phoneTimer) { clearTimeout(parent.phoneTimer); parent.phoneTimer = null; }
-        if (PRO_FX.phoneHandset) PRO_FX.phoneHandset.position.y = 0.036;
-        parent.callingPhone = false;
-        parent.hurry = false;
-        if (!parent.leaving) summonQueuedSubs();
-      };
-      parent.phoneWalkTimer = setTimeout(finishPhoneCall, 2800);
+      parent.phoneWalkTimer = setTimeout(finishPhoneCall, reduceMotion ? 600 : 9500);
       parent.goTo(phoneSpot, () => {
         if (parent.phoneWalkTimer) { clearTimeout(parent.phoneWalkTimer); parent.phoneWalkTimer = null; }
         if (parent.leaving || !parent.callingPhone) return;
-        parent.station = 'phone';
-        parent.anim = 'hand';
-        if (PRO_FX.phoneHandset) PRO_FX.phoneHandset.position.y = 0.085;
         sfx.play('beep');
         parent.say('agent', pickList('people.phoneSupport.call'));
-        if (parent.phoneTimer) clearTimeout(parent.phoneTimer);
-        parent.phoneTimer = setTimeout(finishPhoneCall, 320);
+        parent.sayHushAt = state.sim + 5.0;
+        holdCallAndWait3s();
       });
+    } else if (parent.station === 'phone' || Math.hypot(parent.pos.x - phoneSpot.x, parent.pos.y - phoneSpot.z) < 0.35) {
+      parent.sayHushAt = state.sim + 5.0;
+      holdCallAndWait3s();
     }
   } else {
-    summonQueuedSubs();
+    releaseQueuedPhoneSubs(parent);
+    scheduleSubBriefing(parent);
   }
   return w;
 }
@@ -621,9 +821,9 @@ export function dropSub(agentId, report = true) {
   w.goTo(nearBoss(boss, w), () => {
     w.faceTarget = Math.atan2(boss.pos.x - w.pos.x, boss.pos.y - w.pos.y); w.anim = 'read';
     w.say('substop', tr('people.subReport', { what: desc ? short(desc, 44) : tr('people.subReportDone') }));
-    const prev = boss.lastSay, text = tr('people.bossThanks');
+    const text = tr('people.bossThanks');
     boss.say('substop', text);
-    setTimeout(() => { if (boss.lastSay?.text === text && prev) boss.say(prev.type, prev.text, prev.kind); }, 1400);
+    setTimeout(() => { if (boss.lastSay?.text === text && boss.lastSay?.kind !== 'wait') { boss.hush(); boss.lastSay = null; } }, 1400);
     setTimeout(() => {
       w.reportingToBoss = false;
       w.hurry = false;
@@ -704,9 +904,15 @@ export function setup() {
       this.after = () => { this.dress(false); deskKit[d] = this; this.anim = 'type'; };
     }
     say(type, text, kind = '') {
+      if (!text || !String(text).trim()) {
+        this.hush();
+        this.lastSay = null;
+        return;
+      }
       this.lastSay = { type, text, kind };
       if (kind !== 'rest') this.pokeHushAt = 0;
       if ((type === 'idle' || type === 'party' || type === 'coffee') && kind !== 'wait' && kind !== 'fail') {
+        this.sayHushAt = 0;
         this.bubbleObj.visible = false;
         return;
       }
@@ -718,12 +924,14 @@ export function setup() {
         this.bubbleEl.className = 'bubble' + (kind ? ' bubble--' + kind : '') + (this.sub ? ' bubble--sub' : '');
       }
       if (state.showWorkSteps === false && TOOL_STEP_TYPES.has(type) && kind !== 'wait' && kind !== 'fail') {
+        this.sayHushAt = 0;
         this.bubbleObj.visible = false;
         return;
       }
+      this.sayHushAt = kind === 'wait' ? 0 : state.sim + (type === 'agent' || type === 'stop' || type === 'substop' ? 4.2 : 5.5);
       this.bubbleObj.visible = true;
     }
-    hush() { this.bubbleObj.visible = false; }
+    hush() { this.sayHushAt = 0; this.bubbleObj.visible = false; }
     homeSpot() {
       if (this.sub || this.deptStaff) {
         if (this.meetSeat) return this.meetSeat;
@@ -737,39 +945,48 @@ export function setup() {
       if (!spot) { cb && cb(); return; }
       if (this.mealBox) hideMeal(this);
       if (this.queued && !COFFEE_Q.includes(spot)) leaveCoffee(this);
+      if (!this.sub && !this.chore && !this.reportingToBoss && this.station !== 'desk' && spot === this.homeSpot() && this.lastSay?.kind !== 'wait') {
+        this.hush();
+        this.lastSay = null;
+      }
       const prev = this.spot;
-      const atPrev = prev && Math.hypot(this.pos.x - prev.x, this.pos.y - prev.z) < 0.1;
+      const inLiftCar = PRO && this.pos.x < -6.85 && Math.abs(this.pos.y - DOOR_OUT.z) < 0.85;
+      const atPrev = prev && ((prev === DOOR_OUT && inLiftCar) || Math.hypot(this.pos.x - prev.x, this.pos.y - prev.z) < 0.1);
       if (prev && prev !== spot && prev.by === this) prev.by = null;
       this.spot = spot;
       if ('by' in spot) spot.by = this;
       const target = new V2(spot.x, spot.z);
       const targetNode = spot.node || nearestNode(target);
-      if (prev === spot && atPrev) { this.pose = spot.sit ? 'sit' : 'stand'; cb && cb(); return; }
+      if (prev === spot && atPrev && !inLiftCar) { this.pose = spot.sit ? 'sit' : 'stand'; cb && cb(); return; }
       // spots from wayTo / standBy (navigation.js) come with their way in (via): out of one the same way
       const V = ([x, z]) => new V2(x, z), N = (k) => { const pt = NODES[k] || NODES[PRO ? 'L2' : 'L'] || [0, 0]; return new V2(pt[0], pt[1]); }, out = atPrev && prev.via ? prev.via.map(V).reverse() : [];
+      const startNode = inLiftCar ? 'O' : (atPrev && prev.node ? prev.node : nearestNode(this.pos));
       if (spot.direct) this.path = [...(spot.via || []).map(V), target];   // worked out from where they are
       else if (atPrev && prev.direct) {                             // back from it: to where they came from, then on
         const o = prev.origin;
         this.path = o === spot || !o ? [...out, target] : [...out, new V2(o.x, o.z), ...route(o.node, targetNode).map(N), target];
-      } else if (atPrev && prev.node === targetNode && !prev.via && !spot.via) this.path = [target];
-      else this.path = [...out, ...route(atPrev && prev.node ? prev.node : nearestNode(this.pos), targetNode).map(N), ...(spot.via || []).map(V), target];
+      } else if (atPrev && !inLiftCar && prev.node === targetNode && !prev.via && !spot.via) this.path = [target];
+      else this.path = [...out, ...route(startNode, targetNode).map(N), ...(spot.via || []).map(V), target];
       this.pose = 'stand'; this.phase = 'walk'; this.onArrive = cb;
     }
     push(a) {
       if (!a) return;
+      if (this.away) {
+        const s = sessions.get(this.id);
+        if (this.lateRest(s) && a.type !== 'prompt' && s?.status === 'rest' && !s?.bg?.length) return;
+      }
       if (this.sub && (this.inBriefing || this.callingPhoneWait)) {
         this.deferredSubAct = a;
         return;
       }
-      if (!this.sub && !this.deptStaff && !this.staff && (a.station === 'meeting' || a.station === 'brief') && (a.type === 'plan' || a.type === 'agent') && !this.inSubBrief && !this.callingPhone) {
-        this.say(a.type || 'other', a.text, a.kind || '');
-        scheduleSubBriefing(this);
+      if ((this.callingPhone || this.inSubBrief) && !this.sub && !this.deptStaff && !this.staff) {
+        deferMainAction(this, a);
         return;
       }
-      if ((this.waitingForSubs || this.callingPhone || this.inSubBrief) && !this.sub && !this.deptStaff && !this.staff) {
+      if (this.waitingForSubs && !this.sub && !this.deptStaff && !this.staff) {
         if (a.type === 'stop' || a.station === 'director' || (a.station && a.station !== 'desk' && !a.priority)) {
           deferMainAction(this, a);
-          if (!this.inSubBrief && !this.callingPhone && a.type !== 'stop') {
+          if (a.type !== 'stop') {
             this.say(a.type || 'other', a.text, a.kind || '');
             if (this.station === 'desk') this.anim = 'type';
           }
@@ -788,9 +1005,36 @@ export function setup() {
       if (a.after) a.after();
     }
     tick() {
+      if (this.sub && (this.callingPhoneWait || this.inBriefing)) {
+        const p = this.parent;
+        if (!p || p.leaving || (!p.callingPhone && !p.inSubBrief && !p.briefTimer)) {
+          this.callingPhoneWait = false;
+          this.inBriefing = false;
+          this.offstage = false;
+          this.enteringFromLift = false;
+          this.liftHold = false;
+          this.hurry = false;
+          this.dress(false);
+          if (this.deferredSubAct) {
+            const act = this.deferredSubAct;
+            this.deferredSubAct = null;
+            this.push(act);
+          }
+          if (this.pos.x < -5.8 && this.phase !== 'walk' && !this.want) {
+            const seat = this.homeSpot();
+            this.goTo(seat, () => {
+              this.station = 'meeting';
+              this.pose = seat.sit ? 'sit' : 'stand';
+              this.anim = 'type';
+            });
+            return;
+          }
+        }
+      }
       if (this.leaving || this.phase === 'walk' || this.after || this.liftWait || this.liftRide || this.homeBound || this.callingPhone || this.inSubBrief || this.inBriefing || this.reportingToBoss) return;
       if (this.away) {
         const s = sessions.get(this.id);
+        if (s && this.lateRest(s) && !this.want) return;
         if (this.want || (s && (s.status !== 'rest' || s.bg?.length || !this.lateRest(s)))) this.comeBack();
         return;
       }
@@ -808,13 +1052,19 @@ export function setup() {
         const hasGuests = !hasActive && !hasReporting && deptWorkers.some((dw) => dw.briefGuestOf === this && dw.inBriefing);
         if (!hasActive && !hasReporting && !hasGuests && !this.inSubBrief) checkBossSubsDone(this);
       }
-      if (!this.sub && !this.deptStaff && !this.staff && !this.callingPhone && !this.inSubBrief && !this.waitingForSubs) {
-        if (this.deferredWork?.length > 0 && !this.want) {
+      if (!this.sub && !this.deptStaff && !this.staff && !this.callingPhone && !this.inSubBrief && !this.briefTimer) {
+        if (!this.waitingForSubs && this.deferredWork?.length > 0 && !this.want) {
           const nextAct = popDeferredMainAction(this);
           if (nextAct) this.push(nextAct);
         }
-        if (!this.want && (this.station === 'phone' || (this.station === 'meeting' && !this.inSubBrief))) {
-          if (s?.status === 'rest') {
+        const phoneSpot = STATIONS.phone?.[0];
+        const nearPhone = phoneSpot && Math.hypot(this.pos.x - phoneSpot.x, this.pos.y - phoneSpot.z) < 0.75;
+        if (!this.want && (this.station === 'phone' || this.station === 'meeting' || nearPhone)) {
+          if (s?.status !== 'wait') {
+            this.hush();
+            this.lastSay = null;
+          }
+          if (s?.status === 'rest' && !this.waitingForSubs) {
             this.goHomeAndRest();
           } else {
             const home = this.homeSpot();
@@ -823,6 +1073,10 @@ export function setup() {
               this.station = 'desk';
               this.pose = home.sit ? 'sit' : 'stand';
               this.anim = 'type';
+              if (s?.status !== 'wait') {
+                this.hush();
+                this.lastSay = null;
+              }
               if (d >= 0 && d < DESK_SPOTS.length) deskKit[d] = this;
             });
           }
@@ -845,6 +1099,7 @@ export function setup() {
           this.goTo(this.homeSpot(), () => {
             this.station = 'meeting';
             this.anim = 'type';
+            this.hush();
           });
         }
         return;
@@ -871,7 +1126,7 @@ export function setup() {
       if (this.queued) return;
       if (this.onBreak) return;   // out of Claude (life/quota.js): on a break until the limit resets
       if (this.dailyLife(s) || this.nightOut(s)) return;
-      if (this.anim === 'hand' && s.status !== 'wait') { this.anim = ANIM_AT[this.station] || 'idle'; if (this.lastSay) this.say(this.lastSay.type, this.lastSay.text); }
+      if (this.anim === 'hand' && s.status !== 'wait' && this.station !== 'phone') { this.anim = ANIM_AT[this.station] || 'idle'; this.hush(); this.lastSay = null; }
       if (s.status === 'rest' && this.anim !== 'sleep' && state.sim > this.restAt) this.goHomeAndRest();
       if (s.status === 'rest' && this.restAt === Infinity && this.anim !== 'sleep' && this.anim !== 'coffee' && state.sim > this.dwellUntil + 20) this.goHomeAndRest();
     }
@@ -943,7 +1198,10 @@ export function setup() {
         this.chore = null; this.station = b.station;
         const s = sessions.get(this.id);
         this.anim = s?.status === 'wait' ? 'hand' : b.anim === 'hand' ? ANIM_AT[b.station] || 'idle' : b.anim === 'sleep' || b.anim === 'wake' ? 'idle' : b.anim;
-        if (e.said.has(this.lastSay?.text)) { if (b.say && b.shown) this.say(b.say.type, b.say.text, b.say.kind); else this.hush(); }
+        if (e.said.has(this.lastSay?.text)) {
+          if (b.say && b.shown && b.say.kind === 'wait') this.say(b.say.type, b.say.text, b.say.kind);
+          else { this.hush(); this.lastSay = null; }
+        }
         e.done?.(this);
       };
       e.stage = 'back';
@@ -992,11 +1250,12 @@ export function setup() {
     }
     goHomeAndRest() {
       if (PRO && !this.sub && !this.want && state.sim - (this.wcAt ?? -1e9) > 900 && Math.random() < 0.4 && this.visitWc()) return;
+      if (this.lastSay?.kind !== 'wait') { this.hush(); this.lastSay = null; }
       const nap = () => {
         this.station = 'desk'; this.restAt = Infinity;
         const bg = sessions.get(this.id)?.bg;
         if (bg?.length) { this.anim = 'think'; this.say('bash', tr('people.bgWait', { desc: bg[0].desc })); return; }
-        this.anim = 'sleep'; this.hush();
+        this.anim = 'sleep'; this.hush(); this.lastSay = null;
       };
       if (this.station === 'desk') nap(); else this.goTo(this.homeSpot(), nap);
     }
@@ -1076,9 +1335,11 @@ export function setup() {
     update(dt, t) {
       if (this.after && state.sim >= this.afterAt) { const f = this.after; this.after = null; f(); }
       if (this.pokeHushAt && state.sim > this.pokeHushAt) { this.pokeHushAt = 0; if (this.lastSay?.kind === 'rest') this.hush(); }
+      if (this.sayHushAt && state.sim > this.sayHushAt) { this.sayHushAt = 0; if (this.lastSay?.kind !== 'wait') { this.hush(); this.lastSay = null; } }
       this.held = false;
       const pace = (this._pace = calcPace(this));
       if (this.phase === 'walk' && !this.liftHold) {
+        if (this.sub && this.dressed && !this.leaving && this.pos.x > -6.0) this.dress(false);
         const tgt = this.path[0];
         const dx = tgt.x - this.pos.x, dz = tgt.y - this.pos.y, d = Math.hypot(dx, dz), step = 1.85 * pace * dt;
         // out on the street (outings.js): a crossing waits at the kerb for the green man, and is walked at road level

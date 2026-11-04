@@ -13,14 +13,14 @@ export function updateTeam() {
   if (!boss) { teamLines.visible = false; return; }
   const a = teamGeo.attributes.position; let n = 0;
   for (const m of subs.values()) {
-    if (m.sub && m.parent === boss && m.root.parent) {
+    if (m.sub && !m.offstage && m.parent === boss && m.root.parent) {
       a.setXYZ(n++, boss.pos.x, 1.1, boss.pos.y); a.setXYZ(n++, m.pos.x, 0.8, m.pos.y);
       if (n >= 64) break;
     }
   }
   if (n < 64) {
     for (const m of leaving) {
-      if (m.sub && m.parent === boss && m.root.parent) {
+      if (m.sub && !m.offstage && m.parent === boss && m.root.parent) {
         a.setXYZ(n++, boss.pos.x, 1.1, boss.pos.y); a.setXYZ(n++, m.pos.x, 0.8, m.pos.y);
         if (n >= 64) break;
       }

@@ -1,6 +1,6 @@
 {
   "name": "my-office-w-antigravity",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "MyOffice-W-Antigravity — Văn phòng 3D trực quan theo dõi, điều phối Multi-Agent và kiểm duyệt các phiên Google Antigravity & Claude Code theo thời gian thực.",
   "license": "MIT",

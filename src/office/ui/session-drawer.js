@@ -54,18 +54,47 @@ export function updateSessionRow(s) {
   if (s && state.selectedId === s.id) renderSessionHead();
 }
 let isRenamingDrawer = false;
+export function canSessionPerm(act = 'stop', s = null) {
+  if (s?.masked) return false;
+  if (state.isLocal) return true;
+  const v = state.viewer;
+  if (!v || v.isDirector || v.isDirectorDevice || v.role === 'Phó Giám đốc') return true;
+  const acc = state.access;
+  const sp = v.sessionPerms;
+  if (act === 'stop') {
+    if (acc && acc.allowStopSession === false) return false;
+    if (typeof v.canStopSession === 'boolean') return v.canStopSession;
+    if (sp && typeof sp.stop === 'boolean') return sp.stop;
+    return true;
+  }
+  if (act === 'edit' || act === 'rename') {
+    if (acc && acc.allowEditSession === false) return false;
+    if (typeof v.canEditSession === 'boolean') return v.canEditSession;
+    if (sp && typeof sp.edit === 'boolean') return sp.edit;
+    return true;
+  }
+  if (act === 'delete') {
+    if (acc && acc.allowDeleteSession === false) return false;
+    if (typeof v.canDeleteSession === 'boolean') return v.canDeleteSession;
+    if (sp && typeof sp.delete === 'boolean') return sp.delete;
+    return true;
+  }
+  return true;
+}
 export function renderSessionHead() {
   syncSessionWaitCards();
   const s = sessions.get(state.selectedId); if (!s) return;
   $('ds-dot').style.background = colorOf(s);
   const nameEl = $('ds-name');
   if (nameEl && !isRenamingDrawer) {
+    const canEdit = canSessionPerm('edit');
     nameEl.textContent = dn(s);
-    nameEl.title = tr('drawer.rename.title');
+    nameEl.title = canEdit ? tr('drawer.rename.title') : dn(s);
+    nameEl.style.cursor = canEdit ? 'pointer' : 'default';
     if (!nameEl.dataset.renameBound) {
       nameEl.dataset.renameBound = '1';
-      nameEl.style.cursor = 'pointer';
       nameEl.addEventListener('click', () => {
+        if (!canSessionPerm('edit')) return;
         const cur = sessions.get(state.selectedId);
         if (cur) startRenameInDrawer(cur);
       });
@@ -98,7 +127,7 @@ export async function openWindowOf(s) {
 }
 // what the buttons below depend on
 let drawnSig = '', qrFor = null;   // (qrFor: the session whose Remote Control QR code is shown)
-const actionsSig = (s) => [s.id, s.status === 'rest', s.status === 'wait', s.status === 'work', Boolean(s.busy), getSessionWaitCard(s.id)?.id || '', s.pid, s.moved?.to, s.acct, state.limits?.others?.length].join('|');
+const actionsSig = (s) => [s.id, s.status === 'rest', s.status === 'wait', s.status === 'work', Boolean(s.busy), getSessionWaitCard(s.id)?.id || '', s.pid, s.moved?.to, s.acct, state.limits?.others?.length, canSessionPerm('stop'), canSessionPerm('edit'), canSessionPerm('delete')].join('|');
 function renderLogs() {
   if (tab === 'chat') renderChat(false);
   else if (tab === 'subs') renderSubs(false);
@@ -170,8 +199,10 @@ function renderActions() {
   }
   if (state.isLocal && s.pid && s.status === 'rest') box.append(closeSessionButton(s));
   const topBtns = el('div', 'dr-top-btns');
-  topBtns.append(stopSessionButton(s), renameSessionButton(s), deleteSessionButton(s));
-  box.append(topBtns);
+  if (canSessionPerm('stop')) topBtns.append(stopSessionButton(s));
+  if (canSessionPerm('edit')) topBtns.append(renameSessionButton(s));
+  if (canSessionPerm('delete')) topBtns.append(deleteSessionButton(s));
+  if (topBtns.childElementCount > 0) box.append(topBtns);
   box.append(...acctActions(s, renderActions));
   if (s.link) {
     const a = el('a', 'btn btn--primary btn--sm', tr('drawer.openOnClaude')); a.href = s.link; a.target = '_blank'; a.rel = 'noopener';

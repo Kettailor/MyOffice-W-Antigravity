@@ -78,6 +78,38 @@ export function updateFlights(dt) {
 }
 export let director;
 
+export function ensureTeamMemberChibi(m, idxHint = 0) {
+  if (!PRO || !Director) return director;
+  if (!m || !m.id || m.id === 'director' || m.isDirector || m.isLocal) return director;
+  const label = m.isDirectorDevice ? m.name || 'Phó Giám đốc' : `${m.name || 'Trợ lý'}${m.role && m.role !== m.name ? ` · ${m.role}` : ''}`;
+  const existing = teamChibis.get(m.id);
+  if (existing) {
+    existing.setName(short(label, 24));
+    return existing;
+  }
+  const usedSpots = new Set();
+  for (const ch of teamChibis.values()) {
+    const idx = EXEC_SPOTS.indexOf(ch.homeData);
+    if (idx >= 0) usedSpots.add(idx);
+  }
+  const prefIdx = m.isDirectorDevice ? 0 : 1;
+  let spotIdx = !usedSpots.has(prefIdx) ? prefIdx : EXEC_SPOTS.findIndex((_, idx) => !usedSpots.has(idx));
+  if (spotIdx < 0) spotIdx = idxHint % EXEC_SPOTS.length;
+  const homeSpot = EXEC_SPOTS[spotIdx];
+  const st = EXEC_STYLES[(m.isDirectorDevice ? 0 : 1 + idxHint) % EXEC_STYLES.length];
+  const dot = m.isDirectorDevice ? '#60A5FA' : '#34D399';
+  const ch = new Director({
+    id: `__team_${m.id}`,
+    name: short(label, 24),
+    homeSpot,
+    dot,
+    styleCfg: st,
+  });
+  teamChibis.set(m.id, ch);
+  npcs.push(ch);
+  return ch;
+}
+
 export function syncTeamMembers(members = []) {
   if (!PRO || !Director) return;
   const list = (Array.isArray(members) ? members : []).filter((m) => m && m.online !== false);
@@ -90,34 +122,8 @@ export function syncTeamMembers(members = []) {
       ch.remove();
     }
   }
-  const usedSpots = new Set();
-  for (const ch of teamChibis.values()) {
-    const idx = EXEC_SPOTS.indexOf(ch.homeData);
-    if (idx >= 0) usedSpots.add(idx);
-  }
   list.forEach((m, i) => {
-    const label = m.isDirectorDevice ? m.name || 'Phó Giám đốc' : `${m.name || 'Trợ lý'}${m.role && m.role !== m.name ? ` · ${m.role}` : ''}`;
-    const existing = teamChibis.get(m.id);
-    if (existing) {
-      existing.setName(short(label, 24));
-      return;
-    }
-    const prefIdx = m.isDirectorDevice ? 0 : 1;
-    let spotIdx = !usedSpots.has(prefIdx) ? prefIdx : EXEC_SPOTS.findIndex((_, idx) => !usedSpots.has(idx));
-    if (spotIdx < 0) spotIdx = i % EXEC_SPOTS.length;
-    usedSpots.add(spotIdx);
-    const homeSpot = EXEC_SPOTS[spotIdx];
-    const st = EXEC_STYLES[(m.isDirectorDevice ? 0 : 1 + i) % EXEC_STYLES.length];
-    const dot = m.isDirectorDevice ? '#60A5FA' : '#34D399';
-    const ch = new Director({
-      id: `__team_${m.id}`,
-      name: short(label, 24),
-      homeSpot,
-      dot,
-      styleCfg: st,
-    });
-    teamChibis.set(m.id, ch);
-    npcs.push(ch);
+    ensureTeamMemberChibi(m, i);
   });
 }
 
@@ -140,23 +146,19 @@ export function deliverTaskBy(by, sess, text, dir = '') {
   if (nt) lastTextDeliver.set(nt, now);
   if (!targetSess) return;
   sfx.play('task');
-  let actor = null;
-  if (by?.id && teamChibis.has(by.id)) {
-    actor = teamChibis.get(by.id);
-  } else if (by && !by.isLocal) {
-    for (const [id, ch] of teamChibis) {
-      if (by.id === id || (by.isDirectorDevice && ch.homeData === EXEC_SPOTS[0]) || (!by.isDirectorDevice && ch.homeData === EXEC_SPOTS[1])) {
-        actor = ch;
-        break;
-      }
-    }
+  let actor = director;
+  if (by && by.id && by.id !== 'director' && !by.isDirector && !by.isLocal) {
+    actor = ensureTeamMemberChibi(by) || director;
   }
   const s = sessions.get(targetSess);
   (actor || director)?.deliver(targetSess, s?.masked ? 'Công việc nội bộ' : (text || ''));
 }
 
 export function getAssigner(ownerId) {
-  if (ownerId && ownerId !== 'director' && teamChibis.has(ownerId)) return teamChibis.get(ownerId);
+  if (!ownerId || ownerId === 'director') return director;
+  if (teamChibis.has(ownerId)) return teamChibis.get(ownerId);
+  const found = (state.teamMembers || []).find((m) => m && m.id === ownerId);
+  if (found) return ensureTeamMemberChibi(found) || director;
   return director;
 }
 

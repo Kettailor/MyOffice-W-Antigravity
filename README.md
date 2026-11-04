@@ -53,13 +53,15 @@ Dự án này được phát triển và mở rộng dựa trên nền tảng d�
 - Tự động đọc checklist `- [ ]` / `- [/]` / `- [x]` từ file `task.md` trong thư mục brain của phiên và hiển thị trực tiếp trong ngăn kéo chi tiết của nhân vật.
 - Khi Agent tạo hoặc cập nhật `implementation_plan.md` có bật `RequestFeedback`, hoặc gọi `ask_question`, giao diện tự động mở hộp thoại nổi giữa màn hình (**Focus-to-Approve**) giúp Giám đốc xem tóm tắt kế hoạch và chọn phương án trả lời ngay lập tức.
 
-### 4. Hộp thoại `📋 Giao việc` Đa Mô hình & Nhóm Chat 2 Kênh (`💼 Công việc` / `💬 Tán gẫu`)
-- **Giao việc nâng cao**: Hỗ trợ chọn **Mô hình AI (Model)** lưu riêng cho từng phiên/thư mục (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), ghim phiên/dự án (`📌`), đổi tên phiên (`✏️`), xóa phiên (`🗑️`), thu gọn/mở rộng mục **Cuộc trò chuyện mới**, và tự động lưu bản nháp kèm tối đa **20 ảnh** (`Ctrl+V` / `IndexedDB`).
+### 4. Hộp thoại `📋 Giao việc` Đa Mô hình, Quản lý Dự án & Bảng Kế hoạch 4 Chế độ
+- **Giao việc nâng cao**: Hỗ trợ chọn **Mô hình AI (Model)** lưu riêng cho từng phiên/thư mục (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), thêm dự án & tạo thư mục mới ngay trong mục **Cuộc trò chuyện mới**, loại bỏ dự án khỏi danh sách hiển thị mà không xóa thư mục gốc trên đĩa, ghim phiên/dự án (`📌`), đổi tên phiên (`✏️`), dừng/xóa phiên (`⏹️` / `🗑️`), và tự động lưu bản nháp kèm tối đa **20 ảnh** (`Ctrl+V` / `IndexedDB`).
+- **Thanh Phiên làm việc gom theo Thư mục Dự án**: Tùy chọn gom nhóm các phiên làm việc theo thư mục dự án có thể đóng/mở gọn gàng, kèm giao diện thẻ phiên trực quan (chấm trạng thái phát sáng, badge số bước và thanh tiến độ).
+- **Bảng Kế hoạch (`📋 Việc cần làm`) 4 Chế độ**: Phân chia **Xem tất cả**, **Việc của tôi** (lưu riêng trên từng thiết bị), **Việc của Agent** (tự động đồng bộ từ checklist `task.md`) và **Việc chung** (đồng bộ thời gian thực qua máy chủ cho mọi thiết bị kết nối).
 - **Nhóm Chat tách kênh**: Tách biệt hoàn toàn kênh **💼 Nhóm Công Việc** (giao việc, duyệt lệnh, báo cáo tiến độ Antigravity) và **💬 Nhóm Tán Gẫu** (trò chuyện giải trí, trà sữa, ăn trưa), tự động dọn dẹp theo chu kỳ 7 ngày.
 
-### 5. Phân quyền Truy cập Từ xa (`Phó Giám đốc` vs. `Trợ lý Giám đốc`) & Bảo mật `SHA-256 / HMAC`
+### 5. Phân quyền Truy cập Từ xa (`Phó Giám đốc` vs. `Trợ lý Giám đốc`), Quyền Điều khiển Phiên & Bảo mật `SHA-256 / HMAC`
 - **Chính chủ Giám đốc (Thiết bị phụ / Điện thoại)**: Đăng nhập bằng **mã PIN 6 số** (băm `SHA-256` kèm salt, ký phiên bằng `HMAC-SHA256`) để nhận vai trò **Phó Giám đốc** (`isDirectorDevice: true`), có Phòng Đồng Giám đốc và toàn quyền quan sát/điều phối mọi dự án.
-- **Trợ lý Giám đốc (Cộng tác viên từ xa)**: Đăng ký tên và vai trò qua trang cổng truy cập; sau khi được Giám đốc phê duyệt sẽ chỉ nhìn thấy các `Workspace` được cấp phép, ẩn bảng điều khiển phần cứng máy chủ (`#btn-mac`) và mọi lệnh giao việc đều qua bước Giám đốc kiểm duyệt.
+- **Trợ lý Giám đốc & Phân quyền Điều khiển Phiên (`sessionControl`)**: Đăng ký tên và vai trò qua trang cổng truy cập; Giám đốc có thể cấp/thu hồi quyền **Dừng, Sửa tên, Xóa phiên làm việc** ngay trên cả máy tính lẫn giao diện Điện thoại cho từng cộng tác viên hoặc theo mặc định toàn cục.
 
 ### 6. Kiến trúc Docker + Rust Native Engine + On-Demand Host Bridge & Giám sát Quota 5h/7d
 - **Rust Native Engine (`rust-native/`)**: Tăng tốc quét thư mục Brain, đọc luồng `transcript.jsonl`, thu thập thông số hệ thống (`sysinfo`) và khiên bảo mật `SHA-256/HMAC` + `redact`.

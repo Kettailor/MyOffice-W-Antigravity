@@ -32,6 +32,10 @@ export const DEFAULTS = {
   staffNames: true,
   subNames: true,
   workSteps: true,
+  groupByFolder: true,
+  railShowPath: true,
+  railShowMetrics: true,
+  railExpandIdle: true,
 };
 export const uiCfg = {
   get chibiNames() { return state.showChibiNames ?? DEFAULTS.chibiNames; },
@@ -42,6 +46,14 @@ export const uiCfg = {
   set subNames(v) { state.showSubNames = v; },
   get workSteps() { return state.showWorkSteps ?? DEFAULTS.workSteps; },
   set workSteps(v) { state.showWorkSteps = v; },
+  get groupByFolder() { return state.groupByFolder ?? DEFAULTS.groupByFolder; },
+  set groupByFolder(v) { state.groupByFolder = v; setPref('office-group-folder', v ? 'on' : 'off'); },
+  get railShowPath() { return state.railShowPath ?? DEFAULTS.railShowPath; },
+  set railShowPath(v) { state.railShowPath = v; setPref('office-rail-path', v ? 'on' : 'off'); },
+  get railShowMetrics() { return state.railShowMetrics ?? DEFAULTS.railShowMetrics; },
+  set railShowMetrics(v) { state.railShowMetrics = v; setPref('office-rail-metrics', v ? 'on' : 'off'); },
+  get railExpandIdle() { return state.railExpandIdle ?? DEFAULTS.railExpandIdle; },
+  set railExpandIdle(v) { state.railExpandIdle = v; setPref('office-rail-expand-idle', v ? 'on' : 'off'); },
 };
 
 export let popLook;
@@ -106,6 +118,7 @@ function setToggle(k, v) {
   if (k === 'chibiNames') { state.showChibiNames = v; setPref('office-chibi-names', v ? 'on' : 'off'); }
   if (k === 'staffNames') { state.showStaffNames = v; setPref('office-staff-names', v ? 'on' : 'off'); }
   if (k === 'subNames') { state.showSubNames = v; setPref('office-sub-names', v ? 'on' : 'off'); }
+  if (k === 'groupByFolder') { state.groupByFolder = v; setPref('office-group-folder', v ? 'on' : 'off'); queueUi(); }
   if (k === 'workSteps') {
     state.showWorkSteps = v;
     setPref('office-work-steps', v ? 'on' : 'off');
@@ -139,6 +152,7 @@ export function syncToggles() {
     staffNames: state.showStaffNames !== false,
     subNames: state.showSubNames !== false,
     workSteps: state.showWorkSteps !== false,
+    groupByFolder: state.groupByFolder !== false,
     season: seasonOn,
   };
   labels.domElement.classList.toggle('show-zones', state.zonesOn);
@@ -168,6 +182,10 @@ export function setup() {
   state.showStaffNames = getPref('office-staff-names') !== 'off';
   state.showSubNames = getPref('office-sub-names') !== 'off';
   state.showWorkSteps = getPref('office-work-steps') !== 'off';
+  state.groupByFolder = getPref('office-group-folder') !== 'off';
+  state.railShowPath = getPref('office-rail-path') !== 'off';
+  state.railShowMetrics = getPref('office-rail-metrics') !== 'off';
+  state.railExpandIdle = getPref('office-rail-expand-idle') !== 'off';
   if (getPref('office-autocam') !== null) state.camAuto = getPref('office-autocam') !== 'off';
   if (getPref('office-perm') !== null) state.permOn = getPref('office-perm') !== 'off';
   if (getPref('office-zones') !== null) state.zonesOn = getPref('office-zones') === 'on';

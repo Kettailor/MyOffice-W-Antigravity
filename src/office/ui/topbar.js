@@ -104,10 +104,52 @@ export function renderViewerBadge() {
   }
 }
 
+export function canStopSession(s) {
+  if (s?.masked) return false;
+  if (state.isLocal) return true;
+  const v = state.viewer;
+  if (!v) return false;
+  if (v.isDirectorDevice || v.role === 'Phó Giám đốc') return state.access ? state.access.allowStopSession !== false : true;
+  if (typeof v.canStopSession === 'boolean') return v.canStopSession;
+  if (v.sessionPerms && typeof v.sessionPerms.stop === 'boolean') return v.sessionPerms.stop;
+  return true;
+}
+
+export function canEditSession(s) {
+  if (s?.masked) return false;
+  if (state.isLocal) return true;
+  const v = state.viewer;
+  if (!v) return false;
+  if (v.isDirectorDevice || v.role === 'Phó Giám đốc') return state.access ? state.access.allowEditSession !== false : true;
+  if (typeof v.canEditSession === 'boolean') return v.canEditSession;
+  if (v.sessionPerms && typeof v.sessionPerms.edit === 'boolean') return v.sessionPerms.edit;
+  return true;
+}
+
+export function canDeleteSession(s) {
+  if (s?.masked) return false;
+  if (state.isLocal) return true;
+  const v = state.viewer;
+  if (!v) return false;
+  if (v.isDirectorDevice || v.role === 'Phó Giám đốc') return state.access ? state.access.allowDeleteSession !== false : true;
+  if (typeof v.canDeleteSession === 'boolean') return v.canDeleteSession;
+  if (v.sessionPerms && typeof v.sessionPerms.delete === 'boolean') return v.sessionPerms.delete;
+  return true;
+}
+
 function renderAccessSection(body) {
-  const acc = state.access || { requireTaskApproval: true, roles: ['Trợ lý Giám đốc'], workspaces: [], members: [], pendingTasks: [] };
+  const acc = state.access || {
+    requireTaskApproval: true,
+    allowStopSession: true,
+    allowEditSession: true,
+    allowDeleteSession: true,
+    roles: ['Trợ lý Giám đốc', 'Phó Giám đốc', 'Quản lý Dự án', 'Trưởng nhóm Kỹ thuật', 'Cộng tác viên', 'Khách xem'],
+    workspaces: [],
+    members: [],
+    pendingTasks: [],
+  };
   const sec = el('div', 'pm-access');
-  sec.append(el('h4', 'pm-h', '👔 Phân quyền Tailscale & Trợ lý Giám đốc'));
+  sec.append(el('h4', 'pm-h', '👔 Phân quyền Tailscale & Các vai trò kết nối'));
 
   // 1. Master toggle: require Director approval before conversation/task execution
   sec.append(phoneSwitch(
@@ -119,13 +161,63 @@ function renderAccessSection(body) {
       if (!r?.ok) return false;
       state.access = r;
       state.requireTaskApproval = !!r.requireTaskApproval;
-      toast(want ? '🛡️ Đã BẬT chế độ duyệt trước khi Agent chạy task từ xa' : '⚡ Đã TẮT chế độ chờ duyệt — Trợ lý giao việc chạy ngay');
+      toast(want ? '🛡️ Đã BẬT chế độ duyệt trước khi Agent chạy task từ xa' : '⚡ Đã TẮT chế độ chờ duyệt — Người dùng giao việc chạy ngay');
       renderPhone();
       renderViewerBadge();
       return true;
     },
-    'Khi BẬT: Mọi task/conversation do Trợ lý Giám đốc giao từ xa sẽ hiện thẻ chờ bạn duyệt trước khi Agent thực hiện. Khi TẮT: Chạy ngay lập tức.',
+    'Khi BẬT: Mọi task/conversation do người kết nối từ xa giao sẽ hiện thẻ chờ bạn duyệt trước khi Agent thực hiện. Khi TẮT: Chạy ngay lập tức.',
   ));
+
+  // 1b. Global Session Control Permissions for Connected Roles
+  const sessPermBox = el('div', 'pm-qbox');
+  sessPermBox.append(
+    el('b', 'pm-qh', '🎛️ Cấp quyền chức năng phiên làm việc cho các vai trò kết nối'),
+    el('p', 'muted pm-note', 'Bật/tắt quyền thao tác phiên làm việc chung cho các người dùng kết nối từ xa (bạn cũng có thể tùy chỉnh riêng từng người ở danh sách bên dưới):'),
+    phoneSwitch(
+      '⏹️ Cho phép dừng phiên làm việc (Stop Session)',
+      acc.allowStopSession !== false,
+      false,
+      async (want) => {
+        const r = await post('/api/access', { action: 'setSessionPermissions', allowStopSession: want });
+        if (!r?.ok) return false;
+        state.access = r;
+        toast(want ? '⏹️ Đã cho phép các vai trò kết nối dừng phiên làm việc' : '🔒 Đã tắt quyền dừng phiên làm việc từ xa');
+        renderPhone();
+        return true;
+      },
+      'Cho phép Trợ lý / Quản lý dừng tiến trình Agent đang chạy trên các Workspace được cấp quyền.',
+    ),
+    phoneSwitch(
+      '✏️ Cho phép chỉnh sửa / đổi tên phiên (Edit Session)',
+      acc.allowEditSession !== false,
+      false,
+      async (want) => {
+        const r = await post('/api/access', { action: 'setSessionPermissions', allowEditSession: want });
+        if (!r?.ok) return false;
+        state.access = r;
+        toast(want ? '✏️ Đã cho phép các vai trò kết nối chỉnh sửa tên phiên' : '🔒 Đã tắt quyền chỉnh sửa tên phiên từ xa');
+        renderPhone();
+        return true;
+      },
+      'Cho phép đổi tên hiển thị của các phiên làm việc trong danh sách và bảng điều khiển.',
+    ),
+    phoneSwitch(
+      '🗑️ Cho phép xóa phiên làm việc (Delete Session)',
+      acc.allowDeleteSession !== false,
+      false,
+      async (want) => {
+        const r = await post('/api/access', { action: 'setSessionPermissions', allowDeleteSession: want });
+        if (!r?.ok) return false;
+        state.access = r;
+        toast(want ? '🗑️ Đã cho phép các vai trò kết nối xóa phiên làm việc' : '🔒 Đã tắt quyền xóa phiên làm việc từ xa');
+        renderPhone();
+        return true;
+      },
+      'Cho phép xóa các phiên làm việc không còn sử dụng trên các Workspace được cấp quyền.',
+    ),
+  );
+  sec.append(sessPermBox);
 
   // 2. Pending Tasks Queue
   const pTasks = acc.pendingTasks || [];
@@ -219,6 +311,22 @@ function renderAccessSection(body) {
     const wsGrid = el('div', 'pm-mwsgrid');
     const picked = new Set((m.allowedWorkspaces || []).map((x) => String(x).toLowerCase()));
     const checkboxes = [];
+
+    const permTitle = el('small', 'pm-mwstitle', `🎛️ Quyền chức năng phiên làm việc (${m.role || 'Trợ lý Giám đốc'}):`);
+    const permGrid = el('div', 'pm-mwsgrid');
+    const makePermCb = (labelTxt, initChecked) => {
+      const lbl = el('label', 'pm-mws');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = initChecked;
+      lbl.append(cb, el('span', null, labelTxt));
+      permGrid.append(lbl);
+      return cb;
+    };
+    const canStopCb = makePermCb('⏹️ Dừng phiên', m.rawCanStopSession !== false && m.canStopSession !== false);
+    const canEditCb = makePermCb('✏️ Chỉnh sửa phiên', m.rawCanEditSession !== false && m.canEditSession !== false);
+    const canDeleteCb = makePermCb('🗑️ Xóa phiên', m.rawCanDeleteSession !== false && m.canDeleteSession !== false);
+
     const saveMemberPerms = async (quietToast = false) => {
       const allowedWorkspaces = checkboxes.filter((c) => c.checked).map((c) => c.value);
       const action = m.status === 'approved' ? 'updateMember' : 'approveMember';
@@ -228,6 +336,9 @@ function renderAccessSection(body) {
         name: nameIn.value.trim() || 'Trợ lý Giám đốc',
         role: roleIn.value.trim() || 'Trợ lý Giám đốc',
         allowedWorkspaces,
+        canStopSession: canStopCb.checked,
+        canEditSession: canEditCb.checked,
+        canDeleteSession: canDeleteCb.checked,
         status: 'approved',
       });
       if (r?.ok) {
@@ -240,6 +351,11 @@ function renderAccessSection(body) {
       }
       return r;
     };
+    if (m.status === 'approved') {
+      for (const pcb of [canStopCb, canEditCb, canDeleteCb]) {
+        pcb.addEventListener('change', () => { saveMemberPerms(true); });
+      }
+    }
     for (const w of allWs) {
       const lbl = el('label', 'pm-mws');
       const cb = el('input');
@@ -282,7 +398,7 @@ function renderAccessSection(body) {
     });
 
     acts.append(saveBtn, delBtn);
-    card.append(top, fields, wsTitle, wsGrid, acts);
+    card.append(top, fields, wsTitle, wsGrid, permTitle, permGrid, acts);
     mWrap.append(card);
   }
 
@@ -382,13 +498,29 @@ export function renderPhone() {
 // The same window on a phone: changing the PIN (with the one it has now), and what the Mac allows phones (switched there)
 function phoneSide(body) {
   if (state.viewer) {
+    const v = state.viewer;
+    const isFull = Boolean(v.isDirector || v.isDirectorDevice || v.role === 'Phó Giám đốc');
+    const canStop = isFull || (v.canStopSession !== false && v.sessionPerms?.stop !== false);
+    const canEdit = isFull || (v.canEditSession !== false && v.sessionPerms?.edit !== false);
+    const canDel = isFull || (v.canDeleteSession !== false && v.sessionPerms?.delete !== false);
     const vBox = el('div', 'pm-pinbox');
+    const permBadges = el('div', 'pm-mwsgrid');
+    for (const [labelTxt, allowed] of [
+      ['⏹️ Dừng phiên làm việc', canStop],
+      ['✏️ Chỉnh sửa tên phiên', canEdit],
+      ['🗑️ Xóa phiên làm việc', canDel],
+    ]) {
+      const chip = el('span', `pm-mbadge ${allowed ? 'pm-mbadge--approved' : 'pm-mbadge--rejected'}`, `${allowed ? '🟢' : '🔒'} ${labelTxt}`);
+      permBadges.append(chip);
+    }
     vBox.append(
-      el('b', null, `👔 Vai trò: ${state.viewer.role || 'Trợ lý Giám đốc'} · ${state.viewer.name || 'Từ xa'}`),
+      el('b', null, `👔 Vai trò: ${v.role || 'Trợ lý Giám đốc'} · ${v.name || 'Từ xa'}`),
       el('p', 'muted pm-note', state.requireTaskApproval
         ? '🛡️ Chế độ: Mọi công việc (task) bạn giao sẽ được gửi tới Giám đốc duyệt trước khi Agent thực hiện.'
         : '⚡ Chế độ: Công việc bạn giao được Agent thực hiện ngay lập tức.'),
-      el('p', 'muted pm-note', `📁 Workspace được phép truy cập: ${(state.viewer.allowedWorkspaces || []).map((d) => String(d).split(/[\\/]/).filter(Boolean).pop() || d).join(', ') || 'Theo phân quyền Giám đốc'}`),
+      el('p', 'muted pm-note', `📁 Workspace được phép truy cập: ${(v.allowedWorkspaces || []).map((d) => String(d).split(/[\\/]/).filter(Boolean).pop() || d).join(', ') || 'Theo phân quyền Giám đốc'}`),
+      el('small', 'pm-mwstitle', '🎛️ Quyền chức năng phiên làm việc của bạn:'),
+      permBadges,
     );
     body.append(vBox);
   }

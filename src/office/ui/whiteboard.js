@@ -19,7 +19,7 @@ import { goOut, outing } from '../people/outings.js';
 import { THEME } from '../world/backdrops/index.js';
 import * as gatherings from '../people/gatherings.js';
 import { PLACES, chipCovered } from '../interact/place-chips.js';
-import { agoText, closePlace, openPlace, plButton, plEmpty, plGroup, plRow, plcState, renderPlace } from '../interact/place-cards.js';
+import { agoText, closePlace, openPlace, plButton, plEmpty, plRow, plcState, renderPlace } from '../interact/place-cards.js';
 import { blocked, fp, toStreet } from '../interact/first-person.js';
 import { TOKEN, upsertSession } from '../net/live.js';
 import { sfx } from '../audio/sfx.js';
@@ -35,19 +35,44 @@ import { postState } from '../life/post.js';
 import { t as tr } from '../../i18n/index.js';
 
 let boardAt = 0;
+let boardTab = 'mine';
+let cachedClientId = '';
+function getClientId() {
+  if (cachedClientId) return cachedClientId;
+  try {
+    cachedClientId = localStorage.getItem('office_client_id') || '';
+    if (!cachedClientId) {
+      cachedClientId = `dev-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+      localStorage.setItem('office_client_id', cachedClientId);
+    }
+  } catch {
+    cachedClientId = 'dev-session';
+  }
+  return cachedClientId;
+}
+function getViewerOwnerId() {
+  if (state.isLocal) return 'director';
+  return state.viewer?.id || 'remote';
+}
+function getViewerName() {
+  if (state.isLocal) return 'Giám đốc';
+  return state.viewer?.name || 'Trợ lý';
+}
 // the demo's to-dos: the text is a getter, so it is translated when the demo copies it, not at module load
-const demoTodo = (id, done) => ({ id, get text() { return tr(`board.demo.${id}`); }, done });
-export const DEMO_TODOS = [demoTodo('d1', false), demoTodo('d2', true), demoTodo('d3', false)];
+const demoTodo = (id, done, scope = 'mine') => ({ id, get text() { return tr(`board.demo.${id}`); }, done, scope, authorName: 'Giám đốc' });
+export const DEMO_TODOS = [demoTodo('d1', false, 'mine'), demoTodo('d2', true, 'mine'), demoTodo('d3', false, 'shared')];
 async function todoApi(body) {
+  const payload = { ...body, clientId: getClientId() };
   if (DEMO) {
-    if (body.op === 'add') state.todos.push({ id: Math.random().toString(36).slice(2, 8), text: body.text, done: false, at: Date.now() });
-    else if (body.op === 'toggle') { const t = state.todos.find((x) => x.id === body.id); if (t) { t.done = !t.done; t.doneAt = t.done ? Date.now() : 0; } }
-    else if (body.op === 'del') state.todos = state.todos.filter((x) => x.id !== body.id);
-    else if (body.op === 'clear') state.todos = state.todos.filter((x) => !x.done);
+    const scope = payload.scope === 'shared' ? 'shared' : 'mine';
+    if (payload.op === 'add') state.todos.push({ id: Math.random().toString(36).slice(2, 8), text: payload.text, done: false, at: Date.now(), scope, ownerId: getViewerOwnerId(), clientId: scope === 'mine' ? getClientId() : '', authorName: getViewerName() });
+    else if (payload.op === 'toggle') { const t = state.todos.find((x) => x.id === payload.id); if (t) { t.done = !t.done; t.doneAt = t.done ? Date.now() : 0; } }
+    else if (payload.op === 'del') state.todos = state.todos.filter((x) => x.id !== payload.id);
+    else if (payload.op === 'clear') state.todos = state.todos.filter((x) => !x.done || (x.scope === 'shared' ? 'shared' : 'mine') !== scope);
     onTodos(); return true;
   }
   try {
-    const r = await fetch(`/api/todos${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await fetch(`/api/todos${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json();
     if (Array.isArray(d.todos)) { state.todos = d.todos; onTodos(); }
     if (!d.ok) toast(d.message || tr('board.saveFailed'));
@@ -60,7 +85,17 @@ function agentTasks() {
   return [...sessions.values()].filter((s) => s.lastPrompt).map((s) => ({ s, state: s.status === 'wait' ? 'wait' : s.status === 'work' ? 'doing' : 'done' }))
     .sort((a, b) => TASK_ORDER[a.state] - TASK_ORDER[b.state] || (b.s.taskStart || 0) - (a.s.taskStart || 0));
 }
-const myTodos = () => [...state.todos.filter((t) => !t.done), ...state.todos.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0))];
+const isSharedTodo = (t) => Boolean(t && t.scope === 'shared');
+function isMineTodo(t) {
+  if (!t || t.scope === 'shared') return false;
+  const cid = getClientId();
+  if (t.clientId && cid) return t.clientId === cid;
+  return (t.ownerId || 'director') === getViewerOwnerId();
+}
+const sortTodos = (list) => [...list.filter((t) => !t.done), ...list.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0))];
+const myPersonalTodos = () => sortTodos(state.todos.filter(isMineTodo));
+const sharedTodos = () => sortTodos(state.todos.filter(isSharedTodo));
+const myTodos = () => sortTodos(state.todos.filter((t) => isSharedTodo(t) || isMineTodo(t)));
 // board canvas: 1024 x 512 over a 3.1 x 1.55 m face. Canvas x maps to board z as z = (0.5 - x / 1024) * 3.1.
 const BW = 1024, BH = 512;
 let boardCanvas;
@@ -115,10 +150,11 @@ function drawBoard(t) {
   if (tasks.length > 5) { g.fillStyle = '#6B7486'; g.font = `600 20px ${FB}`; g.fillText(tr('board.more', { n: tasks.length - 5 }), 88, 132 + 5 * 72 - 4); }
   // right half: your sticky notes
   g.strokeStyle = 'rgba(43,58,85,.12)'; g.lineWidth = 2; g.beginPath(); g.moveTo(600, 34); g.lineTo(600, 486); g.stroke();
-  const open = state.todos.filter((x) => !x.done).length;
+  const visibleTodos = myTodos();
+  const open = visibleTodos.filter((x) => !x.done).length;
   g.fillStyle = '#22304A'; g.font = `800 26px ${FB}`; g.fillText(tr('board.yours').toUpperCase(), 626, 70);
-  g.fillStyle = '#6B7486'; g.font = `600 20px ${FB}`; g.fillText(state.todos.length ? tr('board.open', { n: open }) : tr('board.clickToAdd'), 626, 100);
-  const mine = myTodos();
+  g.fillStyle = '#6B7486'; g.font = `600 20px ${FB}`; g.fillText(visibleTodos.length ? tr('board.open', { n: open }) : tr('board.clickToAdd'), 626, 100);
+  const mine = visibleTodos;
   if (mine.length < STICKY_SLOTS.length) {   // a dashed "add" note in the next free slot
     const sl = STICKY_SLOTS[mine.length], cx = (0.5 - sl.z / 3.1) * BW, cy = (0.5 - sl.y / 1.55) * BH, s = (0.36 / 3.1) * BW;
     g.setLineDash([10, 8]); g.strokeStyle = 'rgba(43,58,85,.35)'; g.lineWidth = 3; g.strokeRect(cx - s / 2, cy - s / 2, s, s); g.setLineDash([]);
@@ -169,11 +205,125 @@ function syncStickies(mine) {
     n.g.visible = true;
   });
 }
+function buildTodoListPart(partName, items, scope, emptyKey) {
+  const box = el('div');
+  box.dataset.part = partName;
+  const ul = el('ul', 'todo-list');
+  for (const t of items) {
+    const li = el('li');
+    li.dataset.done = String(!!t.done);
+    const cb = el('button', 'todo-check');
+    cb.type = 'button';
+    cb.setAttribute('role', 'checkbox');
+    cb.setAttribute('aria-checked', String(!!t.done));
+    cb.setAttribute('aria-label', t.done ? tr('board.markUndone') : tr('board.markDone'));
+    cb.append(icon('check'));
+    cb.addEventListener('click', () => {
+      if (!t.done) sfx.play('pop');
+      todoApi({ op: 'toggle', id: t.id, scope });
+    });
+    const content = el('div', 'todo-body');
+    content.append(el('span', 'todo-txt', t.text));
+    if (scope === 'shared' && t.authorName) {
+      const meta = el('span', 'todo-author', tr('board.byAuthor', { name: t.authorName }));
+      content.append(meta);
+    }
+    const del = el('button', 'todo-del');
+    del.type = 'button';
+    del.setAttribute('aria-label', tr('board.deleteTodo', { text: t.text }));
+    del.append(icon('x'));
+    del.addEventListener('click', () => todoApi({ op: 'del', id: t.id, scope }));
+    li.append(cb, content, del);
+    ul.append(li);
+  }
+  if (!items.length) box.append(plEmpty(tr(emptyKey)));
+  else box.append(ul);
+  const nDone = items.filter((t) => t.done).length;
+  if (nDone) box.append(plButton(tr('board.clearDone', { n: nDone }), () => todoApi({ op: 'clear', scope }), 'btn--ghost'));
+  return box;
+}
+function buildTodoForm(scope, placeholderKey, labelKey) {
+  const form = el('form', 'todo-add');
+  form.dataset.scope = scope;
+  const input = el('input');
+  input.type = 'text';
+  input.maxLength = 140;
+  input.placeholder = tr(placeholderKey);
+  input.setAttribute('aria-label', tr(labelKey));
+  input.enterKeyHint = 'done';
+  const add = el('button', 'btn btn--sm btn--accent', tr('board.add'));
+  add.type = 'submit';
+  form.append(input, add);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const v = input.value.trim();
+    if (!v) { input.focus(); return; }
+    input.value = '';
+    await todoApi({ op: 'add', text: v, scope });
+    sfx.play('pop');
+    input.focus();
+  });
+  return form;
+}
 export function boardContent() {
   const body = el('div', 'pl-board');
-  const agents = el('div'); agents.dataset.part = 'agents';
   const tasks = agentTasks();
-  agents.append(plGroup(tr('board.agentTasks')));
+  const mineItems = myPersonalTodos();
+  const sharedItems = sharedTodos();
+  const counts = {
+    mine: mineItems.filter((t) => !t.done).length,
+    agent: tasks.length,
+    shared: sharedItems.filter((t) => !t.done).length,
+  };
+
+  const tabs = el('div', 'board-tabs');
+  tabs.dataset.part = 'tabs';
+  tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', tr('board.menuLabel'));
+  const tabDefs = [
+    ['mine', tr('board.tabMine'), counts.mine],
+    ['agent', tr('board.tabAgent'), counts.agent],
+    ['shared', tr('board.tabShared'), counts.shared],
+  ];
+  const switchTab = (nextTab) => {
+    boardTab = nextTab;
+    const root = document.getElementById('plc-body')?.querySelector('.pl-board') || body;
+    for (const btn of root.querySelectorAll('.board-tab')) {
+      const active = btn.dataset.tab === boardTab;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', String(active));
+    }
+    for (const panel of root.querySelectorAll('.board-panel')) {
+      panel.hidden = panel.dataset.panel !== boardTab;
+    }
+  };
+  for (const [key, label, count] of tabDefs) {
+    const btn = el('button', `board-tab${boardTab === key ? ' is-active' : ''}`);
+    btn.type = 'button';
+    btn.dataset.tab = key;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', String(boardTab === key));
+    btn.append(el('span', 'board-tab-txt', label));
+    const badge = el('span', 'board-tab-count', String(count));
+    badge.dataset.count = String(count);
+    btn.append(badge);
+    btn.addEventListener('click', () => switchTab(key));
+    tabs.append(btn);
+  }
+
+  const panelMine = el('div', 'board-panel');
+  panelMine.dataset.panel = 'mine';
+  panelMine.hidden = boardTab !== 'mine';
+  panelMine.append(
+    buildTodoForm('mine', 'board.addPlaceholder', 'board.addLabel'),
+    buildTodoListPart('mine', mineItems, 'mine', 'board.mineEmpty'),
+  );
+
+  const panelAgent = el('div', 'board-panel');
+  panelAgent.dataset.panel = 'agent';
+  panelAgent.hidden = boardTab !== 'agent';
+  const agents = el('div');
+  agents.dataset.part = 'agents';
   if (!tasks.length) agents.append(plEmpty(tr('board.agentEmpty')));
   const STATE = { wait: ['alert', 'red'], doing: ['sparkle', 'green'], done: ['check', null] };
   for (const x of tasks) {
@@ -189,27 +339,17 @@ export function boardContent() {
       agents.append(ul);
     }
   }
-  const mine = el('div'); mine.dataset.part = 'mine';
-  const ul = el('ul', 'todo-list');
-  for (const t of myTodos()) {
-    const li = el('li'); li.dataset.done = String(!!t.done);
-    const cb = el('button', 'todo-check'); cb.type = 'button'; cb.setAttribute('role', 'checkbox'); cb.setAttribute('aria-checked', String(!!t.done)); cb.setAttribute('aria-label', t.done ? tr('board.markUndone') : tr('board.markDone'));
-    cb.append(icon('check'));
-    cb.addEventListener('click', () => { if (!t.done) sfx.play('pop'); todoApi({ op: 'toggle', id: t.id }); });
-    const del = el('button', 'todo-del'); del.type = 'button'; del.setAttribute('aria-label', tr('board.deleteTodo', { text: t.text })); del.append(icon('x'));
-    del.addEventListener('click', () => todoApi({ op: 'del', id: t.id }));
-    li.append(cb, el('span', 'todo-txt', t.text), del); ul.append(li);
-  }
-  if (!state.todos.length) mine.append(plEmpty(tr('board.mineEmpty')));
-  else mine.append(ul);
-  const nDone = state.todos.filter((t) => t.done).length;
-  if (nDone) mine.append(plButton(tr('board.clearDone', { n: nDone }), () => todoApi({ op: 'clear' }), 'btn--ghost'));
-  const form = el('form', 'todo-add');
-  const input = el('input'); input.type = 'text'; input.maxLength = 140; input.placeholder = tr('board.addPlaceholder'); input.setAttribute('aria-label', tr('board.addLabel')); input.enterKeyHint = 'done';
-  const add = el('button', 'btn btn--sm btn--accent', tr('board.add')); add.type = 'submit';
-  form.append(input, add);
-  form.addEventListener('submit', async (e) => { e.preventDefault(); const v = input.value.trim(); if (!v) { input.focus(); return; } input.value = ''; await todoApi({ op: 'add', text: v }); sfx.play('pop'); input.focus(); });
-  body.append(plGroup(tr('board.yours')), form, mine, agents);
+  panelAgent.append(agents);
+
+  const panelShared = el('div', 'board-panel');
+  panelShared.dataset.panel = 'shared';
+  panelShared.hidden = boardTab !== 'shared';
+  panelShared.append(
+    buildTodoForm('shared', 'board.addSharedPlaceholder', 'board.addSharedLabel'),
+    buildTodoListPart('shared', sharedItems, 'shared', 'board.sharedEmpty'),
+  );
+
+  body.append(tabs, panelMine, panelAgent, panelShared);
   return { icon: 'list', title: tr('board.cardTitle'), sub: tr('board.cardSub'), body };
 }
 export function updateBoard(t) {

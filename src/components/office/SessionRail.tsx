@@ -31,7 +31,71 @@ export default async function SessionRail() {
             <button type="button" className="st" data-st="rest" aria-pressed="false"><i></i><b id="st-rest">0</b><span>{t('ui.sessionRail.rest')}</span></button>
             <button type="button" className="st" data-st="home" aria-pressed="false"><i></i><b id="st-home">0</b><span>{t('ui.sessionRail.home')}</span></button>
           </div>
-          <label className="search"><span data-icon="search"></span><input id="sess-search" type="search" placeholder={t('ui.sessionRail.search')} autoComplete="off" aria-label={t('ui.sessionRail.searchLabel')} /></label>
+          <div className="rail-search-row">
+            <label className="search"><span data-icon="search"></span><input id="sess-search" type="search" placeholder={t('ui.sessionRail.search')} autoComplete="off" aria-label={t('ui.sessionRail.searchLabel')} /></label>
+          </div>
+          <div className="rail-toolbar" role="toolbar" aria-label={t('ui.sessionRail.viewMode')}>
+            <div className="rail-view-seg" role="group" aria-label={t('ui.sessionRail.viewMode')}>
+              <button
+                type="button"
+                className="rail-view-btn"
+                data-rail-group="folder"
+                aria-pressed="true"
+                title={t('ui.sessionRail.byFolderTitle')}
+              >
+                <span data-icon="folder"></span>
+                <span>{t('ui.sessionRail.byFolder')}</span>
+              </button>
+              <button
+                type="button"
+                className="rail-view-btn"
+                data-rail-group="status"
+                aria-pressed="false"
+                title={t('ui.sessionRail.byStatusTitle')}
+              >
+                <span data-icon="list"></span>
+                <span>{t('ui.sessionRail.byStatus')}</span>
+              </button>
+            </div>
+            <div className="rail-toolbar-acts">
+              <button
+                type="button"
+                id="rail-fold-all"
+                className="rail-icon-btn"
+                title={t('ui.sessionRail.foldAll')}
+                aria-label={t('ui.sessionRail.foldAll')}
+              >
+                <span data-icon="chevron"></span>
+              </button>
+              <div className="rail-cfg-wrap">
+                <button
+                  type="button"
+                  id="rail-cfg-btn"
+                  className="rail-icon-btn"
+                  title={t('ui.sessionRail.cfgBtn')}
+                  aria-label={t('ui.sessionRail.cfgBtn')}
+                  aria-expanded="false"
+                >
+                  <span data-icon="sliders"></span>
+                </button>
+                <div className="rail-cfg-pop" id="rail-cfg-pop" hidden role="dialog" aria-label={t('ui.sessionRail.cfgTitle')}>
+                  <div className="rail-cfg-head">{t('ui.sessionRail.cfgTitle')}</div>
+                  <button type="button" className="tgl rail-cfg-tgl" data-rail-cfg="groupByFolder" role="switch" aria-checked="true">
+                    <span>{t('ui.sessionRail.cfgGroupFolder')}</span><i></i>
+                  </button>
+                  <button type="button" className="tgl rail-cfg-tgl" data-rail-cfg="showPath" role="switch" aria-checked="true">
+                    <span>{t('ui.sessionRail.cfgShowPath')}</span><i></i>
+                  </button>
+                  <button type="button" className="tgl rail-cfg-tgl" data-rail-cfg="showMetrics" role="switch" aria-checked="true">
+                    <span>{t('ui.sessionRail.cfgShowMetrics')}</span><i></i>
+                  </button>
+                  <button type="button" className="tgl rail-cfg-tgl" data-rail-cfg="expandIdle" role="switch" aria-checked="true">
+                    <span>{t('ui.sessionRail.cfgExpandIdle')}</span><i></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <ul className="sess-list" id="rail-list"></ul>
       </aside>

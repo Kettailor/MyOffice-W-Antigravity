@@ -4,7 +4,7 @@ import { dangerKey } from '../../shared/danger.js';
 import { $, STATIC, el } from '../core/env.js';
 import { icon } from './icons.js';
 import { colorOf, dn, sessions, workers } from '../people/workers.js';
-import { toast } from './activity.js';
+import { queueUi, toast } from './activity.js';
 import { mdBlocks, openWindowOf, renderSessionHead } from './session-drawer.js';
 import { autoCam, panTo } from './camera-bar.js';
 import { fp } from '../interact/first-person.js';
@@ -208,12 +208,30 @@ function permCard(p) {
       cbs.push(cb);
       wsWrap.append(lbl);
     }
+    const permWrap = el('div', 'pm-mwsgrid');
+    permWrap.style.marginTop = '6px';
+    const makePermCb = (txt, initOn) => {
+      const lbl = el('label', 'pm-mws');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = initOn;
+      lbl.append(cb, el('span', null, txt));
+      permWrap.append(lbl);
+      return cb;
+    };
+    const acc = state.access || {};
+    const cbStop = makePermCb('⏹️ Dừng phiên', m.canStopSession !== false && acc.allowStopSession !== false);
+    const cbEdit = makePermCb('✏️ Chỉnh sửa phiên', m.canEditSession !== false && acc.allowEditSession !== false);
+    const cbDel = makePermCb('🗑️ Xóa phiên', m.canDeleteSession !== false && acc.allowDeleteSession !== false);
+
     box.append(
       el('small', 'pq-hint', 'Tên & Vai trò cấp cho người truy cập Tailscale/LAN:'),
       nameIn,
       roleIn,
       el('small', 'pq-hint', 'Chọn các Workspace người này được phép nhìn thấy & giao việc:'),
       wsWrap,
+      el('small', 'pq-hint', 'Cấp quyền chức năng phiên làm việc (Dừng / Sửa / Xóa):'),
+      permWrap,
     );
     if (m.note) box.append(el('p', 'pc-rule', `💬 Ghi chú: "${m.note}"`));
     card._accessPayload = (act) => ({
@@ -222,6 +240,9 @@ function permCard(p) {
       name: nameIn.value.trim() || 'Trợ lý Giám đốc',
       role: roleIn.value.trim() || 'Trợ lý Giám đốc',
       allowedWorkspaces: cbs.filter((c) => c.checked).map((c) => c.value),
+      canStopSession: cbStop.checked,
+      canEditSession: cbEdit.checked,
+      canDeleteSession: cbDel.checked,
     });
     acts.append(
       accBtn('approveMember', '✅ Duyệt & Cấp quyền', 'pc-allow'),
@@ -294,17 +315,24 @@ export async function decide(id, choice, extra = {}) {
 
   const cleanup = () => {
     perms.delete(id);
+    const targetSid = p?.sid || '';
     if (sess) {
       dismissedCardIds.delete(sess);
-      const s = sessions.get(sess) || state.sessions?.get?.(sess);
-      if (s && s.waitCard && (!s.waitCard.id || s.waitCard.id === id)) {
-        s.waitCard = null;
+    }
+    for (const sessObj of sessions.values()) {
+      if (sessObj.id === sess || sessObj.waitCard?.id === id || (targetSid && sessObj.sid === targetSid)) {
+        dismissedCardIds.delete(sessObj.id);
+        sessObj.waitCard = null;
+        if (sessObj.status === 'wait') {
+          sessObj.status = choice === 'skip' ? 'rest' : 'work';
+        }
       }
     }
     if (activeModalCardId === id || (sess && activeWaitSessId === sess)) {
       closeWaitModal(false);
     }
     renderPerms();
+    queueUi();
     if (state.selectedId) renderSessionHead();
   };
 
@@ -705,6 +733,7 @@ export function closeWaitModal(minimize = true) {
 }
 
 export function syncSessionWaitCards() {
+  let changed = false;
   for (const k of dismissedCardIds.keys()) if (!sessions.has(k)) dismissedCardIds.delete(k);
   for (const s of sessions.values()) {
     const card = getSessionWaitCard(s.id);
@@ -713,11 +742,16 @@ export function syncSessionWaitCards() {
         if (alertedCardIds.size > 300) alertedCardIds.delete(alertedCardIds.values().next().value);
         alertedCardIds.add(card.id);
         sfx.play('perm');
+        changed = true;
       }
       const w = workers.get(s.id);
-      if (w && w.anim !== 'hand') w.anim = 'hand';
+      if (w && w.anim !== 'hand') {
+        w.anim = 'hand';
+        changed = true;
+      }
     } else if (!card && dismissedCardIds.has(s.id)) {
       dismissedCardIds.delete(s.id);
+      changed = true;
     }
   }
   if (state.selectedId) {
@@ -729,10 +763,13 @@ export function syncSessionWaitCards() {
       }
     } else if (activeWaitSessId === state.selectedId) {
       closeWaitModal(false);
+      changed = true;
     }
   } else if (activeWaitSessId && !getSessionWaitCard(activeWaitSessId)) {
     closeWaitModal(false);
+    changed = true;
   }
+  if (changed) queueUi();
 }
 
 export function renderPerms() {
@@ -753,6 +790,7 @@ export function addPerm(p) {
   perms.set(p.id, p);
   if (isAdminPerm(p)) {
     renderPerms();
+    queueUi();
     sfx.play('perm');
     return;
   }
@@ -767,6 +805,7 @@ export function addPerm(p) {
     if (!state.selectedId && autoCam()) panTo(w);
   }
   renderPerms();
+  queueUi();
   if (state.selectedId === p.sess) {
     openWaitModalFor(p.sess, false);
     renderSessionHead();
@@ -777,20 +816,29 @@ export const onPerm = addPerm;
 
 export function removePerm(id) {
   perms.delete(id);
+  for (const s of sessions.values()) {
+    if (s.waitCard?.id === id) {
+      dismissedCardIds.delete(s.id);
+      s.waitCard = null;
+    }
+  }
   if (activeModalCardId === id) closeWaitModal(false);
   renderPerms();
+  queueUi();
   if (state.selectedId) renderSessionHead();
 }
 
 export function clearPerms() {
   perms.clear();
   renderPerms();
+  queueUi();
 }
 
 export function syncPerms(list = []) {
   perms.clear();
   for (const p of list) if (p?.id) perms.set(p.id, p);
   renderPerms();
+  queueUi();
 }
 
 export function setup() {

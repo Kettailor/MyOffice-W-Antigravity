@@ -136,12 +136,12 @@ export function upsertSession(s, walkIn = true) {
     w.setName(short(dn(s), 26));
     for (const x of s.subs || []) {
       if (x.prevId && subs.has(x.prevId)) rekeySub(x.prevId, x.id, x);
-      if (!subs.has(x.id)) spawnSub(w, x.id, x.type, !walkIn || document.hidden, x);
+      if (!subs.has(x.id)) spawnSub(w, x.id, x.type, !walkIn, x);
       const sw = subs.get(x.id);
       if (sw && x.desc) sw.desc = x.desc;
     }
     const live = new Set((s.subs || []).map((x) => x.id));
-    for (const [aid, sw] of subs) if (sw.parent === w && !live.has(aid)) dropSub(aid, walkIn && !document.hidden);
+    for (const [aid, sw] of subs) if (sw.parent === w && !live.has(aid)) dropSub(aid, walkIn);
     w.setTeam([...subs.values()].filter((x) => x.parent === w).length);
     w.setAcct(s.acct);
   }

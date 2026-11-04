@@ -235,12 +235,13 @@ let hr = null, SEAT = null, GREET = null;
 const HR_DESK = { x: 5.45, z: 7.3 };   // (the admin corner beside the front pod, next to the accountant's (people/accountant.js), off every walkway)
 const queue = [];
 function newcomer(w) {
-  if (!hr || w.sub || w.staff) return;
+  const s = sessions.get(w.id);
+  if (!hr || w.sub || w.staff || w.away || w.leaving || w.homeBound || w.lateRest?.(s)) return;
   pending.add(w.id); queue.push(w.id);
 }
 function meet(H) {   // the next newcomer: at the lift if she gets there in time, then to their desk and the name tab
   const id = queue.shift(), w = workers.get(id), s = sessions.get(id);
-  if (!w || !s || s.desk < 0 || s.desk >= DESKS.length) { pending.delete(id); return; }
+  if (!w || !s || w.away || w.leaving || w.homeBound || w.lateRest?.(s) || s.desk < 0 || s.desk >= DESKS.length) { pending.delete(id); return; }
   H.job = 'meet';
   const done = () => { pending.delete(id); H.job = null; H.goTo(SEAT, () => { H.anim = 'type'; }); };
   const toDesk = () => {

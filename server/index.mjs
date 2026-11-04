@@ -216,17 +216,85 @@ async function toVi(text) {
 const IMG_EXT = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', svg: 'image/svg+xml' };
 const IMG_FILE = path.join(DATA_DIR, 'images.json');
 const SHOT_DIR = path.join(DATA_DIR, 'shots');
+const TASK_IMG_DIR = path.join(DATA_DIR, 'task-images');
 const SHOT_KEEP_MS = 7 * 86400_000; // 7 days retention for screenshots & chat/task images
+const TRANSPARENT_GIF_BUF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 fs.mkdirSync(SHOT_DIR, { recursive: true });
+fs.mkdirSync(TASK_IMG_DIR, { recursive: true });
 const images = (() => { try { return new Map(Object.entries(JSON.parse(fs.readFileSync(IMG_FILE, 'utf8')))); } catch { return new Map(); } })();
 let imgSave = null;
+
+function resolveImageFilePath(filePath) {
+  if (!filePath || typeof filePath !== 'string') return '';
+  if (fs.existsSync(filePath)) return filePath;
+  const c = resolveContainerDir(filePath);
+  if (c && fs.existsSync(c)) return c;
+  const dataMatch = /[\\/]data[\\/](shots|task-images)[\\/]([^\\/]+)$/i.exec(filePath);
+  if (dataMatch) {
+    const folder = dataMatch[1].toLowerCase();
+    const filename = dataMatch[2];
+    const localCand = path.join(DATA_DIR, folder, filename);
+    if (fs.existsSync(localCand)) return localCand;
+  }
+  const geminiMatch = /^[A-Za-z]:[\\/]Users[\\/][^\\/]+[\\/]\.gemini[\\/](.+)$/i.exec(filePath);
+  if (geminiMatch) {
+    const geminiCand = path.join(os.homedir(), '.gemini', geminiMatch[1].replace(/\\/g, '/'));
+    if (fs.existsSync(geminiCand)) return geminiCand;
+  }
+  return '';
+}
+
+function registerImageVariants(realAbs, folderHint = '', filenameHint = '') {
+  const m = (!folderHint || !filenameHint) ? /[\\/](shots|task-images)[\\/]([^\\/]+)$/i.exec(realAbs) : null;
+  const folder = folderHint || (m ? m[1].toLowerCase() : '');
+  const n = filenameHint || (m ? m[2] : '');
+  const variants = new Set([realAbs]);
+  if (folder && n) {
+    variants.add(`E:\\WorkOffice\\data\\${folder}\\${n}`);
+    variants.add(`e:\\WorkOffice\\data\\${folder}\\${n}`);
+    variants.add(`/app/data/${folder}/${n}`);
+    variants.add(`/mnt/e/WorkOffice/data/${folder}/${n}`);
+  }
+  let changed = false;
+  for (const v of variants) {
+    const vid = crypto.createHash('sha1').update(v).digest('hex').slice(0, 16);
+    if (images.get(vid) !== realAbs) {
+      images.set(vid, realAbs);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+async function syncDiskImages(now = Date.now()) {
+  let changed = false;
+  for (const folder of ['shots', 'task-images']) {
+    const dirPath = path.join(DATA_DIR, folder);
+    const names = await fsp.readdir(dirPath).catch(() => []);
+    for (const n of names) {
+      if (!IMG_EXT[path.extname(n).slice(1).toLowerCase()]) continue;
+      const full = path.join(dirPath, n);
+      const st = await fsp.stat(full).catch(() => null);
+      if (!st || !st.isFile()) continue;
+      if (now - st.mtimeMs > SHOT_KEEP_MS) {
+        await fsp.rm(full, { force: true }).catch(() => {});
+        continue;
+      }
+      const realAbs = path.resolve(full);
+      if (registerImageVariants(realAbs, folder, n)) changed = true;
+    }
+  }
+  return changed;
+}
+
 function imageId(file) {
   if (!file || typeof file !== 'string' || !IMG_EXT[path.extname(file).slice(1).toLowerCase()]) return null;
-  const resolved = resolveContainerDir(file);
-  const abs = path.resolve(resolved), id = crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16);
-  if (images.get(id) === abs) return id;
+  const real = resolveImageFilePath(file) || resolveContainerDir(file);
+  const abs = path.resolve(real), id = crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16);
+  const changed = registerImageVariants(abs);
+  if (!changed && images.get(id) === abs) return id;
   images.set(id, abs);
-  while (images.size > 400) images.delete(images.keys().next().value);
+  while (images.size > 2000) images.delete(images.keys().next().value);
   clearTimeout(imgSave); imgSave = setTimeout(() => fsp.mkdir(DATA_DIR, { recursive: true }).then(() => fsp.writeFile(IMG_FILE, JSON.stringify(Object.fromEntries(images)))).catch(() => {}), 2000);
   return id;
 }
@@ -246,21 +314,22 @@ function saveShotImage(dataUrl) {
 }
 function pruneOldImages() {
   const now = Date.now();
-  fsp.readdir(SHOT_DIR).then(async (names) => {
-    for (const n of names) {
-      const full = path.join(SHOT_DIR, n);
-      const st = await fsp.stat(full).catch(() => null);
-      if (st && st.isFile() && now - st.mtimeMs > SHOT_KEEP_MS) {
-        await fsp.rm(full, { force: true }).catch(() => {});
-      }
-    }
-    let changed = false;
+  syncDiskImages(now).then(async (diskChanged) => {
+    let changed = Boolean(diskChanged);
     for (const [id, filePath] of images.entries()) {
-      const st = await fsp.stat(filePath).catch(() => null);
+      const realPath = resolveImageFilePath(filePath);
+      const st = realPath ? await fsp.stat(realPath).catch(() => null) : null;
       if (!st || !st.isFile() || now - st.mtimeMs > SHOT_KEEP_MS) {
         images.delete(id);
         changed = true;
+      } else if (realPath !== filePath) {
+        images.set(id, realPath);
+        changed = true;
       }
+    }
+    while (images.size > 2000) {
+      images.delete(images.keys().next().value);
+      changed = true;
     }
     if (changed) {
       await fsp.mkdir(DATA_DIR, { recursive: true }).catch(() => {});
@@ -290,7 +359,12 @@ function classify(name = '', input = {}) {
     case 'Bash': return { type: 'bash', label: bashLabel(i), tr: !!i.description };
     case 'WebSearch': return { type: 'web', label: clip(redact(oneLine(i.query)), 48) };
     case 'WebFetch': return { type: 'fetch', label: host(i.url) };
-    case 'Agent': case 'Task': return { type: 'agent', label: i.subagent_type || 'agent', desc: clip(redact(oneLine(i.description)), 50) };
+    case 'Agent': case 'Task': {
+      const desc = clip(redact(oneLine(i.description)), 50);
+      const rawType = String(i.subagent_type || '').trim();
+      const label = (/^[0-9a-f-]{16,}$/i.test(rawType) && desc) ? clip(desc, 40) : (rawType || 'agent');
+      return { type: 'agent', label, desc };
+    }
     case 'TodoWrite': case 'TaskCreate': case 'TaskUpdate': case 'TaskList': return { type: 'plan', label: tr('server.tool.todos') };
     case 'EnterPlanMode': case 'ExitPlanMode': return { type: 'plan', label: tr('server.tool.plan') };
     case 'AskUserQuestion': return { type: 'ask', label: tr('server.tool.ask') };
@@ -472,7 +546,7 @@ function recordTaskOwner(sessId, dir, viewerObj) {
   }
 }
 
-const pubSub = (x) => ({ id: x.id, type: x.type, desc: x.desc || '', last: x.last || null, startedAt: x.startedAt, endedAt: x.endedAt || null, steps: x.steps || 0 });
+const pubSub = (x) => ({ id: x.id, type: x.type, desc: x.desc || '', last: x.last || null, startedAt: x.startedAt, endedAt: x.endedAt || null, steps: x.steps || 0, ...(x.prevId ? { prevId: x.prevId } : {}), ...(x.provisional ? { provisional: true } : {}) });
 const pub = (s) => {
   let livePerm = null;
   for (const p of pending.values()) {
@@ -695,19 +769,35 @@ function trackTodos(s, p) {
   }
 }
 
-/* ---------- your own to-do list (sticky notes on the whiteboard) ----------
+/* ---------- your own to-do list & shared office to-dos (sticky notes on the whiteboard) ----------
    Kept in data/todos.json. Any page that can open the office may add, tick or remove items: they never touch the Mac. */
-const TODO_FILE = path.join(DATA_DIR, 'todos.json'), TODO_MAX = 60;
+const TODO_FILE = path.join(DATA_DIR, 'todos.json'), TODO_MAX = 120;
 let todos = [];
 try { const t = JSON.parse(fs.readFileSync(TODO_FILE, 'utf8')); if (Array.isArray(t)) todos = t.slice(0, TODO_MAX); } catch { /* first run */ }
-function todoOp(b) {
+function todoOp(b, actor = {}) {
   const item = todos.find((t) => t.id === String(b.id || ''));
   const text = clip(oneLine(b.text), 140);
+  const scope = b.scope === 'shared' ? 'shared' : 'mine';
+  const clientId = clip(oneLine(String(b.clientId || '')), 48);
+  const ownerId = actor.id || 'director';
+  const authorName = actor.name || 'Giám đốc';
+  const authorRole = actor.role || 'Giám đốc';
   switch (b.op) {
     case 'add':
       if (!text) return tr('server.todo.empty');
       if (todos.length >= TODO_MAX) return tr('server.todo.full', { n: TODO_MAX });
-      todos.push({ id: crypto.randomUUID().slice(0, 8), text, done: false, at: Date.now(), doneAt: 0 });
+      todos.push({
+        id: crypto.randomUUID().slice(0, 8),
+        text,
+        done: false,
+        at: Date.now(),
+        doneAt: 0,
+        scope,
+        ownerId,
+        clientId: scope === 'mine' ? clientId : '',
+        authorName,
+        authorRole,
+      });
       break;
     case 'toggle':
       if (!item) return tr('server.todo.gone');
@@ -722,7 +812,18 @@ function todoOp(b) {
       if (!item) return tr('server.todo.gone');
       todos = todos.filter((t) => t !== item);
       break;
-    case 'clear': todos = todos.filter((t) => !t.done); break;
+    case 'clear':
+      todos = todos.filter((t) => {
+        if (!t.done) return true;
+        const itemScope = t.scope === 'shared' ? 'shared' : 'mine';
+        if (itemScope !== scope) return true;
+        if (scope === 'mine') {
+          if (clientId && t.clientId) return t.clientId !== clientId;
+          return (t.ownerId || 'director') !== ownerId;
+        }
+        return false;
+      });
+      break;
     default: return tr('server.badRequest');
   }
   fsp.writeFile(TODO_FILE, JSON.stringify(todos)).catch(() => {});
@@ -841,7 +942,9 @@ function broadcast(obj) {
     const viewer = viewerOf(c.req);
     c.viewer = viewer;
     c.memberId = viewer?.id || null;
-    const vKey = viewer ? `${viewer.id}:${viewer.isDirectorDevice ? 1 : 0}:${(viewer.allowedWorkspaces || []).join(',')}` : 'anon';
+    const vKey = viewer
+      ? `${viewer.id}:${viewer.isDirectorDevice ? 1 : 0}:${viewer.canStopSession !== false ? 1 : 0}:${viewer.canEditSession !== false ? 1 : 0}:${viewer.canDeleteSession !== false ? 1 : 0}:${(viewer.allowedWorkspaces || []).join(',')}`
+      : 'anon';
     viewerPayloadCache ||= new Map();
     if (viewerPayloadCache.has(vKey)) {
       const cachedPayload = viewerPayloadCache.get(vKey);
@@ -1197,6 +1300,7 @@ const tasksOut = (local, viewer = null) => {
   const allWs = allKnownWorkspaces();
   const dirs = allWs.map((w) => w.dir).filter((d) => canSee(d));
   const sessList = [...sessions.values()].filter((s) => s.sid && s.cwd && canSee(s.cwd));
+  const runningList = tasks.list().filter((t) => canSee(t.dir));
   return {
     ok: true,
     allowed: local || prefs.get('phoneTasks') !== false,
@@ -1206,64 +1310,221 @@ const tasksOut = (local, viewer = null) => {
     totalWorkspaces: allWs.length,
     models: AGY_MODELS,
     sessionModels,
-    running: tasks.list().filter((t) => canSee(t.dir)),
+    running: runningList,
     projects: dirs.map((d) => ({ dir: tilde(d), rawDir: d, name: base(d) || d, selectedModel: getSavedModel('', d) })),
-    sessions: sessList.map((s) => ({
-      id: s.id,
-      sid: s.sid,
-      name: getCustomSessionName(s) || s.title || s.name,
-      rawName: s.name,
-      customTitle: getCustomSessionName(s) || s.customTitle || '',
-      dir: tilde(s.cwd),
-      rawDir: s.cwd,
-      status: s.status,
-      model: s.usage?.model || '',
-      selectedModel: getSavedModel(s.sid, s.cwd),
-    })),
+    sessions: sessList.map((s) => {
+      const hasRunningTask = runningList.some((t) => (
+        (s.sid && (t.sid === s.sid || t.from?.sid === s.sid || t.from?.orig === s.sid))
+        || (s.id && t.from?.id === s.id)
+      ));
+      const subsCount = s.subs ? Object.keys(s.subs).length : 0;
+      const isBusy = Boolean(s.status === 'work' || s.status === 'wait' || s.busy || subsCount > 0 || hasRunningTask);
+      return {
+        id: s.id,
+        sid: s.sid,
+        name: getCustomSessionName(s) || s.title || s.name,
+        rawName: s.name,
+        customTitle: getCustomSessionName(s) || s.customTitle || '',
+        dir: tilde(s.cwd),
+        rawDir: s.cwd,
+        status: isBusy && s.status !== 'wait' ? 'work' : s.status,
+        busy: isBusy,
+        subsCount,
+        model: s.usage?.model || '',
+        selectedModel: getSavedModel(s.sid, s.cwd),
+      };
+    }),
   };
 };
 
 /* ---------- the project folders sessions have worked in: where "Giao việc" may start a new conversation (a phone
-   picks one of these, never a path of its own); the last 30, kept in data/projects.json ---------- */
+   picks one of these, never a path of its own); the last 50, kept in data/projects.json ---------- */
 const DIRS_FILE = path.join(DATA_DIR, 'projects.json');
+const REMOVED_DIRS_FILE = path.join(DATA_DIR, 'removed-projects.json');
+
+function toContainerDir(p = '') {
+  const s = String(p || '').trim().replace(/^~(?=$|[\\/])/, os.homedir());
+  if (!s) return '';
+  if (process.platform !== 'win32') {
+    const m = /^([A-Za-z]):(?:[\\/](.*))?$/.exec(s);
+    if (m) {
+      const driveRoot = path.posix.join('/mnt', m[1].toLowerCase());
+      if (fs.existsSync(driveRoot)) {
+        const rel = String(m[2] || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        return rel ? path.posix.join(driveRoot, rel) : driveRoot;
+      }
+    }
+  } else {
+    const m = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(s.replace(/\\/g, '/'));
+    if (m) {
+      const drive = m[1].toUpperCase();
+      const rel = String(m[2] || '').replace(/\//g, '\\').replace(/^\\+/, '');
+      return rel ? `${drive}:\\${rel}` : `${drive}:\\`;
+    }
+  }
+  return s;
+}
+
+function toHostDir(p = '') {
+  const s = String(p || '').trim().replace(/^~(?=$|[\\/])/, os.homedir());
+  if (!s) return '';
+  const mntMatch = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(s.replace(/\\/g, '/'));
+  if (mntMatch) {
+    const drive = mntMatch[1].toUpperCase();
+    const rel = String(mntMatch[2] || '').replace(/\//g, '\\').replace(/^\\+|\\+$/g, '');
+    return rel ? `${drive}:\\${rel}` : `${drive}:\\`;
+  }
+  const winMatch = /^([A-Za-z]):(?:[\\/](.*))?$/.exec(s);
+  if (winMatch) {
+    const drive = winMatch[1].toUpperCase();
+    const rel = String(winMatch[2] || '').replace(/\//g, '\\').replace(/^\\+|\\+$/g, '');
+    return rel ? `${drive}:\\${rel}` : `${drive}:\\`;
+  }
+  return path.resolve(s);
+}
+
+function normProjectDirKey(p = '') {
+  let s = String(p || '').trim().replace(/^file:\/\/\/?/i, '');
+  if (!s) return '';
+  try { s = decodeURIComponent(s); } catch { /* keep raw */ }
+  s = s.replace(/^~(?=$|[\\/])/, os.homedir()).replace(/^\/+([A-Za-z]:)/, '$1');
+  const hostForm = toHostDir(s);
+  if (!hostForm) return '';
+  return hostForm.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+}
+
+const removedDirs = new Set();
+try {
+  const rawRemoved = JSON.parse(fs.readFileSync(REMOVED_DIRS_FILE, 'utf8'));
+  if (Array.isArray(rawRemoved)) {
+    for (const item of rawRemoved) {
+      const k = normProjectDirKey(item);
+      if (k) removedDirs.add(k);
+    }
+  }
+} catch { /* none yet */ }
+
+function saveRemovedDirs() {
+  try { fs.writeFileSync(REMOVED_DIRS_FILE, JSON.stringify([...removedDirs], null, 2)); }
+  catch { fsp.writeFile(REMOVED_DIRS_FILE, JSON.stringify([...removedDirs], null, 2)).catch(() => {}); }
+}
+
+function isRemovedProjectDir(d = '') {
+  const k = normProjectDirKey(d);
+  return Boolean(k && removedDirs.has(k));
+}
+
 const isValidProjectDir = (d) => {
   if (typeof d !== 'string' || !d.trim()) return false;
   if (/^agy-[0-9a-f]{4}$/i.test(base(d))) return false;
-  if (process.platform === 'win32' && !/^[A-Za-z]:[\\/]/.test(d)) return false;
-  const localDir = resolveContainerDir(d);
-  if (!path.isAbsolute(localDir) && !/^[A-Za-z]:[\\/]/.test(d)) return false;
+  const localDir = toContainerDir(d);
+  if (process.platform === 'win32' && !/^[A-Za-z]:[\\/]/.test(localDir)) return false;
+  if (!path.isAbsolute(localDir) && !/^[A-Za-z]:[\\/]/.test(localDir)) return false;
   try { return fs.statSync(localDir).isDirectory(); } catch { return false; }
 };
+
 let knownDirs = [];
 try {
-  knownDirs = JSON.parse(fs.readFileSync(DIRS_FILE, 'utf8')).filter(isValidProjectDir);
+  knownDirs = JSON.parse(fs.readFileSync(DIRS_FILE, 'utf8'))
+    .filter((d) => isValidProjectDir(d) && !isRemovedProjectDir(d))
+    .map((d) => toHostDir(d));
 } catch { /* none yet */ }
+
 function noteDir(dir) {
-  if (!isValidProjectDir(dir) || knownDirs[0] === dir) return;
-  knownDirs = [dir, ...knownDirs.filter((d) => d !== dir)].slice(0, 30);
+  if (!isValidProjectDir(dir) || isRemovedProjectDir(dir)) return;
+  const canonical = toHostDir(dir) || dir;
+  const key = normProjectDirKey(canonical);
+  if (!key || (knownDirs[0] && normProjectDirKey(knownDirs[0]) === key)) return;
+  knownDirs = [canonical, ...knownDirs.filter((d) => normProjectDirKey(d) !== key)].slice(0, 50);
   fsp.writeFile(DIRS_FILE, JSON.stringify(knownDirs)).catch(() => {});
+}
+
+function forceNoteDir(dir) {
+  const canonical = toHostDir(dir) || dir;
+  const key = normProjectDirKey(canonical);
+  if (!key || !isValidProjectDir(canonical)) return false;
+  if (removedDirs.delete(key)) saveRemovedDirs();
+  knownDirs = [canonical, ...knownDirs.filter((d) => normProjectDirKey(d) !== key)].slice(0, 50);
+  try { fs.writeFileSync(DIRS_FILE, JSON.stringify(knownDirs)); }
+  catch { fsp.writeFile(DIRS_FILE, JSON.stringify(knownDirs)).catch(() => {}); }
+  return true;
+}
+
+function getBrowseRoots() {
+  const roots = [];
+  const seen = new Set();
+  const pushRoot = (rawPath, label = '') => {
+    const local = toContainerDir(rawPath);
+    if (!local) return;
+    try {
+      if (!fs.statSync(local).isDirectory()) return;
+    } catch {
+      return;
+    }
+    const hostPath = toHostDir(local);
+    const key = normProjectDirKey(hostPath);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    roots.push({
+      name: label || base(hostPath) || hostPath,
+      dir: hostPath,
+      rawDir: hostPath,
+    });
+  };
+  if (process.platform === 'win32') {
+    for (let code = 67; code <= 90; code++) {
+      const letter = String.fromCharCode(code);
+      const drive = `${letter}:\\`;
+      if (fs.existsSync(drive)) pushRoot(drive, `Ổ đĩa ${letter}: (${drive})`);
+    }
+  } else {
+    for (let code = 97; code <= 122; code++) {
+      const letter = String.fromCharCode(code);
+      const mntDrive = `/mnt/${letter}`;
+      if (fs.existsSync(mntDrive)) {
+        const upper = letter.toUpperCase();
+        pushRoot(`${upper}:\\`, `Ổ đĩa ${upper}: (${upper}:\\)`);
+      }
+    }
+  }
+  for (const d of knownDirs) {
+    if (!d) continue;
+    const hostD = toHostDir(d);
+    const parent = /^[A-Za-z]:\\/.test(hostD) ? path.win32.dirname(hostD) : path.dirname(hostD);
+    if (parent && parent !== hostD) pushRoot(parent, `${base(parent) || parent} (${parent})`);
+  }
+  if (HOME && fs.existsSync(HOME)) {
+    pushRoot(HOME, `Thư mục cá nhân (${toHostDir(HOME)})`);
+  }
+  return roots;
 }
 
 /* ---------- Remote Tailscale / LAN Access Control & Pre-Execution Task Approval ---------- */
 const allKnownWorkspaces = () => {
-  const activeRoots = [...new Set([...sessions.values()].map((s) => s.cwd).filter((d) => d && fs.existsSync(resolveContainerDir(d))))];
+  const explicitKeys = new Set(knownDirs.filter((d) => !isRemovedProjectDir(d)).map((d) => normProjectDirKey(d)).filter(Boolean));
+  const activeRoots = [...new Set([...sessions.values()].map((s) => s.cwd).filter((d) => d && !isRemovedProjectDir(d) && fs.existsSync(toContainerDir(d))))];
   const byKey = new Map();
-  const addDir = (raw) => {
-    const localRaw = resolveContainerDir(raw);
-    if (!raw || !fs.existsSync(localRaw)) return;
-    let d = /^[A-Za-z]:[\\/]/.test(raw) ? raw.replace(/\//g, '\\').replace(/\\+$/, '') : path.resolve(raw);
-    for (const r of activeRoots) {
-      const rl = r.replace(/\//g, '\\').toLowerCase(), dl = d.replace(/\//g, '\\').toLowerCase();
-      if (dl !== rl && dl.startsWith(rl + '\\')) { d = r; break; }
+  const addDir = (raw, isExplicit = false) => {
+    if (!raw || isRemovedProjectDir(raw)) return;
+    const localRaw = toContainerDir(raw);
+    if (!fs.existsSync(localRaw)) return;
+    let d = toHostDir(raw);
+    if (!isExplicit) {
+      for (const r of activeRoots) {
+        const rl = normProjectDirKey(r), dl = normProjectDirKey(d);
+        if (dl && rl && dl !== rl && dl.startsWith(rl + '\\') && !explicitKeys.has(dl)) { d = toHostDir(r); break; }
+      }
     }
-    const k = d.replace(/\//g, '\\').toLowerCase();
-    if (!byKey.has(k)) byKey.set(k, { dir: d, name: base(d) || d });
+    const k = normProjectDirKey(d);
+    if (k && !byKey.has(k)) byKey.set(k, { dir: d, name: base(d) || d, explicit: isExplicit || explicitKeys.has(k) });
   };
-  for (const r of activeRoots) addDir(r);
-  for (const d of knownDirs) addDir(d);
-  // Keep only top-level roots if one entry is inside another
+  for (const d of knownDirs) addDir(d, true);
+  for (const r of activeRoots) addDir(r, false);
+  // Keep top-level roots, plus any folder explicitly added in knownDirs
   const list = [...byKey.values()];
-  return list.filter((item) => !list.some((other) => other.dir !== item.dir && item.dir.replace(/\//g, '\\').toLowerCase().startsWith(other.dir.replace(/\//g, '\\').toLowerCase() + '\\')));
+  return list
+    .filter((item) => item.explicit || !list.some((other) => other.dir !== item.dir && normProjectDirKey(item.dir).startsWith(normProjectDirKey(other.dir) + '\\')))
+    .map(({ dir, name }) => ({ dir, name }));
 };
 const access = createAccessManager({
   dataDir: DATA_DIR,
@@ -1340,6 +1601,7 @@ const agyWatcher = createAntigravityWatcher({
   pub,
   broadcast,
   noteDir,
+  isRemovedDir: isRemovedProjectDir,
   classifyVi,
   count,
   testRunner,
@@ -1457,7 +1719,9 @@ setInterval(() => {
     // Sessions seen only through hooks (no session file) leave after 10 quiet minutes.
     if (!s.fromFile && now - s.lastEventAt > 600_000) dropSession(key, s);
     // A subagent that went quiet is finished: 90 s once its session rests, 5 min while the session still works.
-    for (const [id, sub] of Object.entries(s.subs)) if (now - sub.seenAt > (s.status === 'rest' ? 90_000 : 300_000)) { finishSub(s, id, now); broadcast({ k: 'sess', s: pub(s) }); }
+    if (!s.isAgy) {
+      for (const [id, sub] of Object.entries(s.subs)) if (now - sub.seenAt > (s.status === 'rest' ? 90_000 : 300_000)) { finishSub(s, id, now); broadcast({ k: 'sess', s: pub(s) }); }
+    }
   }
 }, 2000).unref();
 // Token usage, context fill and API-price equivalent per session, read from the transcripts every few seconds.
@@ -1878,9 +2142,14 @@ function authorized(req, url) {
 }
 function viewerOf(req) {
   if (isLoopback(req)) return null;
-  const m = access.getApprovedMember(req);
-  if (m) return m;
+  const hasMemberCookie = /(?:^|;\s*)office_member=/.test(String(req.headers?.cookie || ''));
+  if (hasMemberCookie) {
+    const m = access.getApprovedMember(req);
+    if (m) return m;
+  }
   if (cookieOk(req)) {
+    const m = access.getApprovedMember(req);
+    if (m && m.isDirectorDevice) return m;
     return {
       id: 'vp-pin',
       name: 'Phó Giám đốc',
@@ -1889,9 +2158,12 @@ function viewerOf(req) {
       status: 'approved',
       allowedWorkspaces: ['*'],
       requireApproval: false,
+      canStopSession: access.state.allowStopSession !== false,
+      canEditSession: access.state.allowEditSession !== false,
+      canDeleteSession: access.state.allowDeleteSession !== false,
     };
   }
-  return null;
+  return access.getApprovedMember(req);
 }
 
 // 6 digits (at least) is a million guesses: 5 wrong tries lock that address for 15 minutes, and 20 wrong tries from anywhere
@@ -2935,6 +3207,10 @@ async function openWindow(s) {
 
 function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model = undefined, senderTag = '', byMember = null }) {
   const s = sid && [...sessions.values()].find((x) => x.sid === String(sid) && x.cwd);
+  if (s) {
+    s.waitCard = null;
+    if (s.sid && agyWatcher?.clearWait) agyWatcher.clearWait(s.sid);
+  }
   const targetDir = s ? s.cwd : dir;
   if (!targetDir || !fs.existsSync(resolveContainerDir(targetDir))) return { ok: false, code: 'noDir' };
   const cleanText = String(text || '').trim().slice(0, 4000);
@@ -2950,7 +3226,11 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model =
   const modelMeta = cleanModel ? AGY_MODELS.find((m) => m.id === cleanModel) : null;
   const modelLabel = modelMeta && modelMeta.id ? modelMeta.label : cleanModel;
   const activeAcct = nowSlug() || '';
-  const actor = byMember || { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true };
+  const actor = byMember || { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true, isLocal: true };
+  if (actor && !actor.isLocal && !actor.isDirector && actor.id && actor.id !== 'director') {
+    markMemberSeen(actor);
+    broadcastTeamOnline(true);
+  }
   recordTaskOwner(s?.id, targetDir, actor);
   if (isChat && s) {
     const name = s.title || s.name, th = threads.get(s.sid);
@@ -3025,6 +3305,8 @@ function executeTaskPayload({ dir, sid, chat: isChat, text, images = [], model =
     const targetSess = s || [...sessions.values()].find((x) => x.cwd && (process.platform === 'win32' ? x.cwd.toLowerCase() === targetDir.toLowerCase() : x.cwd === targetDir));
     if (targetSess) {
       recordTaskOwner(targetSess.id, targetDir, actor);
+      targetSess.waitCard = null;
+      if (targetSess.sid && agyWatcher?.clearWait) agyWatcher.clearWait(targetSess.sid);
       targetSess.status = 'work';
       targetSess.busy = true;
       targetSess.taskStart = Date.now();
@@ -3160,7 +3442,7 @@ const server = http.createServer((req, res) => {
   if (!hostAllowed(req)) { res.writeHead(421).end(); return; }
   // through the tunnel (the internet), only what a phone may send: the PIN (and a new one, with the one it has now), its
   // answers to approvals (when the Mac allows them), the page's presence, the chat and work (when the Mac allows it). Everything else that changes something stays on the Mac and the home network.
-  if (req.viaTunnel && req.method !== 'GET' && req.method !== 'HEAD' && !['/pin', '/api/pin', '/api/perm', '/api/presence', '/api/chat', '/api/task', '/api/tasks', '/api/tasks/stop', '/api/access/request'].includes(url.pathname)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
+  if (req.viaTunnel && req.method !== 'GET' && req.method !== 'HEAD' && !['/pin', '/api/pin', '/api/perm', '/api/presence', '/api/chat', '/api/task', '/api/tasks', '/api/tasks/stop', '/api/projects/add', '/api/projects/remove', '/api/session/stop', '/api/session/rename', '/api/session/delete', '/api/access/request', '/api/todos'].includes(url.pathname)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
   // Public remote access request & polling endpoints (before authorized check so pending Tailscale visitors can request access)
   if (url.pathname === '/api/access/status' && req.method === 'GET') {
     const m = access.getMemberFromReq(req);
@@ -3239,6 +3521,9 @@ const server = http.createServer((req, res) => {
           role: b?.role || DEFAULT_ROLE,
           allowedWorkspaces: ws,
           requireApproval: b?.requireApproval,
+          canStopSession: b?.canStopSession,
+          canEditSession: b?.canEditSession,
+          canDeleteSession: b?.canDeleteSession,
         });
         const permId = `access:${b?.id}`;
         if (pending.has(permId)) { pending.delete(permId); broadcast({ k: 'permDone', id: permId }); }
@@ -3263,6 +3548,9 @@ const server = http.createServer((req, res) => {
           allowedWorkspaces: b?.allowedWorkspaces,
           status: b?.status,
           requireApproval: b?.requireApproval,
+          canStopSession: b?.canStopSession,
+          canEditSession: b?.canEditSession,
+          canDeleteSession: b?.canDeleteSession,
         });
         if (m) resyncMemberClients(m.id);
         json(res, 200, { ok: !!m, member: m, ...access.pubState(allKnownWorkspaces()) });
@@ -3279,6 +3567,12 @@ const server = http.createServer((req, res) => {
         const val = access.setRequireTaskApproval(Boolean(b?.on));
         resyncMemberClients();
         json(res, 200, { ok: true, requireTaskApproval: val, ...access.pubState(allKnownWorkspaces()) });
+        return;
+      }
+      if (act === 'setSessionPermissions') {
+        const perms = access.setSessionPermissions(b || {});
+        resyncMemberClients();
+        json(res, 200, { ok: true, ...perms, ...access.pubState(allKnownWorkspaces()) });
         return;
       }
       if (act === 'decideTask') {
@@ -3298,7 +3592,7 @@ const server = http.createServer((req, res) => {
             images: item.images,
             model: item.model || '',
             senderTag: `${item.memberRole} · ${item.memberName}`,
-            byMember: { id: item.memberId, name: item.memberName, role: item.memberRole },
+            byMember: { id: item.memberId, name: item.memberName, role: item.memberRole, isDirectorDevice: false, isLocal: false },
           });
           json(res, 200, { ok: r.ok, task: r.task, ...access.pubState(allKnownWorkspaces()) });
         } else {
@@ -3321,8 +3615,8 @@ const server = http.createServer((req, res) => {
       // never "always", and a risky command (src/shared/danger.js) only deny.
       const phone = !isLoopback(req);
       const viewer = phone ? viewerOf(req) : { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isLocal: true, isDirector: true, isDirectorDevice: true };
+      if (phone && viewer) markMemberSeen(viewer);
       if (url.pathname === '/api/presence') {
-        if (phone && viewer) markMemberSeen(viewer);
         const page = String(b.page || '').slice(0, 64);
         if (b.focused) presence.set(page, { focused: true, at: Date.now() }); else presence.delete(page);
         if (!officeFocused()) for (const id of [...pending.keys()]) settlePerm(id);   // nobody is looking: give the prompt back
@@ -3330,6 +3624,7 @@ const server = http.createServer((req, res) => {
         json(res, 200, { ok: true, pending: pending.size });
         return;
       }
+      if (phone && viewer) broadcastTeamOnline(true);
       const p = pending.get(String(b.id || ''));
       const senderTag = !phone
         ? 'Giám đốc'
@@ -3338,7 +3633,7 @@ const server = http.createServer((req, res) => {
           : `Trợ lý ${viewer?.member?.name || viewer?.name || ''}`.trim());
       const byName = !phone ? 'Giám đốc' : viewer ? `${viewer.role} · ${viewer.name}` : 'Từ xa';
       const byMember = !phone
-        ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true }
+        ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true, isLocal: true }
         : (viewer ? access.pubMember(viewer) : null);
 
       // Case A: p exists in pending
@@ -3352,6 +3647,9 @@ const server = http.createServer((req, res) => {
               role: b.role || p.member.role || DEFAULT_ROLE,
               allowedWorkspaces: ws,
               requireApproval: b.requireApproval,
+              canStopSession: b.canStopSession,
+              canEditSession: b.canEditSession,
+              canDeleteSession: b.canDeleteSession,
             });
             pending.delete(p.id);
             broadcast({ k: 'permDone', type: 'perm_rm', id: p.id });
@@ -3380,7 +3678,7 @@ const server = http.createServer((req, res) => {
               images: item.images,
               model: item.model || '',
               senderTag: `${item.memberRole} · ${item.memberName}`,
-              byMember: { id: item.memberId, name: item.memberName, role: item.memberRole },
+              byMember: { id: item.memberId, name: item.memberName, role: item.memberRole, isDirectorDevice: false, isLocal: false },
             });
           }
           json(res, 200, { ok: true });
@@ -3458,6 +3756,10 @@ const server = http.createServer((req, res) => {
       s.waitCard = null;
       if (s.sid && agyWatcher?.clearWait) agyWatcher.clearWait(s.sid);
       if (b.choice === 'skip') {
+        if (s.status === 'wait') {
+          s.status = 'rest';
+          s.act = '';
+        }
         if (rmId) broadcast({ k: 'permDone', type: 'perm_rm', id: rmId });
         broadcast({ k: 'sess', type: 'session', s: pub(s), session: pub(s) });
         json(res, 200, { ok: true });
@@ -3586,7 +3888,10 @@ const server = http.createServer((req, res) => {
     if (!authorized(req, url) || !sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
     const mac = isLoopback(req);
     const viewer = viewerOf(req);
-    if (viewer) markMemberSeen(viewer);
+    if (viewer) {
+      markMemberSeen(viewer);
+      broadcastTeamOnline(true);
+    }
     readJson(req, 8_000_000).then((b) => {
       if (url.pathname === '/api/tasks/allow') {
         if (!mac) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
@@ -3614,7 +3919,7 @@ const server = http.createServer((req, res) => {
         || (b?.id && sessions.get(String(b.id)));
       const want = String(b?.dir || '').replace(/^~(?=$|[\\/])/, os.homedir());
       const candidateDirs = [...new Set([...knownDirs, ...allKnownWorkspaces().map((w) => w.dir)])];
-      const sameDir = (a, c) => String(a).replace(/\//g, '\\').toLowerCase() === String(c).replace(/\//g, '\\').toLowerCase();
+      const sameDir = (a, c) => normProjectDirKey(a) === normProjectDirKey(c);
       const dir = s ? s.cwd : candidateDirs.find((d) => sameDir(d, want) || sameDir(tilde(d), String(b?.dir || '')));
       if (!dir) { json(res, 400, { ok: false, code: 'noDir', message: tr('chat.task.noDir') }); return; }
 
@@ -3639,7 +3944,7 @@ const server = http.createServer((req, res) => {
       const targetName = s ? (s.title || s.name) : path.basename(dir);
       const senderTag = !mac && viewer ? `${viewer.role} · ${viewer.name}` : '';
       const byMember = mac
-        ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true }
+        ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true, isLocal: true }
         : viewer ? access.pubMember(viewer) : null;
 
       // If remote user and Pre-Execution Task Approval is ON, queue for Director approval before Agent executes!
@@ -3908,10 +4213,64 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/api/session/stop') {
+    const sameOrigin = sameOriginOf(req);
+    const viewer = viewerOf(req);
+    if (!authorized(req, url) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    readJson(req).then(async (b) => {
+      const s = (b?.id && byId(String(b.id))) || (b?.sid && byId(String(b.sid))) || null;
+      const targetSid = s?.sid || (b?.sid ? String(b.sid).trim() : '');
+      if (!s && !targetSid) {
+        json(res, 404, { ok: false, message: 'Không tìm thấy phiên làm việc.' });
+        return;
+      }
+      if (!isLoopback(req) && !access.canControlSession(viewer, 'stop', s?.cwd || '')) {
+        json(res, 403, { ok: false, message: 'Bạn chưa được Giám đốc cấp quyền dừng phiên làm việc trên Workspace này.' });
+        return;
+      }
+      await tasks.stopBySession({ id: s?.id || (b?.id ? String(b.id) : ''), sid: targetSid, dir: s?.cwd || '' }).catch(() => {});
+      if (targetSid && agyWatcher?.stopSession) {
+        agyWatcher.stopSession(targetSid);
+      } else if (targetSid && agyWatcher?.clearWait) {
+        agyWatcher.clearWait(targetSid);
+      }
+      if (s) {
+        for (const [pid, p] of pending) {
+          if (p.sess === s.id || (s.sid && p.sid === s.sid)) {
+            settlePerm(pid, '', 'deny', viewer ? `${viewer.role} · ${viewer.name}` : 'Giám đốc');
+          }
+        }
+        if (s.sid && threads.has(s.sid)) {
+          const th = threads.get(s.sid);
+          if (th) th.running = false;
+          chat.working(s.id, false);
+        }
+        s.subs = {};
+        s.status = 'rest';
+        s.busy = false;
+        s.inTool = false;
+        s.waitCard = null;
+        s.taskStart = 0;
+        s.act = 'Đã dừng phiên làm việc';
+        s.last = { type: 'interrupt', label: 'Đã dừng phiên làm việc' };
+        s.lastEventAt = Date.now();
+        const ev = { id: ++seq, ts: Date.now(), sess: s.id, name: s.title || s.name, type: 'interrupt', label: 'Đã dừng phiên làm việc' };
+        pushFeed(ev);
+        broadcast({ k: 'ev', e: ev, s: pub(s), stats });
+      }
+      const actorTag = isLoopback(req) ? 'Giám đốc' : `${viewer?.role || 'Trợ lý'} · ${viewer?.name || 'Từ xa'}`;
+      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} ${req.socket.remoteAddress} (${actorTag}) session-stop ${s?.name || targetSid}\n`).catch(() => {});
+      json(res, 200, { ok: true, id: s?.id || null, sid: targetSid || null });
+    });
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/session/rename') {
     const sameOrigin = sameOriginOf(req);
     const viewer = viewerOf(req);
-    if (!authorized(req, url) || (!isLoopback(req) && !viewer?.isDirectorDevice) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+    if (!authorized(req, url) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
       json(res, 403, { ok: false, message: tr('server.forbidden') });
       return;
     }
@@ -3920,6 +4279,10 @@ const server = http.createServer((req, res) => {
       const targetSid = s?.sid || (b?.sid ? String(b.sid).trim() : '');
       if (!s && !targetSid) {
         json(res, 404, { ok: false, message: 'Không tìm thấy phiên làm việc.' });
+        return;
+      }
+      if (!isLoopback(req) && !access.canControlSession(viewer, 'edit', s?.cwd || '')) {
+        json(res, 403, { ok: false, message: 'Bạn chưa được Giám đốc cấp quyền chỉnh sửa tên phiên làm việc trên Workspace này.' });
         return;
       }
       const rawTitle = b?.title ?? b?.name ?? '';
@@ -3935,17 +4298,22 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/session/delete') {
     const sameOrigin = sameOriginOf(req);
     const viewer = viewerOf(req);
-    if (!authorized(req, url) || (!isLoopback(req) && !viewer?.isDirectorDevice) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+    if (!authorized(req, url) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
       json(res, 403, { ok: false, message: tr('server.forbidden') });
       return;
     }
-    readJson(req).then((b) => {
+    readJson(req).then(async (b) => {
       const s = (b?.id && byId(String(b.id))) || (b?.sid && byId(String(b.sid))) || null;
       const targetSid = s?.sid || (b?.sid ? String(b.sid) : '');
       if (!s && !targetSid) {
         json(res, 404, { ok: false, message: 'Không tìm thấy phiên làm việc.' });
         return;
       }
+      if (!isLoopback(req) && !access.canControlSession(viewer, 'delete', s?.cwd || '')) {
+        json(res, 403, { ok: false, message: 'Bạn chưa được Giám đốc cấp quyền xóa phiên làm việc trên Workspace này.' });
+        return;
+      }
+      await tasks.stopBySession({ id: s?.id || (b?.id ? String(b.id) : ''), sid: targetSid, dir: s?.cwd || '' }).catch(() => {});
       if (targetSid && agyWatcher?.deleteSession) {
         agyWatcher.deleteSession(targetSid);
       }
@@ -3962,6 +4330,160 @@ const server = http.createServer((req, res) => {
       fetchPlanUsage(true);
       fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} session-delete ${s?.name || targetSid}\n`).catch(() => {});
       json(res, 200, { ok: true, id: s?.id || null, sid: targetSid || null });
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/projects/add') {
+    const sameOrigin = sameOriginOf(req);
+    const mac = isLoopback(req);
+    const viewer = viewerOf(req);
+    if (!authorized(req, url) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    const isFullDirector = mac || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
+    if (!isFullDirector && prefs.get('phoneTasks') === false && !access.canControlSession(viewer, 'edit')) {
+      json(res, 403, { ok: false, message: 'Bạn chưa được Giám đốc cấp quyền thêm dự án.' });
+      return;
+    }
+    readJson(req).then((b) => {
+      let rawDir = String(b?.dir || '').trim();
+      const newFolderName = String(b?.newFolderName || '').trim().replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim();
+      if (!rawDir) {
+        json(res, 400, { ok: false, message: 'Vui lòng chọn hoặc nhập đường dẫn thư mục dự án.' });
+        return;
+      }
+      if (newFolderName) {
+        if (/^[A-Za-z]:/.test(rawDir)) {
+          rawDir = path.win32.join(/^[A-Za-z]:$/.test(rawDir) ? `${rawDir}\\` : rawDir, newFolderName);
+        } else {
+          rawDir = path.join(rawDir, newFolderName);
+        }
+      }
+      const localDir = toContainerDir(rawDir);
+      const canonicalDir = toHostDir(localDir);
+      if (!canonicalDir || /^[A-Za-z]:\\?$/.test(canonicalDir) || canonicalDir === '/') {
+        json(res, 400, { ok: false, message: 'Không thể chọn trực tiếp gốc ổ đĩa làm dự án. Hãy chọn hoặc tạo một thư mục con.' });
+        return;
+      }
+      let created = false;
+      if (!fs.existsSync(localDir)) {
+        if (b?.createIfMissing === false) {
+          json(res, 404, { ok: false, message: `Thư mục "${canonicalDir}" chưa tồn tại.` });
+          return;
+        }
+        try {
+          fs.mkdirSync(localDir, { recursive: true });
+          created = true;
+        } catch (err) {
+          json(res, 400, { ok: false, message: `Không thể tạo thư mục "${canonicalDir}": ${err?.message || err}` });
+          return;
+        }
+      } else {
+        try {
+          if (!fs.statSync(localDir).isDirectory()) {
+            json(res, 400, { ok: false, message: 'Đường dẫn này là tệp tin, không phải thư mục.' });
+            return;
+          }
+        } catch (err) {
+          json(res, 400, { ok: false, message: `Không thể truy cập thư mục "${canonicalDir}": ${err?.message || err}` });
+          return;
+        }
+      }
+      forceNoteDir(canonicalDir);
+      if (!isFullDirector && viewer?.id && Array.isArray(viewer.allowedWorkspaces) && !viewer.allowedWorkspaces.includes('*')) {
+        access.updateMember(viewer.id, { allowedWorkspaces: [...new Set([...viewer.allowedWorkspaces, canonicalDir])] });
+      }
+      broadcast({ k: 'access', access: access.pubState(allKnownWorkspaces()) });
+      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} project-add ${clientIp(req)} ${canonicalDir} (created=${created})\n`).catch(() => {});
+      json(res, 200, {
+        ok: true,
+        addedDir: tilde(canonicalDir),
+        rawDir: canonicalDir,
+        name: base(canonicalDir) || canonicalDir,
+        created,
+        ...tasksOut(mac, viewer),
+      });
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/projects/remove') {
+    const sameOrigin = sameOriginOf(req);
+    const mac = isLoopback(req);
+    const viewer = viewerOf(req);
+    if (!authorized(req, url) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
+    const isFullDirector = mac || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
+    readJson(req).then(async (b) => {
+      const rawDir = String(b?.dir || '').trim();
+      const targetKey = normProjectDirKey(rawDir);
+      if (!targetKey) {
+        json(res, 400, { ok: false, message: 'Thiếu đường dẫn dự án cần gỡ.' });
+        return;
+      }
+      if (!isFullDirector && !access.canControlSession(viewer, 'delete', rawDir)) {
+        json(res, 403, { ok: false, message: 'Bạn chưa được Giám đốc cấp quyền gỡ dự án này.' });
+        return;
+      }
+      // Never delete the folder on disk! Only remove from Work Office's project list and close associated sessions.
+      removedDirs.add(targetKey);
+      saveRemovedDirs();
+      knownDirs = knownDirs.filter((d) => normProjectDirKey(d) !== targetKey);
+      try { fs.writeFileSync(DIRS_FILE, JSON.stringify(knownDirs)); }
+      catch { fsp.writeFile(DIRS_FILE, JSON.stringify(knownDirs)).catch(() => {}); }
+
+      const dk = normModelDirKey(rawDir);
+      if (dk && Object.prototype.hasOwnProperty.call(sessionModels, `d:${dk}`)) {
+        delete sessionModels[`d:${dk}`];
+        saveSessionModels();
+      }
+      try {
+        const cfgProjDir = path.join(os.homedir(), '.gemini', 'config', 'projects');
+        if (fs.existsSync(cfgProjDir)) {
+          for (const f of fs.readdirSync(cfgProjDir)) {
+            if (!f.endsWith('.json')) continue;
+            const fullCfg = path.join(cfgProjDir, f);
+            try {
+              const j = JSON.parse(fs.readFileSync(fullCfg, 'utf8'));
+              const resList = Array.isArray(j?.projectResources?.resources) ? j.projectResources.resources : [];
+              const matched = resList.some((r) => {
+                const uri = String(r?.folderUri || r?.gitFolder?.folderUri || '').trim();
+                return uri && normProjectDirKey(uri) === targetKey;
+              });
+              if (matched) fs.unlinkSync(fullCfg);
+            } catch { /* ignore single config error */ }
+          }
+        }
+      } catch { /* ignore */ }
+
+      const removedSessions = [];
+      for (const s of [...sessions.values()]) {
+        if (s.cwd && normProjectDirKey(s.cwd) === targetKey) {
+          removedSessions.push(s.id);
+          await tasks.stopBySession({ id: s.id, sid: s.sid || '', dir: s.cwd }).catch(() => {});
+          if (s.sid && agyWatcher?.deleteSession) {
+            agyWatcher.deleteSession(s.sid);
+          }
+          for (const [pid, p] of pending) {
+            if (p.sess === s.id || (s.sid && p.sid === s.sid)) {
+              pending.delete(pid);
+              clearTimeout(p.timer);
+              broadcast({ k: 'permDone', type: 'perm_rm', id: pid });
+            }
+          }
+          dropSession(s.key, s);
+        }
+      }
+      broadcast({ k: 'access', access: access.pubState(allKnownWorkspaces()) });
+      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} project-remove ${clientIp(req)} ${rawDir} (sessions=${removedSessions.length})\n`).catch(() => {});
+      json(res, 200, {
+        ok: true,
+        removedDir: rawDir,
+        removedSessions: removedSessions.length,
+        ...tasksOut(mac, viewer),
+      });
     });
     return;
   }
@@ -4028,11 +4550,18 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (req.method === 'POST' && url.pathname === '/api/todos') {
+  if ((req.method === 'POST' || req.method === 'GET') && url.pathname === '/api/todos') {
+    if (!authorized(req, url)) { json(res, 403, { ok: false, message: tr('server.forbidden') }); return; }
+    if (req.method === 'GET') { json(res, 200, { ok: true, todos }); return; }
     const sameOrigin = sameOriginOf(req);
-    if (!authorized(req, url) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false, message: tr('server.forbidden') }); return; }
+    if (!sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false, message: tr('server.forbidden') }); return; }
+    const mac = isLoopback(req), rawViewer = viewerOf(req);
+    if (rawViewer) markMemberSeen(rawViewer);
+    const actor = mac || !rawViewer
+      ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc' }
+      : { id: rawViewer.id || 'remote', name: rawViewer.name || 'Trợ lý', role: rawViewer.role || DEFAULT_ROLE };
     readJson(req).then((b) => {
-      const err = b ? todoOp(b) : tr('server.badRequest');
+      const err = b ? todoOp(b, actor) : tr('server.badRequest');
       json(res, err ? 400 : 200, err ? { ok: false, message: err, todos } : { ok: true, todos });
     });
     return;
@@ -4114,14 +4643,118 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/api/chat') { json(res, 200, chatOut(isLoopback(req), viewerOf(req))); return; }
   if (url.pathname === '/api/tasks') { json(res, 200, tasksOut(isLoopback(req), viewerOf(req))); return; }
+  if (url.pathname === '/api/projects/browse') {
+    const mac = isLoopback(req);
+    const viewer = viewerOf(req);
+    const isFullDirector = mac || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc';
+    if (!isFullDirector && prefs.get('phoneTasks') === false && !access.canControlSession(viewer, 'edit')) {
+      json(res, 403, { ok: false, message: tr('chat.task.notAllowed') });
+      return;
+    }
+    const roots = getBrowseRoots();
+    const rawDir = String(url.searchParams.get('dir') || '').trim();
+    if (!rawDir) {
+      json(res, 200, { ok: true, currentDir: '', parentDir: '', roots, dirs: roots });
+      return;
+    }
+    const localDir = toContainerDir(rawDir);
+    const hostDir = toHostDir(localDir);
+    try {
+      if (!fs.existsSync(localDir) || !fs.statSync(localDir).isDirectory()) {
+        json(res, 404, { ok: false, message: 'Không tìm thấy thư mục này trên máy chủ.', roots });
+        return;
+      }
+    } catch {
+      json(res, 404, { ok: false, message: 'Không thể truy cập thư mục này.', roots });
+      return;
+    }
+    let parentDir = '';
+    if (!/^[A-Za-z]:\\?$/.test(hostDir) && hostDir !== '/') {
+      if (/^[A-Za-z]:\\/.test(hostDir)) {
+        const cleanHost = hostDir.replace(/\\+$/, '');
+        const p = path.win32.dirname(cleanHost);
+        if (p && p.toLowerCase() !== cleanHost.toLowerCase()) {
+          parentDir = /^[A-Za-z]:$/.test(p) ? `${p}\\` : p;
+        }
+      } else {
+        const cleanHost = hostDir.replace(/\/+$/, '');
+        const p = path.dirname(cleanHost);
+        if (p && p !== cleanHost) parentDir = p;
+      }
+    }
+    const SKIP_DIRS = new Set([
+      '$recycle.bin',
+      'system volume information',
+      'recovery',
+      'msocache',
+      'perflogs',
+      'node_modules',
+      '.git',
+      '.next',
+      '.claude',
+      '.gemini',
+      '.vscode',
+      '.idea',
+      '__pycache__',
+      'dist',
+      'build',
+      '.turbo',
+      '.cache',
+    ]);
+    let entries = [];
+    try {
+      entries = fs.readdirSync(localDir, { withFileTypes: true });
+    } catch (err) {
+      json(res, 400, { ok: false, message: `Không thể đọc danh sách thư mục: ${err?.message || err}`, currentDir: hostDir, parentDir, roots, dirs: [] });
+      return;
+    }
+    const subDirs = [];
+    for (const ent of entries) {
+      if (!ent || !ent.isDirectory()) continue;
+      const name = String(ent.name || '');
+      if (!name || name.startsWith('.') || name.startsWith('$')) continue;
+      if (SKIP_DIRS.has(name.toLowerCase()) || /^agy-[0-9a-f]{4}$/i.test(name)) continue;
+      const childHostDir = /^[A-Za-z]:\\/.test(hostDir)
+        ? path.win32.join(hostDir, name)
+        : path.join(hostDir, name);
+      subDirs.push({
+        name,
+        dir: childHostDir,
+        rawDir: childHostDir,
+      });
+    }
+    subDirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    json(res, 200, {
+      ok: true,
+      currentDir: hostDir,
+      parentDir,
+      roots,
+      dirs: subDirs.slice(0, 150),
+    });
+    return;
+  }
   if (url.pathname === '/api/image') {   // (sandboxed and never sniffed: an SVG can't run anything opened on its own)
-    const file = images.get(String(url.searchParams.get('id') || '')), type = file && IMG_EXT[path.extname(file).slice(1).toLowerCase()];
-    if (!type) { res.writeHead(404).end(); return; }
+    const sendBlankGif = () => {
+      if (res.headersSent) return;
+      res.writeHead(200, {
+        'Content-Type': 'image/gif',
+        'Content-Length': TRANSPARENT_GIF_BUF.length,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      }).end(TRANSPARENT_GIF_BUF);
+    };
+    const raw = images.get(String(url.searchParams.get('id') || ''));
+    const file = raw ? resolveImageFilePath(raw) : '';
+    const type = file && IMG_EXT[path.extname(file).slice(1).toLowerCase()];
+    if (!type) { sendBlankGif(); return; }
     fsp.stat(file).then((st) => {
-      if (!st.isFile() || st.size > 40e6) { res.writeHead(404).end(); return; }
+      if (!st.isFile() || st.size > 40e6) { sendBlankGif(); return; }
       res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'private, max-age=30', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-      fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
-    }).catch(() => { res.writeHead(404).end(); });
+      fs.createReadStream(file).on('error', () => {
+        if (!res.headersSent) sendBlankGif();
+        else res.destroy();
+      }).pipe(res);
+    }).catch(() => { sendBlankGif(); });
     return;
   }
   if (url.pathname === '/stream') {

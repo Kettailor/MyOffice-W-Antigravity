@@ -54,6 +54,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
   const file = path.join(dataDir, 'access.json');
   let state = {
     requireTaskApproval: true,
+    allowStopSession: true,
+    allowEditSession: true,
+    allowDeleteSession: true,
     defaultRole: DEFAULT_ROLE,
     members: [],
     pendingTasks: [],
@@ -63,8 +66,18 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (raw && typeof raw === 'object') {
       if (typeof raw.requireTaskApproval === 'boolean') state.requireTaskApproval = raw.requireTaskApproval;
+      if (typeof raw.allowStopSession === 'boolean') state.allowStopSession = raw.allowStopSession;
+      if (typeof raw.allowEditSession === 'boolean') state.allowEditSession = raw.allowEditSession;
+      if (typeof raw.allowDeleteSession === 'boolean') state.allowDeleteSession = raw.allowDeleteSession;
       if (typeof raw.defaultRole === 'string' && raw.defaultRole.trim()) state.defaultRole = raw.defaultRole.trim();
-      if (Array.isArray(raw.members)) state.members = raw.members;
+      if (Array.isArray(raw.members)) {
+        state.members = raw.members.map((m) => ({
+          ...m,
+          canStopSession: typeof m?.canStopSession === 'boolean' ? m.canStopSession : true,
+          canEditSession: typeof m?.canEditSession === 'boolean' ? m.canEditSession : true,
+          canDeleteSession: typeof m?.canDeleteSession === 'boolean' ? m.canDeleteSession : true,
+        }));
+      }
       if (Array.isArray(raw.pendingTasks)) state.pendingTasks = raw.pendingTasks.filter((t) => t && t.status === 'pending');
     }
   } catch { /* fresh start */ }
@@ -106,6 +119,13 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return `${br} · ${os}`;
   }
 
+  function isSharedOrLocalIp(ip = '') {
+    if (!ip || ip === 'unknown') return true;
+    if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) return true;
+    if (/^192\.168\.65\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+    return false;
+  }
+
   function getMemberFromReq(req, { cookieOnly = false } = {}) {
     const cookies = parseCookies(req);
     const tok = cookies.office_member || '';
@@ -115,13 +135,20 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       const m = state.members.find((x) => x.id === id && safeEqualStr(x.secret, secret));
       if (m && (!sig || safeEqualStr(sig, signSessionToken(m.id, m.secret)))) {
         m.lastSeenAt = Date.now();
-        if (ip && ip !== 'unknown' && !['127.0.0.1', '::1'].includes(ip)) m.ip = ip;
+        if (!isSharedOrLocalIp(ip)) m.ip = ip;
         return m;
       }
     }
-    if (!cookieOnly && ip && ip !== 'unknown' && !['127.0.0.1', '::1'].includes(ip)) {
-      const byIp = state.members.find((x) => x.ip === ip && x.status === 'approved') || state.members.find((x) => x.ip === ip);
-      if (byIp) {
+    if (!cookieOnly && !isSharedOrLocalIp(ip)) {
+      const matches = state.members.filter((x) => x.ip === ip && x.status === 'approved');
+      if (matches.length === 1) {
+        const byIp = matches[0];
+        byIp.lastSeenAt = Date.now();
+        return byIp;
+      }
+      const allMatches = state.members.filter((x) => x.ip === ip);
+      if (allMatches.length === 1) {
+        const byIp = allMatches[0];
         byIp.lastSeenAt = Date.now();
         return byIp;
       }
@@ -154,6 +181,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
         status: 'approved',
         allowedWorkspaces: ['*'],
         requireApproval: false,
+        canStopSession: true,
+        canEditSession: true,
+        canDeleteSession: true,
         createdAt: now,
         approvedAt: now,
         lastSeenAt: now,
@@ -176,6 +206,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       m.status = 'approved';
       m.allowedWorkspaces = ['*'];
       m.requireApproval = false;
+      if (typeof m.canStopSession !== 'boolean') m.canStopSession = true;
+      if (typeof m.canEditSession !== 'boolean') m.canEditSession = true;
+      if (typeof m.canDeleteSession !== 'boolean') m.canDeleteSession = true;
       m.approvedAt = m.approvedAt || now;
       m.lastSeenAt = now;
     }
@@ -211,6 +244,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
         status: autoApprove ? 'approved' : 'pending',
         allowedWorkspaces: autoApprove ? (defaultWorkspaces.length ? defaultWorkspaces : ['*']) : defaultWorkspaces,
         requireApproval: null,
+        canStopSession: true,
+        canEditSession: true,
+        canDeleteSession: true,
         createdAt: now,
         approvedAt: autoApprove ? now : 0,
         lastSeenAt: now,
@@ -231,6 +267,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
       m.ip = ip;
       m.ua = ua;
       m.lastSeenAt = now;
+      if (typeof m.canStopSession !== 'boolean') m.canStopSession = true;
+      if (typeof m.canEditSession !== 'boolean') m.canEditSession = true;
+      if (typeof m.canDeleteSession !== 'boolean') m.canDeleteSession = true;
       if (autoApprove) {
         m.status = 'approved';
         m.approvedAt = now;
@@ -246,7 +285,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return m;
   }
 
-  function approveMember(id, { name, role, allowedWorkspaces, requireApproval } = {}) {
+  function approveMember(id, { name, role, allowedWorkspaces, requireApproval, canStopSession, canEditSession, canDeleteSession } = {}) {
     const m = state.members.find((x) => x.id === id);
     if (!m) return null;
     if (typeof name === 'string' && name.trim()) m.name = name.trim().slice(0, 48);
@@ -257,6 +296,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     if (requireApproval === null || typeof requireApproval === 'boolean') {
       m.requireApproval = requireApproval;
     }
+    if (typeof canStopSession === 'boolean') m.canStopSession = canStopSession;
+    if (typeof canEditSession === 'boolean') m.canEditSession = canEditSession;
+    if (typeof canDeleteSession === 'boolean') m.canDeleteSession = canDeleteSession;
     m.status = 'approved';
     m.approvedAt = Date.now();
     save();
@@ -279,6 +321,9 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     if (patch.requireApproval === null || typeof patch.requireApproval === 'boolean') {
       m.requireApproval = patch.requireApproval;
     }
+    if (typeof patch.canStopSession === 'boolean') m.canStopSession = patch.canStopSession;
+    if (typeof patch.canEditSession === 'boolean') m.canEditSession = patch.canEditSession;
+    if (typeof patch.canDeleteSession === 'boolean') m.canDeleteSession = patch.canDeleteSession;
     save();
     onUpdate?.();
     return pubMember(m);
@@ -299,6 +344,79 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     onUpdate?.();
     return state.requireTaskApproval;
   }
+
+  function setSessionPermissions(patch = {}) {
+    if (typeof patch.stop === 'boolean') state.allowStopSession = patch.stop;
+    if (typeof patch.allowStopSession === 'boolean') state.allowStopSession = patch.allowStopSession;
+    if (typeof patch.allowSessionStop === 'boolean') state.allowStopSession = patch.allowSessionStop;
+    if (typeof patch.edit === 'boolean') state.allowEditSession = patch.edit;
+    if (typeof patch.allowEditSession === 'boolean') state.allowEditSession = patch.allowEditSession;
+    if (typeof patch.allowSessionEdit === 'boolean') state.allowEditSession = patch.allowSessionEdit;
+    if (typeof patch.delete === 'boolean') state.allowDeleteSession = patch.delete;
+    if (typeof patch.allowDeleteSession === 'boolean') state.allowDeleteSession = patch.allowDeleteSession;
+    if (typeof patch.allowSessionDelete === 'boolean') state.allowDeleteSession = patch.allowSessionDelete;
+    save();
+    onUpdate?.();
+    return {
+      stop: state.allowStopSession !== false,
+      edit: state.allowEditSession !== false,
+      delete: state.allowDeleteSession !== false,
+      allowStopSession: state.allowStopSession !== false,
+      allowEditSession: state.allowEditSession !== false,
+      allowDeleteSession: state.allowDeleteSession !== false,
+    };
+  }
+
+  function effectiveSessionPerms(member) {
+    if (!member) {
+      return {
+        stop: false,
+        edit: false,
+        delete: false,
+        canStopSession: false,
+        canEditSession: false,
+        canDeleteSession: false,
+      };
+    }
+    if (member.isDirectorDevice || member.role === DIRECTOR_DEVICE_ROLE) {
+      return {
+        stop: true,
+        edit: true,
+        delete: true,
+        canStopSession: true,
+        canEditSession: true,
+        canDeleteSession: true,
+      };
+    }
+    const gStop = state.allowStopSession !== false;
+    const gEdit = state.allowEditSession !== false;
+    const gDelete = state.allowDeleteSession !== false;
+    const stop = Boolean(gStop && member.canStopSession !== false);
+    const edit = Boolean(gEdit && member.canEditSession !== false);
+    const del = Boolean(gDelete && member.canDeleteSession !== false);
+    return {
+      stop,
+      edit,
+      delete: del,
+      canStopSession: stop,
+      canEditSession: edit,
+      canDeleteSession: del,
+    };
+  }
+
+  function canManageSession(member, action = 'stop', targetDir = '') {
+    if (!member) return false;
+    if (member.isDirectorDevice || member.role === DIRECTOR_DEVICE_ROLE) return true;
+    if (member.status !== 'approved') return false;
+    if (targetDir && !canSeeWorkspace(member, targetDir)) return false;
+    const perms = effectiveSessionPerms(member);
+    if (action === 'stop') return perms.canStopSession;
+    if (action === 'edit' || action === 'rename') return perms.canEditSession;
+    if (action === 'delete') return perms.canDeleteSession;
+    return false;
+  }
+
+  const canControlSession = canManageSession;
 
   function effectiveRequireApproval(member) {
     if (!member || member.isDirectorDevice || member.role === DIRECTOR_DEVICE_ROLE) return false;
@@ -372,7 +490,17 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
   function pubMember(m) {
     if (!m) return null;
     const { secret, ...rest } = m;
-    return rest;
+    const perms = effectiveSessionPerms(m);
+    return {
+      ...rest,
+      sessionPerms: perms,
+      canStopSession: perms.canStopSession,
+      canEditSession: perms.canEditSession,
+      canDeleteSession: perms.canDeleteSession,
+      rawCanStopSession: m.canStopSession !== false,
+      rawCanEditSession: m.canEditSession !== false,
+      rawCanDeleteSession: m.canDeleteSession !== false,
+    };
   }
 
   function getSecurityStatus() {
@@ -390,6 +518,12 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
   function pubState(allWorkspaces = []) {
     return {
       requireTaskApproval: state.requireTaskApproval,
+      allowStopSession: state.allowStopSession !== false,
+      allowEditSession: state.allowEditSession !== false,
+      allowDeleteSession: state.allowDeleteSession !== false,
+      allowSessionStop: state.allowStopSession !== false,
+      allowSessionEdit: state.allowEditSession !== false,
+      allowSessionDelete: state.allowDeleteSession !== false,
       defaultRole: state.defaultRole,
       roles: ROLE_PRESETS,
       workspaces: allWorkspaces,
@@ -413,6 +547,10 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     updateMember,
     removeMember,
     setRequireTaskApproval,
+    setSessionPermissions,
+    effectiveSessionPerms,
+    canManageSession,
+    canControlSession,
     effectiveRequireApproval,
     canSeeWorkspace,
     getApprovedTeamMembers,

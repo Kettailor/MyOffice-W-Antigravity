@@ -106,7 +106,7 @@ export default async function SettingsPanel() {
           </div>
 
           <h3>{t('ui.topBar.more')}</h3>
-          <div className="pop-toggles">{toggle('chibiNames', true, 'ui.settings.chibiNames')}{toggle('staffNames', true, 'ui.settings.staffNames')}{toggle('subNames', true, 'ui.settings.subNames')}{toggle('workSteps', true, 'ui.settings.workSteps')}{toggle('zones', false)}{toggle('teams', true)}{toggle('stream', false)}{toggle('autocam', true)}</div>
+          <div className="pop-toggles">{toggle('groupByFolder', true, 'ui.settings.groupByFolder')}{toggle('chibiNames', true, 'ui.settings.chibiNames')}{toggle('staffNames', true, 'ui.settings.staffNames')}{toggle('subNames', true, 'ui.settings.subNames')}{toggle('workSteps', true, 'ui.settings.workSteps')}{toggle('zones', false)}{toggle('teams', true)}{toggle('stream', false)}{toggle('autocam', true)}</div>
         </section>
 
         <section className="st-panel" id="st-panel-more" role="tabpanel" aria-labelledby="st-tab-more" data-st-panel="more" hidden>

@@ -97,8 +97,10 @@ const DATA_DIR = process.env.OFFICE_DATA_DIR
   : path.join(process.cwd(), 'data');
 const SUMMARY_CACHE_FILE = path.join(DATA_DIR, 'agy-summaries-cache.json');
 const DELETED_SESSIONS_FILE = path.join(DATA_DIR, 'deleted-sessions.json');
+const CLEARED_WAITS_FILE = path.join(DATA_DIR, 'cleared-waits.json');
 const persistentMetaMap = new Map();
 const deletedConvIds = new Map(); // convId -> deletedAtMs
+const clearedWaits = new Map(); // convId -> clearedAtMs
 let saveCacheTimer = null;
 
 try {
@@ -120,6 +122,18 @@ try {
       if (k && ts >= cutoff30d) deletedConvIds.set(k, ts);
     }
     capMap(deletedConvIds, 500, 400);
+  }
+} catch { /* first run or missing file */ }
+
+try {
+  const cwSaved = JSON.parse(fs.readFileSync(CLEARED_WAITS_FILE, 'utf8'));
+  if (cwSaved && typeof cwSaved === 'object') {
+    const cutoff14d = Date.now() - 14 * 86400_000;
+    for (const [k, v] of Object.entries(cwSaved)) {
+      const ts = Number(v) || 0;
+      if (k && ts >= cutoff14d) clearedWaits.set(k, ts);
+    }
+    capMap(clearedWaits, 500, 400);
   }
 } catch { /* first run or missing file */ }
 
@@ -147,6 +161,19 @@ function saveDeletedSessions() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const obj = Object.fromEntries(deletedConvIds);
     fsp.writeFile(DELETED_SESSIONS_FILE, JSON.stringify(obj)).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+function saveClearedWaits() {
+  try {
+    const cutoff14d = Date.now() - 14 * 86400_000;
+    for (const [k, ts] of clearedWaits) {
+      if (ts < cutoff14d) clearedWaits.delete(k);
+    }
+    capMap(clearedWaits, 500, 400);
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const obj = Object.fromEntries(clearedWaits);
+    fsp.writeFile(CLEARED_WAITS_FILE, JSON.stringify(obj)).catch(() => {});
   } catch { /* ignore */ }
 }
 
@@ -1015,6 +1042,7 @@ export function createAntigravityWatcher({
   pub,
   broadcast,
   noteDir,
+  isRemovedDir,
   classifyVi,
   count,
   testRunner,
@@ -1136,36 +1164,42 @@ export function createAntigravityWatcher({
             }
           }
           if (norm.name === 'AskUserQuestion' || norm.tool_name === 'AskUserQuestion') {
-            stepHasWait = true;
-            st.lastFeedbackAt = ts;
-            st.waitInfo = {
-              kind: 'ask',
-              ts,
-              questions: norm.tool_input?.questions || [],
-              detail: norm.tool_input?.questions?.[0]?.question || '',
-            };
-            if (liveEvents) {
-              liveEvents.push({
-                kind: 'wait',
-                ts,
-                label: (st.waitInfo.detail || 'AskUserQuestion').slice(0, 60),
-              });
+            const fbTs = ts || fallbackTs || Date.now();
+            if (fbTs > (st.clearedWaitAt || 0)) {
+              stepHasWait = true;
+              st.lastFeedbackAt = fbTs;
+              st.waitInfo = {
+                kind: 'ask',
+                ts: fbTs,
+                questions: norm.tool_input?.questions || [],
+                detail: norm.tool_input?.questions?.[0]?.question || '',
+              };
+              if (liveEvents) {
+                liveEvents.push({
+                  kind: 'wait',
+                  ts: fbTs,
+                  label: (st.waitInfo.detail || 'AskUserQuestion').slice(0, 60),
+                });
+              }
             }
           } else if (norm.requestFeedback || norm.isPlanFile) {
-            stepHasWait = true;
-            st.lastFeedbackAt = ts;
-            st.waitInfo = {
-              kind: 'plan',
-              ts,
-              filePath: norm.tool_input?.file_path || '',
-              summary: norm.artifactSummary || '',
-            };
-            if (liveEvents) {
-              liveEvents.push({
-                kind: 'wait',
-                ts,
-                label: path.basename(norm.tool_input?.file_path || 'implementation_plan.md') || 'implementation_plan.md',
-              });
+            const fbTs = ts || fallbackTs || Date.now();
+            if (fbTs > (st.clearedWaitAt || 0)) {
+              stepHasWait = true;
+              st.lastFeedbackAt = fbTs;
+              st.waitInfo = {
+                kind: 'plan',
+                ts: fbTs,
+                filePath: norm.tool_input?.file_path || '',
+                summary: norm.artifactSummary || '',
+              };
+              if (liveEvents) {
+                liveEvents.push({
+                  kind: 'wait',
+                  ts: fbTs,
+                  label: path.basename(norm.tool_input?.file_path || 'implementation_plan.md') || 'implementation_plan.md',
+                });
+              }
             }
           }
           if (rawName.endsWith('invoke_subagent') || rawName.endsWith('send_message')) {
@@ -1182,26 +1216,44 @@ export function createAntigravityWatcher({
             const subLabel = clip(subAgent || 'Subagent', 28);
             const subDesc = clip(redact(oneLine(a.Prompt || a.Message || a.Description || '')), 70);
             const provKey = recId || `prov-${subAgent.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}`;
-            st.pendingSubCalls = (st.pendingSubCalls || 0) + 1;
-            st.lastSubInvokeAt = ts || Date.now();
-            if (Date.now() - ts < 60_000) {
+            const nowInvoke = Date.now();
+            const alreadyFinished = Array.isArray(s.doneSubs)
+              && s.doneSubs.some((d) => d && (d.id === provKey || d.prevId === provKey) && (d.endedAt || 0) >= ts);
+            if (!alreadyFinished) {
+              st.pendingSubCalls = (st.pendingSubCalls || 0) + 1;
+              st.lastSubInvokeAt = ts || nowInvoke;
+            }
+            let isNewSubStart = false;
+            if (!alreadyFinished && nowInvoke - ts < 60_000) {
               s.subs ||= {};
-              if (!s.subs[provKey]) {
+              const promotedEntry = Object.values(s.subs).find((v) => v && !v.provisional && (v.id === provKey || v.prevId === provKey || (v.type && v.type === clip(subAgent, 24))));
+              if (promotedEntry) {
+                promotedEntry.seenAt = nowInvoke;
+                promotedEntry.invokedAt = nowInvoke;
+                if (subDesc) promotedEntry.desc = subDesc;
+              } else if (!s.subs[provKey]) {
+                isNewSubStart = true;
                 s.subs[provKey] = {
                   id: provKey,
                   type: clip(subAgent, 24),
                   desc: subDesc,
                   last: { type: 'agent', label: subDesc || subLabel },
-                  startedAt: ts,
-                  seenAt: ts,
+                  startedAt: ts || nowInvoke,
+                  seenAt: nowInvoke,
+                  invokedAt: nowInvoke,
                   steps: 1,
                   provisional: true,
                 };
-              } else if (subAgent && s.subs[provKey].type !== clip(subAgent, 24) && !/^[0-9a-f-]{8,}$/i.test(subAgent)) {
-                s.subs[provKey].type = clip(subAgent, 24);
+              } else {
+                s.subs[provKey].seenAt = nowInvoke;
+                s.subs[provKey].invokedAt = nowInvoke;
+                if (subDesc) s.subs[provKey].desc = subDesc;
+                if (subAgent && s.subs[provKey].type !== clip(subAgent, 24) && !/^[0-9a-f-]{8,}$/i.test(subAgent)) {
+                  s.subs[provKey].type = clip(subAgent, 24);
+                }
               }
             }
-            if (liveEvents) {
+            if (liveEvents && isNewSubStart) {
               liveEvents.push({
                 kind: 'substart',
                 ts,
@@ -1222,7 +1274,7 @@ export function createAntigravityWatcher({
             });
           }
         }
-        if (!stepHasWait && st.lastFeedbackAt > 0 && ts > st.lastFeedbackAt) {
+        if (!stepHasWait && st.lastFeedbackAt > 0 && ts >= st.lastFeedbackAt) {
           st.lastFeedbackAt = 0;
           st.waitInfo = null;
           if (s) s.waitCard = null;
@@ -1343,8 +1395,23 @@ export function createAntigravityWatcher({
     subSt.mtimeMs = subCand.st.mtimeMs;
     if (parentSession) {
       parentSession.subs ||= {};
-      const wasRunning = !!parentSession.subs[subCand.convId];
-      const isRunning = meta.status === 'CASCADE_RUN_STATUS_RUNNING' || meta.notFullyIdle || (Date.now() - subCand.st.mtimeMs < 30_000);
+      const prevSub = parentSession.subs[subCand.convId];
+      const wasRunning = !!prevSub;
+      const nowSubMs = Date.now();
+      const recentlyInvoked = Boolean(
+        prevSub && (
+          (prevSub.provisional && nowSubMs - (prevSub.seenAt || 0) < 45_000) ||
+          (prevSub.invokedAt && nowSubMs - prevSub.invokedAt < 45_000)
+        )
+      );
+      const parentStForSub = states.get(meta.parentId);
+      const isParentForceStopped = Boolean(parentStForSub?.stoppedAtMtime && subCand.st.mtimeMs <= parentStForSub.stoppedAtMtime + 500);
+      const isRunning = !isParentForceStopped && (
+        meta.status === 'CASCADE_RUN_STATUS_RUNNING'
+        || meta.notFullyIdle
+        || (nowSubMs - subCand.st.mtimeMs < 30_000)
+        || recentlyInvoked
+      );
       if (meta.agentName || meta.title) {
         const cleanRole = formatSubagentRole(meta.agentName || meta.title) || meta.agentName || meta.title;
         subRoleByConvId.set(subCand.convId, { role: cleanRole, typeName: meta.agentName || meta.title });
@@ -1354,14 +1421,13 @@ export function createAntigravityWatcher({
       const rawSubName = savedRole?.role || meta.agentName || meta.title || `sub-${subCand.convId.slice(0, 4)}`;
       const subName = formatSubagentRole(rawSubName) || rawSubName;
       const subLabel = clip(subName, 24);
-      const subDesc = clip(meta.title || subSt.promptDesc || subName, 70);
+      const subDesc = clip(meta.title || subSt.promptDesc || prevSub?.desc || subName, 70);
       if (isRunning) {
-        const prevSub = parentSession.subs[subCand.convId];
         let matchedProvId = prevSub?.prevId || null;
         let matchedProvSub = null;
         if (!wasRunning || prevSub?.provisional) {
           for (const [k, v] of Object.entries(parentSession.subs)) {
-            if (v?.provisional && v.type === subLabel) {
+            if (k !== subCand.convId && v?.provisional && v.type === subLabel) {
               matchedProvId = k;
               matchedProvSub = v;
               break;
@@ -1369,14 +1435,14 @@ export function createAntigravityWatcher({
           }
           if (!matchedProvId) {
             for (const [k, v] of Object.entries(parentSession.subs)) {
-              if (v?.provisional) {
+              if (k !== subCand.convId && v?.provisional) {
                 matchedProvId = k;
                 matchedProvSub = v;
                 break;
               }
             }
           }
-          if (matchedProvId && parentSession.subs[matchedProvId]?.provisional) {
+          if (matchedProvId && matchedProvId !== subCand.convId && parentSession.subs[matchedProvId]?.provisional) {
             delete parentSession.subs[matchedProvId];
           }
         } else {
@@ -1392,15 +1458,21 @@ export function createAntigravityWatcher({
         const lastInfo = subSt.lastClassified
           ? { type: subSt.lastClassified.type, label: subSt.lastClassified.label }
           : (prevSub?.last || matchedProvSub?.last || { type: 'agent', label: clip(meta.title || subSt.promptDesc || 'Đang chạy tác vụ phụ', 60) });
+        const keepProvisional = recentlyInvoked
+          && meta.status !== 'CASCADE_RUN_STATUS_RUNNING'
+          && !meta.notFullyIdle
+          && (nowSubMs - subCand.st.mtimeMs >= 30_000);
         parentSession.subs[subCand.convId] = {
           id: subCand.convId,
           type: subLabel,
           desc: subDesc,
           last: lastInfo,
           startedAt: prevSub?.startedAt || matchedProvSub?.startedAt || subCand.st.birthtimeMs || subCand.st.mtimeMs,
-          seenAt: subCand.st.mtimeMs,
+          seenAt: Math.max(nowSubMs, subCand.st.mtimeMs || 0),
+          invokedAt: prevSub?.invokedAt || matchedProvSub?.invokedAt || 0,
+          ...(keepProvisional ? { provisional: true } : {}),
           steps: meta.stepCount || subSt.steps.length || 1,
-          ...(matchedProvId ? { prevId: matchedProvId } : {}),
+          ...(matchedProvId && matchedProvId !== subCand.convId ? { prevId: matchedProvId } : {}),
         };
         if (parentSession.status === 'rest') {
           parentSession.status = 'work';
@@ -1517,6 +1589,7 @@ export function createAntigravityWatcher({
         lastStepType: '',
         lastStepHasTools: false,
         lastFeedbackAt: 0,
+        clearedWaitAt: clearedWaits.get(convId) || 0,
         waitInfo: null,
         planCache: null,
         pendingSubCalls: 0,
@@ -1533,8 +1606,15 @@ export function createAntigravityWatcher({
       st.offset = 0;
       st.mtimeMs = 0;
       st.transcriptFile = transcriptFile;
+      st.clearedWaitAt = Math.max(st.clearedWaitAt || 0, clearedWaits.get(convId) || 0);
     } else {
       st.transcriptFile = transcriptFile;
+      st.clearedWaitAt = Math.max(st.clearedWaitAt || 0, clearedWaits.get(convId) || 0);
+    }
+    if (st.lastFeedbackAt > 0 && st.lastFeedbackAt <= (st.clearedWaitAt || 0)) {
+      st.lastFeedbackAt = 0;
+      st.waitInfo = null;
+      s.waitCard = null;
     }
 
     const liveEvents = [];
@@ -1604,6 +1684,11 @@ export function createAntigravityWatcher({
         noteDir(norm);
       }
     }
+    if (s.cwd && typeof isRemovedDir === 'function' && isRemovedDir(s.cwd)) {
+      states.delete(convId);
+      dropSession(key, s);
+      return false;
+    }
 
     // Refresh task.md checklist & artifact title only when modified or on active turn
     const nowMs = Date.now();
@@ -1654,13 +1739,24 @@ export function createAntigravityWatcher({
       st.pendingSubCalls = 0;
     }
 
+    if (st.stoppedAtMtime && fileStat.mtimeMs > st.stoppedAtMtime + 500) {
+      st.stoppedAtMtime = 0;
+    }
+    const isForceStopped = Boolean(st.stoppedAtMtime && fileStat.mtimeMs <= st.stoppedAtMtime + 500);
+    if (isForceStopped) {
+      s.subs = {};
+      st.pendingSubCalls = 0;
+      st.deferredStopLabel = null;
+      st.deferredStopAt = 0;
+    }
+
     // Determine live status ('work', 'wait', 'rest') combining DB status, subagent activity, and transcript freshness
     const ageMs = Date.now() - Math.max(fileStat.mtimeMs, s.lastEventAt || 0);
-    const dbRunning = dbMeta && (dbMeta.status === 'CASCADE_RUN_STATUS_RUNNING' || dbMeta.notFullyIdle) && ageMs < 5 * 60_000;
-    const hasWaitInfo = Boolean(st.waitInfo && (st.waitInfo.kind === 'ask' || st.waitInfo.kind === 'plan'));
-    const waitingFeedback = st.lastFeedbackAt > 0 && Date.now() - st.lastFeedbackAt < 12 * 3600_000 && st.lastStepType === 'PLANNER_RESPONSE' && (!st.lastStepHasTools || hasWaitInfo) && !dbRunning;
-    const activeTurn = dbRunning || ((st.lastStepType === 'USER_INPUT' || st.lastStepType === 'GENERIC' || st.lastStepHasTools) && ageMs < 90_000);
-    const hasRunningSubs = Boolean(hasActiveSubCandidate || Object.keys(s.subs || {}).length > 0 || (st.pendingSubCalls || 0) > 0);
+    const dbRunning = !isForceStopped && dbMeta && (dbMeta.status === 'CASCADE_RUN_STATUS_RUNNING' || dbMeta.notFullyIdle) && ageMs < 5 * 60_000;
+    const hasWaitInfo = !isForceStopped && Boolean(st.waitInfo && (st.waitInfo.kind === 'ask' || st.waitInfo.kind === 'plan'));
+    const waitingFeedback = !isForceStopped && st.lastFeedbackAt > 0 && st.lastFeedbackAt > (st.clearedWaitAt || 0) && Date.now() - st.lastFeedbackAt < 12 * 3600_000 && st.lastStepType === 'PLANNER_RESPONSE' && (!st.lastStepHasTools || hasWaitInfo) && !dbRunning;
+    const activeTurn = !isForceStopped && (dbRunning || ((st.lastStepType === 'USER_INPUT' || st.lastStepType === 'GENERIC' || st.lastStepHasTools) && ageMs < 90_000));
+    const hasRunningSubs = !isForceStopped && Boolean(hasActiveSubCandidate || Object.keys(s.subs || {}).length > 0 || (st.pendingSubCalls || 0) > 0);
 
     // Strip any premature 'stop' events while subagents or background tasks are still running
     if (hasRunningSubs || s.bg.size > 0) {
@@ -1949,6 +2045,9 @@ export function createAntigravityWatcher({
         }
       }
       const meta = dbSummary.map.get(c.convId);
+      if (meta?.workspace && typeof isRemovedDir === 'function' && isRemovedDir(meta.workspace)) {
+        continue;
+      }
       const isSub = Boolean(meta?.parentId)
         || (Number(meta?.nestingDepth) > 0)
         || Boolean(meta?.agentName)
@@ -2000,6 +2099,8 @@ export function createAntigravityWatcher({
         return false;
       });
       if (sessions.has(key)) {
+        const sRef = sessions.get(key);
+        if (sRef) sRef.missedScans = 0;
         liveKeys.add(key);
         countByWorkspace.set(wsKey, wsIdx + 1);
       }
@@ -2017,6 +2118,12 @@ export function createAntigravityWatcher({
 
     for (const [key, s] of sessions) {
       if (s.isAgy && s.fromFile && !liveKeys.has(key)) {
+        const explicitlyRemoved = deletedConvIds.has(s.sid)
+          || (s.cwd && typeof isRemovedDir === 'function' && isRemovedDir(s.cwd));
+        if (!explicitlyRemoved) {
+          s.missedScans = (s.missedScans || 0) + 1;
+          if (s.missedScans < 3) continue;
+        }
         states.delete(s.sid);
         for (const [subId, subSt] of subStates) {
           if (subSt.parentId === s.sid) subStates.delete(subId);
@@ -2034,10 +2141,16 @@ export function createAntigravityWatcher({
 
   function clearWait(convId) {
     if (!convId) return;
+    const now = Date.now();
     const cleanId = String(convId).replace(/^(?:agy:|a)/, '');
+    if (cleanId) {
+      clearedWaits.set(cleanId, now);
+      saveClearedWaits();
+    }
     for (const id of new Set([String(convId), cleanId])) {
       const st = states.get(id);
       if (st) {
+        st.clearedWaitAt = now;
         st.lastFeedbackAt = 0;
         st.waitInfo = null;
       }
@@ -2048,8 +2161,43 @@ export function createAntigravityWatcher({
         || [...sessions.values()].find((x) => x.sid === id || x.id === id);
       if (s) {
         s.waitCard = null;
+        if (s.status === 'wait') {
+          s.status = 'work';
+          s.act = '';
+        }
       }
     }
+  }
+
+  function stopSession(convId) {
+    if (!convId) return false;
+    const cleanId = String(convId).replace(/^(?:agy:|a)/, '');
+    clearWait(cleanId);
+    for (const id of new Set([String(convId), cleanId])) {
+      const st = states.get(id);
+      if (st) {
+        st.stoppedAtMtime = Math.max(st.mtimeMs || 0, Date.now());
+        st.pendingSubCalls = 0;
+        st.deferredStopLabel = null;
+        st.deferredStopAt = 0;
+        st.waitInfo = null;
+        st.lastFeedbackAt = 0;
+      }
+      const sKey = sidToKey?.get(id);
+      const s = (sKey && sessions.get(sKey))
+        || sessions.get('a' + id)
+        || sessions.get('agy:' + id)
+        || [...sessions.values()].find((x) => x.sid === id || x.id === id);
+      if (s) {
+        s.waitCard = null;
+        s.busy = false;
+        s.inTool = false;
+        s.status = 'rest';
+        s.subs = {};
+        s.doneAt = Date.now();
+      }
+    }
+    return true;
   }
 
   function deleteSession(convId) {
@@ -2063,7 +2211,7 @@ export function createAntigravityWatcher({
     return true;
   }
 
-  return { scan, clearWait, deleteSession };
+  return { scan, clearWait, stopSession, deleteSession };
 }
 
 export { createAntigravityWatcher as startAntigravityWatcher };

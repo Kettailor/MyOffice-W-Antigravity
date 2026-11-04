@@ -2,6 +2,7 @@
 // it goes to (a conversation, carried on with its whole context as a branch of it, or a new conversation in a folder
 // sessions have worked in), what to do (typed, or spoken: 🎤 in the office's language), photos (from the camera or the
 // gallery, made smaller here before they go). From a phone only once the Mac allows it (the phone window).
+import { state } from '../core/state.js';
 import { el } from '../core/env.js';
 import { icon } from './icons.js';
 import { toast } from './activity.js';
@@ -9,7 +10,7 @@ import { avatar } from './chat-avatars.js';
 import { who } from './group-chat.js';
 import { sessions } from '../people/workers.js';
 import { TOKEN } from '../net/live.js';
-import { deleteSession, renameSession } from './session-drawer.js';
+import { canSessionPerm, deleteSession, renameSession, stopSession } from './session-drawer.js';
 import { sfx } from '../audio/sfx.js';
 import { t as tr, locale } from '../../i18n/index.js';
 
@@ -294,6 +295,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   if (!r?.ok) { sheet.append(el('p', 'zc-task-note', tr('drawer.unreachable'))); host.append(sheet); return; }
   if (!r.allowed) { sheet.append(el('p', 'zc-task-note', tr('chat.task.notAllowed'))); host.append(sheet); return; }
   if (r.viewer) {
+    state.viewer = r.viewer;
     const isDirDev = r.viewer.isDirectorDevice || r.viewer.role === 'Phó Giám đốc';
     const roleBanner = el('p', 'zc-task-note');
     roleBanner.style.color = isDirDev ? '#1D4ED8' : r.requireTaskApproval ? '#D97706' : '#059669';
@@ -332,8 +334,20 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   const visibleSessions = () => (r.sessions || []).filter((s) => !s.masked && !sessions.get(s.id)?.masked);
   const visibleProjects = () => (r.projects || []).filter((p) => !p.masked);
   const isSessBusy = (s) => {
-    const live = sessions.get(s.id) || s;
-    return live?.status === 'work' || live?.status === 'wait' || Boolean(live?.busy) || Boolean(s?.busy);
+    const live = sessions.get(s?.id) || [...sessions.values()].find((x) => x?.sid && s?.sid && x.sid === s.sid) || s;
+    if (
+      live?.status === 'work' ||
+      live?.status === 'wait' ||
+      Boolean(live?.busy) ||
+      (Array.isArray(live?.subs) && live.subs.length > 0) ||
+      s?.status === 'work' ||
+      s?.status === 'wait' ||
+      Boolean(s?.busy) ||
+      Number(s?.subsCount) > 0
+    ) {
+      return true;
+    }
+    return (r.running || []).some((t) => (s?.sid && t.sid === s.sid) || (s?.id && t.sess === s.id));
   };
   const sortSessions = () => [...visibleSessions()].sort((a, b) => {
     const pa = pins.has(`s:${a.sid}`) ? 1 : 0;
@@ -376,6 +390,24 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
   const field = el('textarea', 'zc-task-in'); field.rows = 4; field.maxLength = 4000; field.placeholder = `${tr('chat.task.placeholder')} · ${tr('chat.task.pasteHint', { max: MAX_TASK_IMAGES })}`; field.value = initialText;
   const photos = [...initialPhotos], thumbs = el('div', 'zc-task-thumbs');
   const camSpan = el('span', null, `${tr('chat.task.photo')} (${photos.length}/${MAX_TASK_IMAGES})`);
+  const noteEl = el('p', 'zc-task-note', tr('chat.task.note'));
+  const setNoteMessage = (msg, color = '') => {
+    noteEl.textContent = msg || tr('chat.task.note');
+    noteEl.style.color = color || '';
+    noteEl.style.fontWeight = color ? '600' : '';
+  };
+  let showAddProject = false;
+  let showNewFolderRow = true;
+  let addProjPath = '';
+  let addProjNewFolder = '';
+  let browseData = null;
+  const joinWinOrPosix = (baseDir, sub) => {
+    const b = String(baseDir || '').replace(/[\\/]+$/, '');
+    const s = String(sub || '').replace(/^[\\/]+/, '');
+    if (!b) return s;
+    const sep = b.includes('\\') || /^[A-Za-z]:/.test(b) ? '\\' : '/';
+    return `${b}${sep}${s}`;
+  };
   saveCurrentDraft = () => {
     const k = keyOfPick(pick);
     if (k) setDraft(k, { text: field.value, photos });
@@ -394,18 +426,23 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     }));
   };
   if (photos.length) drawThumbs();
-  const option = (key, pinKey, label, sub, face, sel, sessObj = null) => {
+  const option = (key, pinKey, label, sub, face, sel, sessObj = null, projObj = null) => {
     const isPinned = pins.has(pinKey);
-    const wrap = el('div', `zc-task-row${sel ? ' is-on' : ''}${isPinned ? ' is-pinned' : ''}`);
+    const busy = Boolean(sessObj && isSessBusy(sessObj));
+    const wrap = el('div', `zc-task-row${sel ? ' is-on' : ''}${isPinned ? ' is-pinned' : ''}${busy ? ' is-busy' : ''}`);
     const b = el('button', `zc-task-o${sel ? ' is-on' : ''}`); b.type = 'button';
     const t = el('span', 'zc-men-t');
+    const titleLine = el('span', 'zc-task-title-line');
     const titleEl = el('b', null, isPinned ? `📌 ${label}` : label);
-    if (sessObj && isSessBusy(sessObj)) {
+    if (busy) {
       const dot = el('span', 'zc-task-live-dot');
       dot.title = tr('chat.task.activeWorking');
-      titleEl.append(' ', dot);
+      dot.setAttribute('aria-label', tr('chat.task.activeWorking'));
+      titleLine.append(dot, titleEl);
+    } else {
+      titleLine.append(titleEl);
     }
-    t.append(titleEl, el('small', null, sub));
+    t.append(titleLine, el('small', null, sub));
     b.append(face, t);
     b.addEventListener('click', () => {
       saveCurrentDraft();
@@ -432,71 +469,161 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     });
     wrap.append(b, pinBtn);
     if (sessObj) {
-      const editBtn = el('button', 'zc-task-edit', '✏️');
-      editBtn.type = 'button';
-      editBtn.title = tr('drawer.rename.title');
-      editBtn.setAttribute('aria-label', tr('drawer.rename.title'));
-      editBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const current = sessObj.name || '';
-        const inp = el('input', 'zc-task-rename-in');
-        inp.type = 'text';
-        inp.maxLength = 75;
-        inp.value = current;
-        inp.placeholder = sessObj.rawName || tr('drawer.rename.placeholder');
-        titleEl.replaceWith(inp);
-        let done = false;
-        const finish = async (save) => {
-          if (done) return;
-          done = true;
-          const val = inp.value.trim();
-          if (save && val !== current) {
-            const newName = await renameSession(sessObj, val);
-            if (newName !== null) {
-              sessObj.name = newName;
-            }
+      if (canSessionPerm('stop') && isSessBusy(sessObj)) {
+        const stopBtn = el('button', 'zc-task-stop', '⏹️');
+        stopBtn.type = 'button';
+        stopBtn.title = tr('drawer.stop.title');
+        stopBtn.setAttribute('aria-label', tr('drawer.stop.title'));
+        stopBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          stopBtn.disabled = true;
+          const ok = await stopSession(sessions.get(sessObj.id) || sessObj);
+          if (ok) {
+            sessObj.status = 'rest';
+            sessObj.busy = false;
+            drawList();
+          } else {
+            stopBtn.disabled = false;
           }
-          drawList();
-        };
-        inp.addEventListener('click', (e) => e.stopPropagation());
-        inp.addEventListener('keydown', (e) => {
-          e.stopPropagation();
-          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
         });
-        inp.addEventListener('blur', () => finish(true));
-        inp.focus();
-        inp.select();
-      });
-      const delBtn = el('button', 'zc-task-del', '🗑️');
-      delBtn.type = 'button';
-      delBtn.title = tr('drawer.delete.title');
-      delBtn.setAttribute('aria-label', tr('drawer.delete.title'));
-      let delTimer = 0;
-      delBtn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        if (!delBtn.classList.contains('is-confirm')) {
-          delBtn.classList.add('is-confirm');
-          delBtn.textContent = tr('drawer.delete.shortConfirm');
+        wrap.append(stopBtn);
+      }
+      if (canSessionPerm('edit')) {
+        const editBtn = el('button', 'zc-task-edit', '✏️');
+        editBtn.type = 'button';
+        editBtn.title = tr('drawer.rename.title');
+        editBtn.setAttribute('aria-label', tr('drawer.rename.title'));
+        editBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const current = sessObj.name || '';
+          const inp = el('input', 'zc-task-rename-in');
+          inp.type = 'text';
+          inp.maxLength = 75;
+          inp.value = current;
+          inp.placeholder = sessObj.rawName || tr('drawer.rename.placeholder');
+          titleEl.replaceWith(inp);
+          let done = false;
+          const finish = async (save) => {
+            if (done) return;
+            done = true;
+            const val = inp.value.trim();
+            if (save && val !== current) {
+              const newName = await renameSession(sessObj, val);
+              if (newName !== null) {
+                sessObj.name = newName;
+              }
+            }
+            drawList();
+          };
+          inp.addEventListener('click', (e) => e.stopPropagation());
+          inp.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+          });
+          inp.addEventListener('blur', () => finish(true));
+          inp.focus();
+          inp.select();
+        });
+        wrap.append(editBtn);
+      }
+      if (canSessionPerm('delete')) {
+        const delBtn = el('button', 'zc-task-del', '🗑️');
+        delBtn.type = 'button';
+        delBtn.title = tr('drawer.delete.title');
+        delBtn.setAttribute('aria-label', tr('drawer.delete.title'));
+        let delTimer = 0;
+        delBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          if (!delBtn.classList.contains('is-confirm')) {
+            delBtn.classList.add('is-confirm');
+            delBtn.textContent = tr('drawer.delete.shortConfirm');
+            clearTimeout(delTimer);
+            delTimer = setTimeout(() => {
+              delBtn.classList.remove('is-confirm');
+              delBtn.textContent = '🗑️';
+            }, 4000);
+            return;
+          }
           clearTimeout(delTimer);
-          delTimer = setTimeout(() => {
+          delBtn.disabled = true;
+          const ok = await deleteSession(sessObj);
+          if (!ok) {
+            delBtn.disabled = false;
             delBtn.classList.remove('is-confirm');
             delBtn.textContent = '🗑️';
-          }, 4000);
+            return;
+          }
+          clearDraft(`s:${sessObj.sid}`);
+          r.sessions = (r.sessions || []).filter((x) => x.sid !== sessObj.sid && x.id !== sessObj.id);
+          if (pick?.sid === sessObj.sid) {
+            const nextS = sortSessions()[0];
+            const nextP = sortProjects()[0];
+            pick = nextS ? { sid: nextS.sid } : nextP ? { dir: nextP.dir } : null;
+            saveLastPick(pick);
+            const nextDraft = getDraft(keyOfPick(pick));
+            field.value = nextDraft.text || '';
+            photos.splice(0, photos.length, ...(nextDraft.photos || []).slice(0, MAX_TASK_IMAGES));
+            drawThumbs();
+          }
+          drawList();
+          syncModelSelect();
+          sync();
+        });
+        wrap.append(delBtn);
+      }
+    }
+    if (projObj && !sessObj) {
+      const delProjBtn = el('button', 'zc-task-del gc-task-opt-act gc-task-opt-del', '🗑️');
+      delProjBtn.type = 'button';
+      delProjBtn.title = tr('chat.task.removeProjectTitle');
+      delProjBtn.setAttribute('aria-label', tr('chat.task.removeProjectTitle'));
+      let delProjTimer = 0;
+      delProjBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!delProjBtn.classList.contains('is-confirm')) {
+          delProjBtn.classList.add('is-confirm', 'is-confirming');
+          delProjBtn.textContent = tr('chat.task.removeProjectConfirm');
+          setNoteMessage(tr('chat.task.removeProjectTitle'), '#D97706');
+          clearTimeout(delProjTimer);
+          delProjTimer = setTimeout(() => {
+            delProjBtn.classList.remove('is-confirm', 'is-confirming');
+            delProjBtn.textContent = '🗑️';
+            setNoteMessage(tr('chat.task.note'));
+          }, 3500);
           return;
         }
-        clearTimeout(delTimer);
-        delBtn.disabled = true;
-        const ok = await deleteSession(sessObj);
-        if (!ok) {
-          delBtn.disabled = false;
-          delBtn.classList.remove('is-confirm');
-          delBtn.textContent = '🗑️';
+        clearTimeout(delProjTimer);
+        delProjBtn.disabled = true;
+        const targetDir = projObj.rawDir || projObj.dir;
+        const res = await fetch(`/api/projects/remove${q()}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dir: targetDir }),
+        }).then((x) => x.json()).catch(() => null);
+        if (!res?.ok) {
+          delProjBtn.disabled = false;
+          delProjBtn.classList.remove('is-confirm', 'is-confirming');
+          delProjBtn.textContent = '🗑️';
+          if (res?.message) setNoteMessage(res.message, '#DC2626');
           return;
         }
-        clearDraft(`s:${sessObj.sid}`);
-        r.sessions = (r.sessions || []).filter((x) => x.sid !== sessObj.sid && x.id !== sessObj.id);
-        if (pick?.sid === sessObj.sid) {
+        if (pins.has(pinKey)) {
+          pins.delete(pinKey);
+          savePins(pins);
+        }
+        clearDraft(pinKey);
+        if (Array.isArray(res.projects)) {
+          r.projects = res.projects;
+        } else {
+          r.projects = (r.projects || []).filter((x) => x.dir !== projObj.dir && (x.rawDir || x.dir) !== targetDir);
+        }
+        if (Array.isArray(res.sessions)) {
+          r.sessions = res.sessions;
+        } else {
+          r.sessions = (r.sessions || []).filter((x) => x.dir !== projObj.dir && (x.rawDir || x.dir) !== targetDir);
+        }
+        if (pick?.dir === projObj.dir && !pick?.sid) {
           const nextS = sortSessions()[0];
           const nextP = sortProjects()[0];
           pick = nextS ? { sid: nextS.sid } : nextP ? { dir: nextP.dir } : null;
@@ -506,13 +633,235 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
           photos.splice(0, photos.length, ...(nextDraft.photos || []).slice(0, MAX_TASK_IMAGES));
           drawThumbs();
         }
+        const doneMsg = tr('chat.task.removeProjectDone', { name: projObj.name });
+        setNoteMessage(doneMsg, '#059669');
+        toast(doneMsg, 4000);
         drawList();
         syncModelSelect();
         sync();
       });
-      wrap.append(editBtn, delBtn);
+      wrap.append(delProjBtn);
     }
     return wrap;
+  };
+  const buildAddProjectBox = () => {
+    const box = el('div', 'gc-task-add-proj-box');
+    box.addEventListener('click', (ev) => ev.stopPropagation());
+    const title = el('div', 'gc-task-add-proj-title', tr('chat.task.addProjectTitle'));
+    const row1 = el('div', 'gc-task-add-proj-row');
+    const pathInput = el('input', 'gc-task-add-proj-in');
+    pathInput.type = 'text';
+    pathInput.placeholder = tr('chat.task.addProjectPathPlaceholder');
+    pathInput.value = addProjPath;
+    pathInput.addEventListener('input', () => { addProjPath = pathInput.value; });
+    const browseBtn = el('button', 'gc-task-add-proj-subbtn', tr('chat.task.browseFolders'));
+    browseBtn.type = 'button';
+    const newFolderToggleBtn = el('button', 'gc-task-add-proj-subbtn', tr('chat.task.createNewFolderBtn'));
+    newFolderToggleBtn.type = 'button';
+    row1.append(pathInput, browseBtn, newFolderToggleBtn);
+
+    const row2 = el('div', 'gc-task-add-proj-row');
+    const newFolderInput = el('input', 'gc-task-add-proj-in');
+    newFolderInput.type = 'text';
+    newFolderInput.placeholder = tr('chat.task.newFolderPlaceholder');
+    newFolderInput.value = addProjNewFolder;
+    newFolderInput.addEventListener('input', () => { addProjNewFolder = newFolderInput.value; });
+    row2.hidden = !showNewFolderRow;
+    row2.append(newFolderInput);
+
+    newFolderToggleBtn.addEventListener('click', () => {
+      showNewFolderRow = true;
+      row2.hidden = false;
+      newFolderInput.focus();
+    });
+
+    const browseWrap = el('div', 'gc-task-browse-wrap');
+    const triggerBrowse = async (dirToLoad = '') => {
+      const wantDir = String(dirToLoad ?? pathInput.value ?? '').trim();
+      const qs = q();
+      const url = `/api/projects/browse${qs}${wantDir ? `${qs ? '&' : '?'}dir=${encodeURIComponent(wantDir)}` : ''}`;
+      const res = await fetch(url).then((x) => x.json()).catch(() => null);
+      if (res?.ok) {
+        browseData = res;
+        const resolvedDir = res.currentDir || res.dir || res.current || wantDir;
+        if (resolvedDir && !pathInput.value.trim()) {
+          addProjPath = resolvedDir;
+          pathInput.value = resolvedDir;
+        }
+        refreshBrowseDom();
+      } else if (res?.message) {
+        setNoteMessage(res.message, '#DC2626');
+      }
+    };
+
+    const refreshBrowseDom = () => {
+      browseWrap.replaceChildren();
+      if (!browseData) return;
+      const roots = Array.isArray(browseData.roots) ? browseData.roots : [];
+      const currentDir = String(browseData.currentDir || browseData.dir || browseData.current || '');
+      const parentDir = browseData.parentDir ?? browseData.parent ?? null;
+      const dirs = Array.isArray(browseData.dirs)
+        ? browseData.dirs
+        : Array.isArray(browseData.folders)
+          ? browseData.folders
+          : Array.isArray(browseData.subfolders)
+            ? browseData.subfolders
+            : [];
+      if (roots.length) {
+        const rootsBar = el('div', 'gc-task-browse-roots');
+        for (const rt of roots) {
+          const rPath = typeof rt === 'string' ? rt : String(rt?.path || rt?.dir || rt?.name || '');
+          const rLabel = typeof rt === 'string' ? rt : String(rt?.label || rt?.name || rPath);
+          if (!rPath) continue;
+          const isCurRoot = Boolean(currentDir && currentDir.toLowerCase().startsWith(rPath.toLowerCase()));
+          const rBtn = el('button', `gc-task-root-btn${isCurRoot ? ' is-on' : ''}`, `💽 ${rLabel}`);
+          rBtn.type = 'button';
+          rBtn.addEventListener('click', () => {
+            addProjPath = rPath;
+            pathInput.value = rPath;
+            triggerBrowse(rPath);
+          });
+          rootsBar.append(rBtn);
+        }
+        browseWrap.append(rootsBar);
+      }
+      if (currentDir || parentDir) {
+        const curBar = el('div', 'gc-task-browse-cur');
+        const curPathSpan = el('span', 'gc-task-browse-curpath', currentDir ? `📂 ${currentDir}` : '');
+        curPathSpan.title = currentDir;
+        const curActs = el('div', 'gc-task-browse-curacts');
+        if (parentDir) {
+          const upBtn = el('button', 'gc-task-browse-act', tr('chat.task.upFolder'));
+          upBtn.type = 'button';
+          upBtn.addEventListener('click', () => {
+            addProjPath = parentDir;
+            pathInput.value = parentDir;
+            triggerBrowse(parentDir);
+          });
+          curActs.append(upBtn);
+        }
+        if (currentDir) {
+          const selBtn = el('button', 'gc-task-browse-act is-primary', tr('chat.task.selectThisFolder'));
+          selBtn.type = 'button';
+          selBtn.addEventListener('click', () => {
+            addProjPath = currentDir;
+            pathInput.value = currentDir;
+            pathInput.focus();
+          });
+          curActs.append(selBtn);
+        }
+        curBar.append(curPathSpan, curActs);
+        browseWrap.append(curBar);
+      }
+      const dirListEl = el('div', 'gc-task-browse-list');
+      if (!dirs.length) {
+        dirListEl.append(el('div', 'gc-task-browse-empty', tr('chat.task.emptySubfolders')));
+      } else {
+        for (const d of dirs) {
+          const dPath = typeof d === 'string'
+            ? (d.includes('\\') || d.includes('/') ? d : joinWinOrPosix(currentDir, d))
+            : String(d?.path || d?.dir || joinWinOrPosix(currentDir, d?.name || ''));
+          const dName = typeof d === 'string'
+            ? (d.split(/[\\/]/).filter(Boolean).pop() || d)
+            : String(d?.name || dPath.split(/[\\/]/).filter(Boolean).pop() || dPath);
+          if (!dPath) continue;
+          const itemBtn = el('button', 'gc-task-browse-item', `📁 ${dName}`);
+          itemBtn.type = 'button';
+          itemBtn.title = dPath;
+          itemBtn.addEventListener('click', () => {
+            addProjPath = dPath;
+            pathInput.value = dPath;
+            triggerBrowse(dPath);
+          });
+          dirListEl.append(itemBtn);
+        }
+      }
+      browseWrap.append(dirListEl);
+    };
+
+    browseBtn.addEventListener('click', () => triggerBrowse(pathInput.value.trim()));
+    if (browseData) refreshBrowseDom();
+    else triggerBrowse(addProjPath);
+
+    const actRow = el('div', 'gc-task-add-proj-actions');
+    const cancelBtn = el('button', 'gc-task-add-proj-cancel', tr('chat.task.addProjectCancel'));
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', () => {
+      showAddProject = false;
+      drawList();
+    });
+    const confirmBtn = el('button', 'gc-task-add-proj-confirm', tr('chat.task.addProjectConfirm'));
+    confirmBtn.type = 'button';
+    const submitAddProject = async () => {
+      const dirVal = pathInput.value.trim();
+      const newFolderVal = newFolderInput.value.trim();
+      if (!dirVal && !newFolderVal) {
+        pathInput.focus();
+        return;
+      }
+      confirmBtn.disabled = true;
+      const res = await fetch(`/api/projects/add${q()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dir: dirVal,
+          newFolderName: newFolderVal,
+          createIfMissing: true,
+        }),
+      }).then((x) => x.json()).catch(() => null);
+      confirmBtn.disabled = false;
+      if (!res?.ok) {
+        const errMsg = res?.message || tr('drawer.unreachable');
+        setNoteMessage(errMsg, '#DC2626');
+        toast(errMsg, 4500);
+        return;
+      }
+      if (Array.isArray(res.projects)) r.projects = res.projects;
+      if (Array.isArray(res.sessions)) r.sessions = res.sessions;
+      const addedDir = res.addedDir || res.project?.dir || res.dir || (newFolderVal ? joinWinOrPosix(dirVal, newFolderVal) : dirVal);
+      const addedName = res.name || res.project?.name || addedDir.split(/[\\/]/).filter(Boolean).pop() || addedDir;
+      if (addedDir && !(r.projects || []).some((p) => p.dir === addedDir)) {
+        r.projects = [{ dir: addedDir, rawDir: res.rawDir || addedDir, name: addedName }, ...(r.projects || [])];
+      }
+      showAddProject = false;
+      showNewIn = true;
+      addProjPath = '';
+      addProjNewFolder = '';
+      try { localStorage.setItem('zc_task_show_new_in', '1'); } catch { /* storage blocked */ }
+      if (addedDir) {
+        saveCurrentDraft();
+        pick = { dir: addedDir };
+        saveLastPick(pick);
+        const nextDraft = getDraft(keyOfPick(pick));
+        field.value = nextDraft.text || '';
+        photos.splice(0, photos.length, ...(nextDraft.photos || []).slice(0, MAX_TASK_IMAGES));
+        drawThumbs();
+      }
+      drawList();
+      syncModelSelect();
+      sync();
+      const okMsg = tr('chat.task.addProjectSuccess', { name: addedName });
+      setNoteMessage(okMsg, '#059669');
+      toast(okMsg, 4000);
+      field.focus();
+    };
+    confirmBtn.addEventListener('click', submitAddProject);
+    const onInputKeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submitAddProject();
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        showAddProject = false;
+        drawList();
+      }
+    };
+    pathInput.addEventListener('keydown', onInputKeydown);
+    newFolderInput.addEventListener('keydown', onInputKeydown);
+    actRow.append(cancelBtn, confirmBtn);
+    box.append(title, row1, row2, browseWrap, actRow);
+    return box;
   };
   const drawList = () => {
     const items = [];
@@ -525,28 +874,43 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
       const subText = mText ? `📁 ${s.dir} · ${mText}` : `📁 ${s.dir}`;
       items.push(option({ sid: s.sid }, `s:${s.sid}`, s.name, subText, avatar({ ...(who(s.id) || {}), key: s.id, name: s.name }, 30), pick?.sid === s.sid, s));
     }
-    if (projList.length) {
-      const projHead = el('div', 'zc-task-h zc-task-h-toggle');
-      const toggleBtn = el('button', 'zc-task-toggle-btn', showNewIn ? `${tr('chat.task.hideNewIn')} ▲` : `${tr('chat.task.showNewIn')} (${projList.length}) ▼`);
-      toggleBtn.type = 'button';
-      toggleBtn.setAttribute('aria-expanded', String(showNewIn));
-      const toggleNewIn = (ev) => {
-        ev.stopPropagation();
-        showNewIn = !showNewIn;
-        try { localStorage.setItem('zc_task_show_new_in', showNewIn ? '1' : '0'); } catch { /* storage blocked */ }
-        drawList();
-      };
-      projHead.addEventListener('click', toggleNewIn);
-      projHead.append(el('span', null, tr('chat.task.newIn')), toggleBtn);
-      items.push(projHead);
-      if (showNewIn) {
-        for (const p of projList) {
-          const f = el('span', 'zc-task-folder', '📁');
-          const mId = getModelForPick({ dir: p.dir });
-          const mText = labelOfModel(mId);
-          const subText = mText ? `${p.dir} · ${mText}` : p.dir;
-          items.push(option({ dir: p.dir }, `d:${p.dir}`, p.name, subText, f, pick?.dir === p.dir && !pick?.sid));
-        }
+    const projHead = el('div', 'zc-task-h zc-task-h-toggle');
+    const headActs = el('div', 'zc-task-h-actions');
+    const addProjBtn = el('button', `gc-task-add-proj-btn${showAddProject ? ' is-on' : ''}`, tr('chat.task.addProjectBtn'));
+    addProjBtn.type = 'button';
+    addProjBtn.title = tr('chat.task.addProjectTitle');
+    addProjBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      showAddProject = !showAddProject;
+      if (showAddProject) {
+        showNewIn = true;
+        try { localStorage.setItem('zc_task_show_new_in', '1'); } catch { /* storage blocked */ }
+      }
+      drawList();
+    });
+    const toggleBtn = el('button', 'zc-task-toggle-btn', showNewIn ? `${tr('chat.task.hideNewIn')} ▲` : `${tr('chat.task.showNewIn')} (${projList.length}) ▼`);
+    toggleBtn.type = 'button';
+    toggleBtn.setAttribute('aria-expanded', String(showNewIn));
+    const toggleNewIn = (ev) => {
+      ev.stopPropagation();
+      showNewIn = !showNewIn;
+      try { localStorage.setItem('zc_task_show_new_in', showNewIn ? '1' : '0'); } catch { /* storage blocked */ }
+      drawList();
+    };
+    projHead.addEventListener('click', toggleNewIn);
+    headActs.append(addProjBtn, toggleBtn);
+    projHead.append(el('span', null, tr('chat.task.newIn')), headActs);
+    items.push(projHead);
+    if (showAddProject) {
+      items.push(buildAddProjectBox());
+    }
+    if (showNewIn) {
+      for (const p of projList) {
+        const f = el('span', 'zc-task-folder', '📁');
+        const mId = getModelForPick({ dir: p.dir });
+        const mText = labelOfModel(mId);
+        const subText = mText ? `${p.dir} · ${mText}` : p.dir;
+        items.push(option({ dir: p.dir }, `d:${p.dir}`, p.name, subText, f, pick?.dir === p.dir && !pick?.sid, null, p));
       }
     }
     list.replaceChildren(...items);
@@ -645,7 +1009,7 @@ export async function openTaskSheet(host, { to = null, text = '', images: initIm
     }
     toast(res?.message || tr('drawer.unreachable'), 6000); go.textContent = sendLabel; sync();
   });
-  sheet.append(list, modelRow, field, thumbs, tools, el('p', 'zc-task-note', tr('chat.task.note')), go);
+  sheet.append(list, modelRow, field, thumbs, tools, noteEl, go);
   if (r.running.length) sheet.append(el('p', 'zc-task-note', tr('chat.task.running', { n: r.running.length })));
   host.append(sheet);
   sync(); setTimeout(() => field.focus({ preventScroll: true }), 50);

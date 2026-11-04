@@ -6,13 +6,13 @@ import { TYPE_ICON, TYPE_TONE, icon } from './icons.js';
 import { hoverRing, selRing } from '../interact/rings.js';
 import { AGENT_NAME, agentMark, agentOf, awayHooks, colorOf, dn, dnOf, npcs, sessions, subs, workers } from '../people/workers.js';
 import { renderLite } from './lite.js';
-import { deleteSession, openSession, renameSession, renderActivity, renderSessionHead, renderSubs, tab, toggleSession } from './session-drawer.js';
+import { canSessionPerm, deleteSession, openSession, renameSession, renderActivity, renderSessionHead, renderSubs, stopSession, tab, toggleSession } from './session-drawer.js';
 import { macSnap } from './mac-drawer.js';
 import { queuePlace } from '../interact/place-cards.js';
 import { unseenDone } from '../life/your-turn.js';
 import { whereabouts } from '../people/outings.js';
 import { imageUrl, openImage } from './image-view.js';
-import { uiCfg } from './settings.js';
+import { syncToggles, uiCfg } from './settings.js';
 import { resize } from '../scene/renderer.js';
 import { t as tr, num } from '../../i18n/index.js';
 
@@ -223,10 +223,71 @@ export function queueUi() {
 // grouped (needs you → working → idle → at home), each row shows how long the current task has run,
 // the session's RAM (from the Mac snapshot, by pid) and a 30-minute activity sparkline.
 const railRows = new Map();
+const folderEls = new Map();
+const foldedFolders = new Set();
 let railOrder = '', railFilter = null, restCollapsed = false, homeCollapsed = false;
 const GROUPS = [['wait'], ['work'], ['rest'], ['home']];   // labels: activity.group.<key>
 let grpEls;
 const SVGNS = 'http://www.w3.org/2000/svg';
+
+function projInfoOf(s) {
+  const raw = String(s?.dir || s?.cwd || '').trim();
+  const norm = raw.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() || '__other__';
+  const parts = raw.replace(/\\/g, '/').split('/').filter(Boolean);
+  const name = parts[parts.length - 1] || raw || tr('activity.group.otherFolder');
+  const parent = parts.length > 1 ? parts.slice(-2, -1)[0] : '';
+  const shortPath = parent ? `${parent}/${name}` : (raw || name);
+  return { key: norm, name, path: raw || name, shortPath };
+}
+
+function saveFoldedFolders() {
+  try { localStorage.setItem('office-folded-folders', JSON.stringify([...foldedFolders])); } catch { /* storage blocked */ }
+}
+
+function folderGroupEl(info) {
+  const li = el('li', 'grp grp--folder');
+  li.dataset.folder = info.key;
+  const b = el('button', 'grp-btn grp-btn--folder');
+  b.type = 'button';
+  b.dataset.folder = info.key;
+  b.setAttribute('aria-expanded', 'true');
+  const ico = el('span', 'grp-folder-ico');
+  ico.append(icon('folder'));
+  const main = el('span', 'grp-folder-main');
+  const title = el('b', 'grp-folder-name', info.name);
+  const sub = el('small', 'grp-folder-path', info.path);
+  main.append(title, sub);
+  const badges = el('span', 'grp-folder-badges');
+  const n = el('b', 'grp-count', '0');
+  const ch = el('span', 'grp-chev');
+  ch.append(icon('chevron'));
+  b.append(ico, main, badges, n, ch);
+  li.append(b);
+  return { li, b, title, sub, badges, n };
+}
+
+export function syncRailToolbar() {
+  const byFolder = uiCfg.groupByFolder !== false;
+  const showPath = uiCfg.railShowPath !== false;
+  const showMetrics = uiCfg.railShowMetrics !== false;
+  const expandIdle = uiCfg.railExpandIdle !== false;
+  for (const btn of document.querySelectorAll('[data-rail-group]')) {
+    const on = (btn.dataset.railGroup === 'folder') === byFolder;
+    btn.setAttribute('aria-pressed', String(on));
+    btn.classList.toggle('is-on', on);
+  }
+  const cfgMap = { groupByFolder: byFolder, showPath, showMetrics, expandIdle };
+  for (const tgl of document.querySelectorAll('[data-rail-cfg]')) {
+    const k = tgl.dataset.railCfg;
+    if (k in cfgMap) tgl.setAttribute('aria-checked', String(Boolean(cfgMap[k])));
+  }
+  const rail = $('rail-list');
+  if (rail) {
+    rail.classList.toggle('rail--by-folder', byFolder);
+    rail.classList.toggle('rail--hide-path', !showPath);
+    rail.classList.toggle('rail--hide-metrics', !showMetrics);
+  }
+}
 function sparkEl() {
   const svg = document.createElementNS(SVGNS, 'svg'); svg.setAttribute('viewBox', '0 0 45 14'); svg.setAttribute('class', 'spark'); svg.setAttribute('aria-hidden', 'true');
   for (let i = 0; i < 15; i++) { const r = document.createElementNS(SVGNS, 'rect'); r.setAttribute('x', i * 3); r.setAttribute('width', 2); r.setAttribute('y', 13); r.setAttribute('height', 1); r.setAttribute('rx', 0.6); svg.append(r); }
@@ -242,11 +303,25 @@ function railRow(s) {
   const li = el('li', 'ri-li sess-item');
   const b = el('button', 'ri sess'); b.type = 'button'; b.dataset.sess = s.id;
   const av = el('span', 'av'), avTxt = el('span', 'av-txt'); av.append(avTxt, el('i', 'av-st')); avTxt.append(agentMark(agentOf(s))); av.title = AGENT_NAME[agentOf(s)];
-  const main = el('span', 'ri-main'), top = el('span', 'ri-top'), name = el('span', 'ri-name'), doing = el('span', 'ri-doing');
-  const dIco = el('span', 'ri-dico'), dTxt = el('span', 'ri-dtxt'); doing.append(dIco, dTxt);
-  top.append(name); main.append(top, doing);
+  const main = el('span', 'ri-main'), top = el('span', 'ri-top'), name = el('span', 'ri-name'), subline = el('span', 'ri-subline');
+  const doing = el('span', 'ri-doing');
+  const dIco = el('span', 'ri-dico'), dTxt = el('span', 'ri-dtxt'), subPill = el('span', 'ri-sub-pill');
+  subPill.hidden = true;
+  doing.append(dIco, dTxt, subPill);
+  top.append(name);
+  main.append(top, subline);
   const meta = el('span', 'ri-meta'), stBadge = el('span', 'ri-st-badge pill'), time = el('span', 'ri-time'), ram = el('span', 'ri-ram'), spark = sparkEl();
-  meta.append(stBadge, time, spark, ram);
+  const stop = el('button', 'ri-stop', '⏹');
+  stop.type = 'button';
+  stop.title = tr('drawer.stop.title');
+  stop.setAttribute('aria-label', tr('drawer.stop.title'));
+  stop.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    stop.disabled = true;
+    await stopSession(sessions.get(s.id) || s);
+    stop.disabled = false;
+  });
   const edit = el('button', 'ri-edit', '✏️');
   edit.type = 'button';
   edit.title = tr('drawer.rename.title');
@@ -310,14 +385,23 @@ function railRow(s) {
     del.disabled = true;
     await deleteSession(sessions.get(s.id) || s);
   });
+  const actions = el('span', 'ri-actions');
+  actions.append(stop, edit, del);
+  meta.append(stBadge, time, actions);
+  const foot = el('span', 'ri-foot');
+  const countsEl = el('span', 'ri-counts');
+  const telem = el('span', 'ri-telem');
+  const ctxPct = el('span', 'ri-ctx-pct');
+  telem.append(ctxPct, ram, spark);
+  foot.append(countsEl, telem);
   const ctx = el('span', 'ri-ctx'), ctxB = el('b'); ctx.append(ctxB);
-  b.append(av, main, meta, edit, del, ctx);
+  b.append(av, main, meta, doing, foot, ctx);
   const subList = el('ul', 'ri-subs sub-list'); subList.hidden = true;
   li.append(b, subList);
   const c = el('button', 'chip'); c.type = 'button'; c.dataset.sess = s.id;
   const cd = el('i'), cn = el('span'), cs = el('small');
   c.append(cd, cn, cs);
-  return { li, b, av, avTxt, top, name, stBadge, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, edit, del, subList, subSig: '', c, cd, cn, cs };
+  return { li, b, av, avTxt, top, subline, name, stBadge, doing, subPill, foot, countsEl, ctxPct, ctx, ctxB, nameKey: '', dIco, dIcoName: '', dTxt, time, ram, spark, stop, edit, del, subList, subSig: '', c, cd, cn, cs };
 }
 function subRow(s, x) {
   const li = el('li');
@@ -327,15 +411,29 @@ function subRow(s, x) {
   return li;
 }
 export function renderRail() {
+  syncRailToolbar();
+  const byFolder = uiCfg.groupByFolder !== false;
+  const expandIdle = uiCfg.railExpandIdle !== false;
   const all = [...sessions.values()].sort(order);
   const q = query.trim().toLowerCase();
   const rail = $('rail-list'), chips = $('chips');
   const ram = new Map((macSnap?.claude || []).map((c) => [c.pid, c.mem]));
   const count = { wait: 0, work: 0, rest: 0, home: 0 };
+  const folderMap = new Map();
   for (const [id, r] of railRows) if (!sessions.has(id)) { r.li.remove(); r.c.remove(); railRows.delete(id); }
   for (const s of all) {
     const stKey = uiStatusOf(s);
     count[stKey] = (count[stKey] || 0) + 1;
+    const pInfo = projInfoOf(s);
+    let fBucket = folderMap.get(pInfo.key);
+    if (!fBucket) {
+      fBucket = { info: pInfo, items: [], wait: 0, work: 0, rest: 0, home: 0, visibleCount: 0, lastAt: 0 };
+      folderMap.set(pInfo.key, fBucket);
+    }
+    fBucket.items.push(s);
+    fBucket[stKey] = (fBucket[stKey] || 0) + 1;
+    fBucket.lastAt = Math.max(fBucket.lastAt, s.lastAt || 0, s.taskStart || 0);
+
     let r = railRows.get(s.id);
     if (!r) { r = railRow(s); railRows.set(s.id, r); }
     const color = colorOf(s), cur = String(s.id === state.selectedId);
@@ -350,35 +448,113 @@ export function renderRail() {
     { const k = agentOf(s); if (r.avTxt.firstChild?.dataset?.agent !== k) { r.avTxt.replaceChildren(agentMark(k)); r.av.title = AGENT_NAME[k]; } }
     const nk = dn(s) + '|' + (s.dir || '') + '|' + (s.origin || '') + (s.link ? '|rc' : '');
     if (r.nameKey !== nk) {
-      r.nameKey = nk; r.name.textContent = dn(s); r.top.querySelector('.ri-rc')?.remove(); r.top.querySelector('.ri-proj')?.remove();
-      const proj = String(s.dir || '').split('/').filter(Boolean).pop();
-      if (proj && proj !== dn(s)) { const pj = el('span', 'ri-proj', proj); pj.title = s.origin ? tr('activity.runsIn', { dir: s.dir, origin: s.origin }) : `${s.dir}`; r.name.after(pj); }
+      r.nameKey = nk;
+      r.name.textContent = dn(s);
+      r.top.querySelector('.ri-rc')?.remove();
+      r.subline.replaceChildren();
+      const pj = el('span', 'ri-proj', `📁 ${pInfo.name}`);
+      pj.title = s.origin ? tr('activity.runsIn', { dir: pInfo.path, origin: s.origin }) : pInfo.path;
+      r.subline.append(pj);
+      if (s.origin) {
+        const orig = el('span', 'ri-origin', s.origin);
+        r.subline.append(orig);
+      }
       if (s.link) { const rc = el('span', 'ri-rc'); rc.title = tr('activity.remoteOn'); rc.append(icon('phone')); r.top.append(rc); }
     }
-    r.b.title = `${dn(s)}${s.title ? ` (${s.name})` : ''} · ${s.dir || ''}`;
+    r.b.title = `${dn(s)}${s.title ? ` (${s.name})` : ''} · ${pInfo.path}`;
     const d = doingOf(s);
     if (r.dIcoName !== d.ic) { r.dIcoName = d.ic; r.dIco.replaceChildren(icon(d.ic)); }
     if (r.dTxt.textContent !== d.text) r.dTxt.textContent = d.text;
     r.time.textContent = metaTime(s);
     const mem = ram.get(s.pid); r.ram.textContent = mem ? fmtBytes(mem) : ''; r.ram.title = mem ? tr('activity.ramTitle') : '';
     setSpark(r.spark, sparkOf(s.id));
-    const u = s.usage, f = u ? Math.min(1, u.ctx / u.ctxMax) : 0;
-    r.ctx.hidden = !u; r.ctxB.style.width = `${Math.round(f * 100)}%`; r.ctxB.className = f > 0.85 ? 'hi' : f > 0.6 ? 'mid' : '';
+    const u = s.usage, f = u && u.ctxMax ? Math.min(1, u.ctx / u.ctxMax) : 0;
+    const pctNum = u && u.ctxMax ? Math.round(f * 100) : 0;
+    r.ctx.hidden = !u; r.ctxB.style.width = `${pctNum}%`; r.ctxB.className = f > 0.85 ? 'hi' : f > 0.6 ? 'mid' : '';
     r.ctx.title = u ? tr('activity.ctxTitle', { used: fmtTok(u.ctx), max: fmtTok(u.ctxMax), cost: fmtUsd(u.cost) }) : '';
+    if (r.ctxPct) {
+      r.ctxPct.hidden = !u;
+      r.ctxPct.textContent = u ? `CTX ${pctNum}%` : '';
+      r.ctxPct.className = 'ri-ctx-pct' + (f > 0.85 ? ' hi' : f > 0.6 ? ' mid' : '');
+    }
+    if (r.countsEl) {
+      const rd = s.counts?.read || 0, ed = s.counts?.edit || 0, cm = s.counts?.cmd || 0;
+      const parts = [];
+      if (rd) parts.push(`📄 ${rd}`);
+      if (ed) parts.push(`✏️ ${ed}`);
+      if (cm) parts.push(`⚡ ${cm}`);
+      r.countsEl.textContent = parts.join(' · ');
+    }
+    const isBusy = s.status === 'work' || s.status === 'wait' || Boolean(s.busy) || (Array.isArray(s.subs) && s.subs.length > 0);
+    if (r.stop) r.stop.hidden = !(canSessionPerm('stop', s) && isBusy);
+    if (r.edit) r.edit.hidden = !canSessionPerm('edit', s);
+    if (r.del) r.del.hidden = !canSessionPerm('delete', s);
     const subsNow = s.subs || [];
+    if (r.subPill) {
+      r.subPill.hidden = !subsNow.length;
+      if (subsNow.length) r.subPill.textContent = `🤖 ${subsNow.length}`;
+    }
     const sig = subsNow.map((x) => `${x.id}:${x.last?.label || ''}:${x.desc}`).join('|');
     if (sig !== r.subSig) { r.subSig = sig; r.subList.replaceChildren(...subsNow.map((x) => subRow(s, x))); }
     r.subList.hidden = !subsNow.length;
-    const match = !q || s.name.toLowerCase().includes(q) || String(s.title || '').toLowerCase().includes(q) || String(s.dir || '').toLowerCase().includes(q);
-    const folded = ((stKey === 'rest' && restCollapsed && railFilter !== 'rest') || (stKey === 'home' && homeCollapsed && railFilter !== 'home')) && !q;
-    r.li.hidden = !match || (railFilter && stKey !== railFilter) || folded;
+    const match = !q || s.name.toLowerCase().includes(q) || String(s.title || '').toLowerCase().includes(q) || String(s.dir || '').toLowerCase().includes(q) || pInfo.name.toLowerCase().includes(q);
+    const statusOk = !railFilter || stKey === railFilter;
+    let folded = false;
+    if (!q) {
+      if (byFolder) {
+        folded = foldedFolders.has(pInfo.key);
+      } else if (!expandIdle) {
+        folded = (stKey === 'rest' && restCollapsed && railFilter !== 'rest') || (stKey === 'home' && homeCollapsed && railFilter !== 'home');
+      }
+    }
+    if (match && statusOk) fBucket.visibleCount++;
+    r.li.hidden = !match || !statusOk || folded;
     r.c.dataset.status = stKey; r.c.setAttribute('aria-current', cur); r.cd.style.background = color;
     if (r.cn.textContent !== dn(s)) r.cn.textContent = dn(s);
     r.cs.textContent = STATUS_LABEL[stKey];
   }
-  for (const [k] of GROUPS) { const g = grpEls[k]; g.n.textContent = count[k] || 0; g.li.hidden = !count[k] || (railFilter && railFilter !== k); }
-  grpEls.rest.b.setAttribute('aria-expanded', String(!restCollapsed || !!q || railFilter === 'rest'));
-  if (grpEls.home) grpEls.home.b.setAttribute('aria-expanded', String(!homeCollapsed || !!q || railFilter === 'home'));
+  const sortedFolders = [...folderMap.values()].sort((a, b) => {
+    if ((b.wait > 0) !== (a.wait > 0)) return b.wait - a.wait;
+    if ((b.work > 0) !== (a.work > 0)) return b.work - a.work;
+    if (b.lastAt !== a.lastAt) return b.lastAt - a.lastAt;
+    return a.info.name.localeCompare(b.info.name);
+  });
+  for (const [k, fg] of folderEls) {
+    if (!folderMap.has(k)) { fg.li.remove(); folderEls.delete(k); }
+  }
+  for (const fb of sortedFolders) {
+    let fg = folderEls.get(fb.info.key);
+    if (!fg) { fg = folderGroupEl(fb.info); folderEls.set(fb.info.key, fg); }
+    fg.title.textContent = fb.info.name;
+    fg.sub.textContent = fb.info.shortPath;
+    fg.b.title = fb.info.path;
+    fg.n.textContent = String(fb.visibleCount || fb.items.length);
+    const bSig = `${fb.wait}:${fb.work}`;
+    if (fg.b.dataset.bsig !== bSig) {
+      fg.b.dataset.bsig = bSig;
+      fg.badges.replaceChildren();
+      if (fb.wait > 0) {
+        const p = el('span', 'grp-pill grp-pill--wait', `${fb.wait}`);
+        p.prepend(el('i'));
+        fg.badges.append(p);
+      }
+      if (fb.work > 0) {
+        const p = el('span', 'grp-pill grp-pill--work', `${fb.work}`);
+        p.prepend(el('i'));
+        fg.badges.append(p);
+      }
+    }
+    const isOpen = !foldedFolders.has(fb.info.key) || !!q;
+    fg.b.setAttribute('aria-expanded', String(isOpen));
+    fg.li.hidden = !byFolder || fb.visibleCount === 0;
+  }
+  for (const [k] of GROUPS) {
+    const g = grpEls[k];
+    g.n.textContent = count[k] || 0;
+    g.li.hidden = byFolder || !count[k] || (railFilter && railFilter !== k);
+  }
+  grpEls.rest.b.setAttribute('aria-expanded', String(expandIdle || !restCollapsed || !!q || railFilter === 'rest'));
+  if (grpEls.home) grpEls.home.b.setAttribute('aria-expanded', String(expandIdle || !homeCollapsed || !!q || railFilter === 'home'));
   for (const k of ['work', 'wait', 'rest', 'home']) { const elSt = $('st-' + k); if (elSt) elSt.textContent = count[k] || 0; }
   const fabCount = $('rail-fab-count'), fabBtn = $('rail-expand-fab');
   if (fabCount) fabCount.textContent = String((count.work || 0) + (count.wait || 0) + (count.rest || 0) || all.length);
@@ -387,24 +563,47 @@ export function renderRail() {
     fabBtn.dataset.wait = String(count.wait || 0);
   }
   document.querySelector('.st[data-st="wait"]').classList.toggle('has', !!count.wait);
-  const ord = all.map((s) => s.id + uiStatusOf(s)).join();
+  const ord = `${byFolder ? 'F' : 'S'}|${sortedFolders.map((fb) => `${fb.info.key}:${fb.items.map((s) => s.id + uiStatusOf(s)).join(',')}`).join(';')}`;
   if (ord !== railOrder) {
     railOrder = ord;
-    for (const [k] of GROUPS) { rail.append(grpEls[k].li); for (const s of all) if (uiStatusOf(s) === k) rail.append(railRows.get(s.id).li); }
+    if (byFolder) {
+      for (const [k] of GROUPS) grpEls[k].li.remove();
+      for (const fb of sortedFolders) {
+        const fg = folderEls.get(fb.info.key);
+        if (fg) rail.append(fg.li);
+        for (const s of fb.items) rail.append(railRows.get(s.id).li);
+      }
+    } else {
+      for (const fg of folderEls.values()) fg.li.remove();
+      for (const [k] of GROUPS) {
+        rail.append(grpEls[k].li);
+        for (const s of all) if (uiStatusOf(s) === k) rail.append(railRows.get(s.id).li);
+      }
+    }
     for (const s of all) chips.append(railRows.get(s.id).c);
   }
   $('empty').hidden = all.length > 0 || !state.connectedOnce;
   for (const w of workers.values()) w.tagEl.classList.toggle('tag--on', w.id === state.selectedId);
 }
 function onListClick(ev) {
-  if (ev.target.closest('.ri-del') || ev.target.closest('.ri-edit') || ev.target.closest('.ri-rename-form')) return;
+  if (ev.target.closest('.ri-stop') || ev.target.closest('.ri-del') || ev.target.closest('.ri-edit') || ev.target.closest('.ri-rename-form')) return;
   const g = ev.target.closest('.grp-btn');
   if (g) {
+    if (g.dataset.folder) {
+      const fk = g.dataset.folder;
+      if (foldedFolders.has(fk)) foldedFolders.delete(fk);
+      else foldedFolders.add(fk);
+      saveFoldedFolders();
+      renderRail();
+      return;
+    }
     if (g.dataset.g === 'rest') {
+      uiCfg.railExpandIdle = false;
       restCollapsed = !restCollapsed;
       try { localStorage.setItem('office-rest-folded', restCollapsed ? '1' : '0'); } catch { /* storage blocked */ }
       renderRail();
     } else if (g.dataset.g === 'home') {
+      uiCfg.railExpandIdle = false;
       homeCollapsed = !homeCollapsed;
       try { localStorage.setItem('office-home-folded', homeCollapsed ? '1' : '0'); } catch { /* storage blocked */ }
       renderRail();
@@ -452,7 +651,12 @@ export function renderHud() {
   const list = [...sessions.values()];
   const waiting = list.filter((s) => s.status === 'wait').length;
   const subCount = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
-  const actText = list.length ? tr('activity.sessions', { n: list.length }) + (subCount ? ` · ${tr('activity.subsRunning', { n: subCount })}` : '') : tr('activity.noSessions');
+  const folderCount = new Set(list.map((s) => projInfoOf(s).key)).size;
+  const actText = list.length
+    ? tr('activity.sessions', { n: list.length })
+      + (folderCount ? ` · ${tr('activity.projectsCount', { n: folderCount })}` : '')
+      + (subCount ? ` · ${tr('activity.subsRunning', { n: subCount })}` : '')
+    : tr('activity.noSessions');
   const actEl = $('active-count');
   if (actEl && actEl.textContent !== actText) actEl.textContent = actText;
   renderKpi();
@@ -542,6 +746,84 @@ export function setup() {
   $('flt-att').addEventListener('click', () => setFilter('att'));
   try { restCollapsed = localStorage.getItem('office-rest-folded') === '1'; } catch { /* storage blocked */ }
   try { homeCollapsed = localStorage.getItem('office-home-folded') === '1'; } catch { /* storage blocked */ }
+  try {
+    const rawFolded = JSON.parse(localStorage.getItem('office-folded-folders') || '[]');
+    if (Array.isArray(rawFolded)) for (const k of rawFolded) if (k) foldedFolders.add(String(k));
+  } catch { /* storage blocked */ }
+  for (const btn of document.querySelectorAll('[data-rail-group]')) {
+    btn.addEventListener('click', () => {
+      uiCfg.groupByFolder = btn.dataset.railGroup === 'folder';
+      railOrder = '';
+      syncToggles();
+      renderRail();
+    });
+  }
+  $('rail-fold-all')?.addEventListener('click', () => {
+    if (uiCfg.groupByFolder !== false) {
+      const allKeys = [...folderEls.keys()];
+      if (foldedFolders.size > 0) {
+        foldedFolders.clear();
+      } else {
+        for (const k of allKeys) foldedFolders.add(k);
+      }
+      saveFoldedFolders();
+    } else {
+      const anyFolded = (!uiCfg.railExpandIdle) && (restCollapsed || homeCollapsed);
+      if (anyFolded) {
+        uiCfg.railExpandIdle = true;
+        restCollapsed = false;
+        homeCollapsed = false;
+      } else {
+        uiCfg.railExpandIdle = false;
+        restCollapsed = true;
+        homeCollapsed = true;
+      }
+      try {
+        localStorage.setItem('office-rest-folded', restCollapsed ? '1' : '0');
+        localStorage.setItem('office-home-folded', homeCollapsed ? '1' : '0');
+      } catch { /* storage blocked */ }
+    }
+    renderRail();
+  });
+  const cfgBtn = $('rail-cfg-btn'), cfgPop = $('rail-cfg-pop');
+  if (cfgBtn && cfgPop) {
+    const toggleCfgPop = (open = cfgPop.hidden) => {
+      cfgPop.hidden = !open;
+      cfgBtn.setAttribute('aria-expanded', String(open));
+      cfgBtn.classList.toggle('is-on', open);
+    };
+    cfgBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCfgPop();
+    });
+    cfgPop.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tgl = e.target.closest('[data-rail-cfg]');
+      if (!tgl) return;
+      const k = tgl.dataset.railCfg;
+      const next = tgl.getAttribute('aria-checked') !== 'true';
+      if (k === 'groupByFolder') {
+        uiCfg.groupByFolder = next;
+        railOrder = '';
+        syncToggles();
+      } else if (k === 'showPath') {
+        uiCfg.railShowPath = next;
+      } else if (k === 'showMetrics') {
+        uiCfg.railShowMetrics = next;
+      } else if (k === 'expandIdle') {
+        uiCfg.railExpandIdle = next;
+        if (next) {
+          restCollapsed = false;
+          homeCollapsed = false;
+        }
+      }
+      renderRail();
+    });
+    document.addEventListener('click', (e) => {
+      if (!cfgPop.hidden && !e.target.closest('#rail-cfg-pop, #rail-cfg-btn')) toggleCfgPop(false);
+    });
+  }
+  syncRailToolbar();
   const appEl = $('app');
   const setRailCollapsed = (collapsed) => {
     if (!appEl) return;

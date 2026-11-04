@@ -6,7 +6,7 @@ import { sessions, subs, workers } from '../people/workers.js';
 import { chatAct, chatApply, chatLeft, chatLoad } from '../ui/group-chat.js';
 import { setTrophies } from '../life/trophies.js';
 import { addFeed, queueFeed, queueUi, renderFeed, toast } from '../ui/activity.js';
-import { closeSession, drM } from '../ui/session-drawer.js';
+import { closeSession, drM, refreshIfSelected } from '../ui/session-drawer.js';
 import { acctLogin, acctMoved, acctSwitched, limitWarned, liveWindows, loadMac, renderLimits, renderMac } from '../ui/mac-drawer.js';
 import { DEMO_TODOS, onTodos } from '../ui/whiteboard.js';
 import { TOKEN, freeDesk, removeSession, setConn, upsertSession } from '../net/live.js';
@@ -206,7 +206,6 @@ export function applyMsg(d, quiet = false) {
     return;
   }
   if (d.k === 'lang') return;
-  quiet = quiet || document.hidden;
   if (d.k === 'snap') {
     if (typeof d.seq === 'number') liveSince = d.seq;
     const ids = new Set(d.sessions.map((s) => s.id));
@@ -253,9 +252,9 @@ export function applyMsg(d, quiet = false) {
     if ('fixed' in d) state.lanFixed = !!d.fixed;
     for (const c of [...$('perm-stack').children]) c.remove(); renderPerms(); reportPresence(); if (!$('phone-modal').hidden) renderPhone();
   }   // (approving and giving work from a phone, switched on the Mac)
-  else if (d.k === 'access') { state.access = d.access || null; state.requireTaskApproval = !!d.access?.requireTaskApproval; if (d.teamMembers) { state.teamMembers = d.teamMembers; syncTeamMembers(d.teamMembers); } if (d.participants) state.participants = d.participants; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
+  else if (d.k === 'access') { state.access = d.access || null; state.requireTaskApproval = !!d.access?.requireTaskApproval; if (d.teamMembers) { state.teamMembers = d.teamMembers; syncTeamMembers(d.teamMembers); } if (d.participants) state.participants = d.participants; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); refreshIfSelected(); queueUi(); }
   else if (d.k === 'teamOnline') { state.teamMembers = d.teamMembers || []; state.participants = d.participants || []; syncTeamMembers(state.teamMembers); renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
-  else if (d.k === 'viewer') { state.viewer = d.viewer || null; state.requireTaskApproval = !!d.requireTaskApproval; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); }
+  else if (d.k === 'viewer') { state.viewer = d.viewer || null; state.requireTaskApproval = !!d.requireTaskApproval; renderViewerBadge(); if (!$('phone-modal').hidden) renderPhone(); refreshIfSelected(); queueUi(); }
   else if (d.k === 'taskDeliver') { if (!quiet && (d.sess || d.dir)) deliverTaskBy(d.by, d.sess, d.text, d.dir); }
   else if (d.k === 'acctlogin') acctLogin(d);   // (adding an account: a step of its sign-in)
   else if (d.k === 'acctswitch') acctSwitched(d);   // (new sessions moved to another account)

@@ -189,7 +189,12 @@ export function renderPlace(first = false) {
   const c = placeContent(id); if (!c) { closePlace(); return; }
   const ic = $('plc-ico'); ic.replaceChildren(icon(c.icon));
   $('plc-title').textContent = c.title; $('plc-sub').textContent = c.sub || '';
-  if (id === 'board' && !first && plc.querySelector('.todo-add')) { $('plc-body').querySelector('[data-part="agents"]')?.replaceWith(c.body.querySelector('[data-part="agents"]')); $('plc-body').querySelector('[data-part="mine"]')?.replaceWith(c.body.querySelector('[data-part="mine"]')); }
+  if (id === 'board' && !first && plc.querySelector('.todo-add')) {
+    for (const part of ['tabs', 'mine', 'agents', 'shared']) {
+      const nextPart = c.body.querySelector(`[data-part="${part}"]`);
+      if (nextPart) $('plc-body').querySelector(`[data-part="${part}"]`)?.replaceWith(nextPart);
+    }
+  }
   else $('plc-body').replaceChildren(c.body);
   const f = $('plc-foot'); f.hidden = !c.foot; if (c.foot) f.replaceChildren(c.foot);
   if (first) { placePlc(); $('plc-close').focus({ preventScroll: true }); }

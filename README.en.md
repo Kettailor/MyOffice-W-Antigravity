@@ -39,14 +39,15 @@ This project is built upon and extends the open-source project **[My Office (`kh
    - When a Main Agent invokes subagents (`invoke_subagent`), the elevator immediately brings Chibi subagent characters into the office to brief with the Main Agent and connect via `team-lines.js`, with `deferMainAction` queuing to ensure the Main Agent never gets stuck when tasks finish rapidly.
    - **Adaptive Movement Speed (`calcPace`)**: Chibis in an active working session (`work` / `fire` / briefing) walk at an elevated pace to keep up with real-time tool interactions, returning to a calm normal walk when idle (`rest`).
 
-3. **Focus-to-Approve Modal, Multi-Model Task Dispatch & 2-Channel Group Chat**
+3. **Focus-to-Approve Modal, Project Folder Manager, 4-Tab Todo Board & 2-Channel Group Chat**
    - Automatically brings up a centered decision modal when an agent calls `ask_question` or requests feedback on `implementation_plan.md`.
-   - Built-in `📋 Give Work` (`Giao việc`) dialog with per-session/folder **AI Model selector** (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), inline session rename/delete/pin, collapsible **New conversation** list, and auto-saved drafts with up to **20 pasted images** (`IndexedDB`).
+   - Built-in `📋 Give Work` (`Giao việc`) dialog with per-session/folder **AI Model selector** (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), add project/create new folder directly in **New conversation**, remove project from workspace list without deleting disk files, inline session stop/rename/delete/pin, folder-grouped Session Rail view, and auto-saved drafts with up to **20 pasted images** (`IndexedDB`).
+   - **4-Tab Todo Board (`📋 Todos`)**: Switch between **All**, **My Tasks** (device-local), **Agent Tasks** (synced from `task.md`), and **Shared Tasks** (real-time server-synced across all connected devices).
    - Dual-channel Group Chat separating **💼 Work Group** and **💬 Watercooler Chat** with 7-day rolling retention.
 
-4. **Role-Based Remote Access Control (`server/access.mjs`) & SHA-256/HMAC Security**
+4. **Role-Based Remote Access Control (`server/access.mjs`), Session Control Permissions & SHA-256/HMAC Security**
    - **Deputy Director (`Phó Giám đốc`)**: Sign in from a secondary device/phone using the 6-digit PIN (hashed with SHA-256 + salt and signed via HMAC-SHA256) to get full visibility across all workspaces and the Co-Directors Office.
-   - **Assistant Director (`Trợ lý Giám đốc`)**: Register by name, wait for Director approval, and access only permitted workspaces with pre-execution task approval.
+   - **Assistant Director (`Trợ lý Giám đốc`) & Session Controls (`sessionControl`)**: Register by name, wait for Director approval, and access permitted workspaces with configurable permissions to stop, rename, or delete sessions controllable from both Desktop and Mobile UI.
 
 5. **Docker + Rust Native Engine + On-Demand Host Bridge & Dynamic 5h/7d Quota**
    - **Rust Native Engine (`rust-native/`)**: Accelerates Brain scanning, JSONL tailing, system telemetry (`sysinfo`), and SHA-256/HMAC security redaction.

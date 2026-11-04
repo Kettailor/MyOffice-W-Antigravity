@@ -1,7 +1,7 @@
 // The cozy plan's door and the company floor's lift.
 import * as THREE from 'three';
 import { state } from '../core/state.js';
-import { PRO, rand, randInt } from '../core/env.js';
+import { PRO, nowMs, rand, randInt } from '../core/env.js';
 import { scene } from '../scene/renderer.js';
 import { canvasTex, mat, put, rbox } from '../scene/blocks.js';
 import { LAY } from './layout.js';
@@ -22,7 +22,9 @@ export function liftArrive(w) {
   if (!lift) return;
   w.pos.set(LIFT_X, DZ + rand(-0.3, 0.3)); w.face = w.faceTarget = Math.PI / 2; w.spot = DOOR_OUT;
   w.liftHold = true;
-  if (lift.open < 0.05 && lift.at === LIFT_HOME && lift.goal === LIFT_HOME) {
+  w.liftHoldAt = nowMs();
+  lift.goal = LIFT_HOME;
+  if (lift.open < 0.05 && lift.at === LIFT_HOME) {
     lift.at = w?.sub ? LIFT_HOME - 1 : LIFT_HOME - randInt(2, 4);
   }
 }
@@ -44,7 +46,8 @@ export function updateLift(dt) {
     if (!w.liftHold && w.phase === 'walk' && w.pos.x < -5.9 && Math.abs(w.pos.y - DZ) < 0.95) through = true;
   }
   const need = holding || waiting || through || state.sim < lift.callUntil;
-  if (need && lift.goal !== LIFT_HOME && lift.open < 0.02) lift.goal = LIFT_HOME;
+  if (holding) lift.goal = LIFT_HOME;
+  else if (need && lift.goal !== LIFT_HOME && lift.open < 0.02) lift.goal = LIFT_HOME;
   if (lift.at !== lift.goal && state.sim > lift.stepAt) {
     lift.at += Math.sign(lift.goal - lift.at); lift.stepAt = state.sim + 0.18;
     if (lift.at === LIFT_HOME) { sfx.play('ding'); lift.holdUntil = state.sim + 1.6; }
@@ -53,9 +56,10 @@ export function updateLift(dt) {
   if (through) lift.holdUntil = Math.max(lift.holdUntil, state.sim + 1.1);
   const want = here && (holding || waiting || state.sim < lift.holdUntil || state.sim < lift.callUntil);
   lift.open = THREE.MathUtils.clamp(lift.open + (want ? dt * 2.5 : -dt * 1.5), 0, 1);
-  if (lift.open > 0.8) for (const set of [workers.values(), subs.values(), leaving, npcs]) for (const w of set) {
-    if (w.liftHold) w.liftHold = false;
-    if (w.liftWait) { const f = w.liftWait; w.liftWait = null; f(); }
+  const now = nowMs();
+  for (const set of [workers.values(), subs.values(), leaving, npcs]) for (const w of set) {
+    if (w.liftHold && (lift.open > 0.78 || now - (w.liftHoldAt || 0) > 1600)) w.liftHold = false;
+    if (w.liftWait && lift.open > 0.78) { const f = w.liftWait; w.liftWait = null; f(); }
   }
   if (!want && lift.open === 0 && riding.length) {   // doors shut with people inside: down it goes
     for (const w of riding) { const f = w.liftRide; w.liftRide = null; f(); }

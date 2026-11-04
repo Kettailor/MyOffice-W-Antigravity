@@ -75,6 +75,7 @@ export function onEvent(e) {
     return;
   }
   if (e.type === 'start' || e.type === 'end') return;
+  if (w.away && w.lateRest(s) && e.type !== 'prompt' && s.status === 'rest' && !s.bg?.length) return;
   let a = { ...(ACT[e.type] || ACT.other), type: ACT[e.type] ? e.type : 'other', text: s.masked ? (e.type === 'stop' ? 'Đã xong việc!' : 'Đang làm việc...') : bubbleText(e), e };
   if (e.type === 'fail') {   // a second failure within two minutes: frustration, a fist on the desk
     w.fails = (w.fails || []).filter((t) => state.sim - t < 120); w.fails.push(state.sim);
@@ -90,7 +91,9 @@ export function onEvent(e) {
     const assigner = getAssigner(e?.ownerId || s?.taskOwnerId);
     const customSpot = reportSpotForAssigner(assigner, w);
     const fallbackSpot = !customSpot && STATIONS.director.every((x) => x.by && x.by !== w) ? STATIONS.director[0] : null;
-    const rest = a, done = s.lastPrompt || e.label || '';
+    const prevRestAfter = a.after;
+    const rest = { ...a, after: () => { prevRestAfter?.(); if (s?.status !== 'wait') { w.hush(); w.lastSay = null; } } };
+    const done = s.lastPrompt || e.label || '';
     a = {
       station: 'director',
       spot: customSpot || fallbackSpot || undefined,
