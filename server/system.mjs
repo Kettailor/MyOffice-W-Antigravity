@@ -526,7 +526,7 @@ async function buildSnapshot(open = true) {
       version: '1.3.0',
     },
     security: {
-      summary: 'Wi-Fi Ket & Tailscale · SHA-256 PIN · HMAC Bridge',
+      summary: 'Wi-Fi & Tailscale · SHA-256 PIN · HMAC Bridge',
       hmacBridge: true,
       sha256Pin: true,
       lanBlocked: true,

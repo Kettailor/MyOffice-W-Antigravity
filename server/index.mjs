@@ -2059,7 +2059,7 @@ function sameOriginOf(req) {
   const o = req.headers.origin;
   return !o || o === `http://${req.headers.host}` || (req.viaTunnel && !!tunnel.url && o === tunnel.url);
 }
-// Only allow external connections via home Wi-Fi SSID "Ket" (configurable via OFFICE_WIFI_SSID) and Tailscale (100.64.0.0/10), never wired Ethernet LAN.
+// Only allow external connections via trusted Wi-Fi SSID (configurable via OFFICE_WIFI_SSID) and Tailscale (100.64.0.0/10), never wired Ethernet LAN.
 const ALLOWED_WIFI_SSID = (process.env.OFFICE_WIFI_SSID || 'Ket').trim().toLowerCase();
 const ALLOWED_WIFI_MAC = (process.env.OFFICE_WIFI_MAC || '').trim().toLowerCase();
 let wifiCache = { at: 0, onKet: false, macs: new Set(ALLOWED_WIFI_MAC ? [ALLOWED_WIFI_MAC] : []), names: new Set(['wi-fi', 'wlan']) };

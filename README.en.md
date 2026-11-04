@@ -1,13 +1,12 @@
-# 🏢 MyOffice-W-Antigravity — 3D Multi-Agent Office for Google Antigravity & Claude Code
+# 🏢 MyOffice-W-Antigravity — 3D Multi-Agent Office & Web IDE for Google Antigravity & Claude Code
 
-[![CI](https://github.com/Kettailor/MyOffice-W-Antigravity/actions/workflows/ci.yml/badge.svg)](https://github.com/Kettailor/MyOffice-W-Antigravity/actions/workflows/ci.yml)
-[![Online Demo](https://github.com/Kettailor/MyOffice-W-Antigravity/actions/workflows/pages.yml/badge.svg)](https://kettailor.github.io/MyOffice-W-Antigravity/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.9-339933?logo=node.js&logoColor=white)](package.json)
+[![Version](https://img.shields.io/badge/Version-1.6.0-10b981)](package.json)
 
-[Tiếng Việt](README.md) · **English** · [Architecture](docs/ARCHITECTURE.md) · [Multi-Agent Rules](AGENTS.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Tiếng Việt](README.md) · **English** · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
-**MyOffice-W-Antigravity** is a real-time interactive 3D office (Three.js + Next.js + Node.js SSE Server) where your **Google Antigravity** (and **Claude Code**) sessions come to work as 3D Chibi characters at their own desks: walking to the library to read files, typing code at their desks, visiting the server room to run terminal commands, spawning **Subagent** teammates connected by visual team lines, surfacing `implementation_plan.md` / `ask_question` prompts in a centered **Focus-to-Approve** modal, and celebrating completed tasks.
+**MyOffice-W-Antigravity** is a real-time interactive 3D office and integrated **Antigravity Web IDE** (Three.js + Next.js + Node.js SSE Server + Rust Native Engine) where your **Google Antigravity** and **Claude Code** sessions come to work as 3D Chibi characters at their own desks: walking to the library to read files, typing code at their desks, visiting the server room to run terminal commands, spawning **Subagent** teammates connected by visual team lines, surfacing `implementation_plan.md` / `ask_question` prompts in a centered **Focus-to-Approve** modal, and celebrating completed tasks.
 
 ![MyOffice-W-Antigravity Demo](docs/media/demo.gif)
 
@@ -19,7 +18,7 @@ This project is built upon and extends the open-source project **[My Office (`kh
 
 - **Original Author**: **[@khanh020905](https://github.com/khanh020905)**
 - **Original Repository**: **[https://github.com/khanh020905/my-office](https://github.com/khanh020905/my-office)** (*"Văn phòng 3D cho các phiên Claude Code · A 3D office for your Claude Code sessions"*)
-- **Google Antigravity Adaptation & Multi-Agent Architecture (`MyOffice-W-Antigravity`)**: **[@Kettailor](https://github.com/Kettailor)** — added the real-time `Antigravity Brain Watcher` (`server/antigravity.mjs`), the **Rust Native Engine** (`rust-native/`) & **Docker On-Demand Host Bridge** (`server/host-bridge.mjs`), parallel **Main Agent + 4 Subagents** orchestration (`AGENTS.md`), **Focus-to-Approve** modal for `ask_question` and `implementation_plan.md` feedback, **Task Dispatch (`📋 Give Work` with per-session AI Model selector, 20-photo drafts, inline session rename/pin) & 2-Channel Group Chat (`💼 Work` vs `💬 Watercooler`)**, dynamic **5h/7d Quota estimation** with per-project & multi-account breakdown, Windows NVIDIA GPU monitoring, and **SHA-256/HMAC** role-based remote access control (**Deputy Director 6-digit PIN** vs. **Assistant Director** workspace-scoped access in `server/access.mjs`).
+- **Google Antigravity Adaptation & Multi-Agent Architecture (`MyOffice-W-Antigravity`)**: **[@Kettailor](https://github.com/Kettailor)** — added the real-time `Antigravity Brain Watcher` (`server/antigravity.mjs`), the built-in **Antigravity Web IDE** (`/antigravity`), the **Rust Native Engine** (`rust-native/`) & **Docker On-Demand Host Bridge** (`server/host-bridge.mjs`), the **16-Desk 4-Pod Layout + Overflow Hot-desks**, **Focus-to-Approve** modal for `ask_question` and `implementation_plan.md` feedback, **4-Tab MCP Hub** (`server/mcp.mjs`), **Project File Manager & `.docx`/`.xlsx`/`.pdf` Viewer** (`server/files.mjs`), **Task Dispatch (`📋 Give Work` with 14-model selector, 20-photo drafts, inline session rename/pin) & 2-Channel Group Chat (`💼 Work` vs `💬 Watercooler`)**, **Dual 5h/7d Quota gauges (Gemini Ultra vs Claude/GPT)**, Windows NVIDIA GPU monitoring, and **SHA-256/HMAC** role-based remote access control (**Deputy Director 6-digit PIN** vs. **Assistant Director** workspace-scoped access in `server/access.mjs`).
 - **Additional Credits**:
   - Runaway CPU/RAM and forgotten dev-server heuristics in `server/system.mjs` adapted from [Kanevry/cc-reaper](https://github.com/Kanevry/cc-reaper) (Apache-2.0).
   - Street vehicles built from [Kenney Car Kit 3.1](https://kenney.nl/assets/car-kit) (CC0).
@@ -31,34 +30,37 @@ This project is built upon and extends the open-source project **[My Office (`kh
 ## ✨ Key Features
 
 1. **Zero-Config Google Antigravity `Brain Watcher` (`server/antigravity.mjs`)**
-   - Automatically watches `~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`.
-   - Maps every Antigravity tool (`read_file`, `write_file`, `edit_file`, `run_command`, `grep_search`, `search_web`, `invoke_subagent`, `ask_question`, etc.) to 3D character animations and stations.
-   - Synchronizes `task.md` checklists (`- [ ]`, `- [/]`, `- [x]`) and background task logs in real time.
+   - Automatically watches `~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (and hydrates truncated steps from `transcript_full.jsonl`).
+   - **16-Desk 4-Pod Floor Plan & Overflow Hot-desks**: Supports 16 primary desks across 4 pods plus dynamic overflow seating in the meeting room, dining table, and library when more than 16 active sessions are running.
+   - **Focus Mode Power Saving**: Automatically caps WebGL rendering to `12 FPS` and throttles secondary background animations while full-screen management panels are open.
 
-2. **Visual Multi-Agent Subagent Orchestration & Adaptive Chibi Pace**
-   - When a Main Agent invokes subagents (`invoke_subagent`), the elevator immediately brings Chibi subagent characters into the office to brief with the Main Agent and connect via `team-lines.js`, with `deferMainAction` queuing to ensure the Main Agent never gets stuck when tasks finish rapidly.
-   - **Adaptive Movement Speed (`calcPace`)**: Chibis in an active working session (`work` / `fire` / briefing) walk at an elevated pace to keep up with real-time tool interactions, returning to a calm normal walk when idle (`rest`).
+2. **Built-in Antigravity Web IDE (`/antigravity`)**
+   - Dedicated full-screen web workspace synced in real time with all active Antigravity conversations.
+   - **Rich Conversation Turns**: Inspect user prompts, attached media, expandable reasoning steps (`Thinking`), tool executions, and per-file line diffs (`+added` / `-removed`).
+   - **Live Brain Artifacts Editor**: View and edit `implementation_plan.md`, `task.md`, and `walkthrough.md` directly in the browser, alongside a full project file tree and model switcher.
 
-3. **Focus-to-Approve Modal, Project Folder Manager, 4-Tab Todo Board & 2-Channel Group Chat**
-   - Automatically brings up a centered decision modal when an agent calls `ask_question` or requests feedback on `implementation_plan.md`.
-   - Built-in `📋 Give Work` (`Giao việc`) dialog with per-session/folder **AI Model selector** (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`), add project/create new folder directly in **New conversation**, remove project from workspace list without deleting disk files, inline session stop/rename/delete/pin, folder-grouped Session Rail view, and auto-saved drafts with up to **20 pasted images** (`IndexedDB`).
-   - **4-Tab Todo Board (`📋 Todos`)**: Switch between **All**, **My Tasks** (device-local), **Agent Tasks** (synced from `task.md`), and **Shared Tasks** (real-time server-synced across all connected devices).
+3. **Visual Subagent Orchestration, Adaptive Chibi Pace & Gender Customization**
+   - When a Main Agent invokes subagents (`invoke_subagent`), the elevator brings Chibi subagent characters into the office to brief with the Main Agent and connect via `team-lines.js`.
+   - **Adaptive Movement Speed (`calcPace`)**: Chibis in an active working session walk briskly to keep up with real-time tool calls and return to a relaxed pace when resting.
+   - **3D Chibi Gender Customization (`👦 Male` / `👧 Female`)** for Director, Deputy Director, and Assistant Director profiles.
+
+4. **Focus-to-Approve Modal, 14-Model Task Dispatch, 4-Tab Todo Board & 2-Channel Group Chat**
+   - Centered **Focus-to-Approve** modal when an agent calls `ask_question` or requests feedback on `implementation_plan.md`.
+   - `📋 Give Work` (`Giao việc`) dialog with per-session **AI Model selector** (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`...), folder-grouped Session Rail, inline session controls, and auto-saved drafts with up to **20 pasted images** (`IndexedDB`).
+   - **4-Tab Todo Board (`📋 Todos`)**: **All**, **My Tasks**, **Agent Tasks** (synced from `task.md`), and **Shared Tasks**.
    - Dual-channel Group Chat separating **💼 Work Group** and **💬 Watercooler Chat** with 7-day rolling retention.
 
-4. **Role-Based Remote Access Control (`server/access.mjs`), Session Control Permissions & SHA-256/HMAC Security**
-   - **Deputy Director (`Phó Giám đốc`)**: Sign in from a secondary device/phone using the 6-digit PIN (hashed with SHA-256 + salt and signed via HMAC-SHA256) to get full visibility across all workspaces and the Co-Directors Office.
-   - **Assistant Director (`Trợ lý Giám đốc`) & Session Controls (`sessionControl`)**: Register by name, wait for Director approval, and access permitted workspaces with configurable permissions to stop, rename, or delete sessions controllable from both Desktop and Mobile UI.
+5. **Dual 5h/7d AI Quota Gauges, AI Credits Toggle & Hardware Telemetry**
+   - Independently tracks 5-hour and weekly (7-day) quota buckets for **Google AI Ultra (Gemini)** and **Claude / GPT** model families, with live AI Credits toggle and multi-account switching.
+   - Monitors CPU, RAM, disk, Windows NVIDIA GPU utilization, and forgotten dev servers.
 
-5. **Docker + Rust Native Engine + On-Demand Host Bridge & Dynamic 5h/7d Quota**
-   - **Rust Native Engine (`rust-native/`)**: Accelerates Brain scanning, JSONL tailing, system telemetry (`sysinfo`), and SHA-256/HMAC security redaction.
-   - **Docker & On-Demand Host Bridge (`:4311`)**: Runs the production server in Docker (`:4310`) paired with a lightweight watcher that wakes the Host Bridge on demand and auto-stops after 45s of inactivity.
-   - Tracks CPU, RAM, disk, Windows NVIDIA GPU utilization, forgotten dev servers, and dynamic 5-hour / 7-day token quota across projects and accounts.
+6. **4-Tab MCP Hub (`🔌 MCP`) & Project File Manager (`📁 Project Files`)**
+   - **MCP Management Hub (`server/mcp.mjs`)**: Manage `mcp_config.json` across 4 tabs (Servers, 12 Presets, Custom `stdio`/`http` Builder, and Raw/Loose JSON Import & Export with automatic server name inference and secret masking).
+   - **Project File Manager & Document Viewer (`server/files.mjs`)**: Workspace-scoped file browser with built-in preview for Word (`.docx`), Excel (`.xlsx`, `.csv`), `.pdf`, images, media, and inline code editing (`Ctrl+S`).
 
-6. **MCP Management Hub (`🔌 MCP`) & Project File Manager (`📁 Project Files`)**
-   - **4-Tab MCP Hub (`server/mcp.mjs` & `src/office/ui/mcp-drawer.js`)**: Manage all Model Context Protocol servers (`mcp_config.json`) with instant enable/disable toggles, batch actions, live connection testing (`ping`), 12 popular presets, custom `stdio`/`http` form with live JSON preview, raw JSON import/export, tool schema inspector, and automatic secret masking (`maskSecret`).
-   - **Project File Manager & Live Document Viewer (`server/files.mjs` & `src/office/ui/file-manager.js`)**: Workspace-scoped file browser with built-in preview for Word (`.docx`), Excel (`.xlsx`, `.csv`), `.pdf`, images, media, inline code editor (`Ctrl+S`), file upload, folder creation, and one-click task dispatch with the selected file.
-   - **Live AI Model Switcher & Quick Reply Bar**: Switch between 14 AI models (`Gemini 4 Argon`, `Gemini 3.8 Flash`, `Claude Opus 5.5`, `Claude Sonnet 5.5`, `GPT-OSS 120B`) and send follow-up instructions directly inside the `Session Drawer`, with live model badges on the `Session Rail`.
-   - **3D Chibi Gender Customization (`👦 Male` / `👧 Female`)**: Select custom 3D Chibi gender for Director, Deputy Director, and Assistant Director profiles.
+7. **Docker + Rust Native Engine + On-Demand Host Bridge & Role-Based Security**
+   - **Rust Native Engine (`rust-native/`)** + Docker container (`:4310`) paired with an on-demand Host Bridge (`:4311`) that wakes when tasks are dispatched and auto-stops after 45s of idle time.
+   - **Deputy Director (`Phó Giám đốc`)** (6-digit PIN hashed with SHA-256 + HMAC-SHA256) vs. **Assistant Director (`Trợ lý Giám đốc`)** workspace-scoped permissions.
 
 ---
 
@@ -76,7 +78,9 @@ npm install
 npm run dev
 ```
 
-Open **<http://localhost:4310>** to watch your live sessions, or **<http://localhost:4310/?demo>** to explore demo mode without any agents running.
+- Open **<http://localhost:4310>** for the 3D Office.
+- Open **<http://localhost:4310/antigravity>** for the **Antigravity Web IDE**.
+- Open **<http://localhost:4310/?demo>** to explore demo mode without any agents running.
 
 ### Docker + On-Demand Host Bridge (Recommended on Windows)
 

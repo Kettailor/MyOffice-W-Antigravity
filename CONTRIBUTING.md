@@ -38,20 +38,18 @@ npm run dev          # Chạy tại http://localhost:4310 với Turbopack & Hot 
 | `npm test` | Chạy toàn bộ Unit Test (`node --test`). |
 | `npm run smoke` | Kiểm thử khói đa nền tảng (khởi chạy server thật, kiểm tra `/health`, `/event`, `/api/sys`, `cli.mjs install`). |
 | `npm run test:e2e` | Chạy kiểm thử trình duyệt thực tế bằng Playwright. |
-| `node scripts/module-map.mjs` | Cập nhật bảng Module Map trong `docs/ARCHITECTURE.md` (`--check` dùng trên CI). |
-
-Hệ thống **GitHub Actions CI** (`.github/workflows/ci.yml`) tự động chạy tất cả các lệnh trên đối với mọi Pull Request.
+| `node scripts/module-map.mjs` | Cập nhật bảng Module Map trong `docs/ARCHITECTURE.md` (`--check` để kiểm tra đồng bộ). |
 
 ---
 
-## 3. Cấu trúc Mã nguồn & Phân vùng Subagent
+## 3. Cấu trúc Mã nguồn
 
-Trước khi chỉnh sửa, hãy đọc **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** và **[AGENTS.md](AGENTS.md)**:
+Trước khi chỉnh sửa, hãy đọc **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**:
 
-- **Không gian 3D & Nhân vật Chibi** (`world-3d-specialist`): `src/office/world/`, `src/office/people/`, `src/office/scene/`, `src/office/core/`, `src/office/life/`.
-- **Giao diện, Nhóm Chat & Đa ngôn ngữ** (`ui-chat-specialist`): `src/office/ui/`, `src/components/`, `src/styles/`, `src/i18n/`.
-- **Máy chủ Backend & Antigravity Brain Watcher** (`backend-agy-specialist`): `server/index.mjs`, `server/antigravity.mjs`, `server/access.mjs`, `server/tasks.mjs`, `server/system.mjs`, `server/platform/`.
-- **Kiểm thử Tự động** (`qa-test-specialist`): `tests/unit/*.test.mjs`, `tests/e2e/*.spec.ts`.
+- **Không gian 3D & Nhân vật Chibi**: `src/office/world/`, `src/office/people/`, `src/office/scene/`, `src/office/core/`, `src/office/life/`.
+- **Giao diện, Antigravity Web IDE, Nhóm Chat & Đa ngôn ngữ**: `app/`, `src/office/ui/`, `src/components/`, `src/styles/`, `src/i18n/`.
+- **Máy chủ Backend & Antigravity Brain Watcher**: `server/index.mjs`, `server/antigravity.mjs`, `server/access.mjs`, `server/mcp.mjs`, `server/files.mjs`, `server/tasks.mjs`, `server/system.mjs`, `server/platform/`.
+- **Kiểm thử Tự động**: `tests/unit/*.test.mjs`, `tests/e2e/*.spec.ts`.
 
 ---
 

@@ -2,6 +2,10 @@ node_modules
 npm-debug.log*
 .git
 .gitignore
+.github
+.agents
+.agent
+AGENTS.md
 data
 tests
 playwright-report

@@ -226,7 +226,7 @@ export default {
     engineNative: 'Rust Native (axum · tokio · sysinfo)',
     engineNode: 'Node.js Fallback',
     securityTitle: 'Bảo mật Dữ liệu & Mạng',
-    securitySub: 'Wi-Fi Ket & Tailscale · Mã PIN SHA-256 · Cầu nối HMAC · Lọc khóa nhạy cảm',
+    securitySub: 'Wi-Fi nội bộ & Tailscale · Mã PIN SHA-256 · Cầu nối HMAC · Lọc khóa nhạy cảm',
     dockerTitle: 'Điều khiển Docker & Host Bridge',
     dockerUp: 'Container đang chạy (:4310)',
     dockerStandalone: 'Chế độ trực tiếp (:4310)',

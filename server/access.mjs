@@ -601,7 +601,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return {
       ok: true,
       engine: 'rust-native',
-      networkGuard: 'Wi-Fi Ket & Tailscale (100.64.0.0/10)',
+      networkGuard: 'Wi-Fi nội bộ & Tailscale (100.64.0.0/10)',
       lanBlocked: true,
       pinHash: 'SHA-256 + TimingSafe',
       bridgeAuth: 'HMAC-SHA256 Token',
@@ -674,7 +674,7 @@ export function renderRemoteAccessPage({ member = null, wrongPin = false, defaul
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Work Office · Cổng Truy Cập Từ Xa (Ket Wi-Fi / Tailscale)</title>
+<title>Work Office · Cổng Truy Cập Từ Xa (Wi-Fi / Tailscale)</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{min-height:100dvh;display:grid;place-items:center;padding:20px;background:radial-gradient(circle at 50% 0%,#1d283a 0%,#0f141c 70%);color:#f3f4f6;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
@@ -710,7 +710,7 @@ p.lead{color:#9ca3af;font-size:13px;margin-bottom:16px}
 </head>
 <body>
 <div class="card">
-  <div class="badge">🌐 Kết nối từ xa · Wi-Fi Ket & Tailscale</div>
+  <div class="badge">🌐 Kết nối từ xa · Wi-Fi nội bộ & Tailscale</div>
   <h1>Work Office · Điều hành Agent</h1>
   <p class="lead">Phân quyền truy cập cho Chính chủ Giám đốc (thiết bị phụ) và Trợ lý Giám đốc.</p>
 

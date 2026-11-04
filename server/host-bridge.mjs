@@ -2,7 +2,7 @@
 // Host CLI & Network Bridge for Dockerized Work Office (`server/host-bridge.mjs`).
 // Runs silently on the Windows host (`127.0.0.1` / Docker host gateway port 4311) so the `work-office`
 // Linux Docker container can:
-// 1. Read the host's live Wi-Fi SSID "Ket" IP & Tailscale IP via `data/host-net.json`
+// 1. Read the host's live trusted Wi-Fi SSID IP & Tailscale IP via `data/host-net.json`
 // 2. Dispatch "📋 Giao việc" & Group Chat `@Mention` tasks natively via Windows `agy.exe` (with Windows Keyring OAuth)
 import http from 'node:http';
 import fs from 'node:fs';

@@ -130,7 +130,7 @@ test('MCP Manager: upsert, toggle, duplicate, import/export, toggleAll, delete, 
 
     const rImportBare = mgr.importJson(
       JSON.stringify({
-        command: 'C:\\Users\\lekie\\.local\\bin\\uvx.exe',
+        command: 'C:\\Users\\user\\.local\\bin\\uvx.exe',
         args: ['blender-mcp'],
       }),
     );

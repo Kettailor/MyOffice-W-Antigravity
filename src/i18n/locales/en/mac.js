@@ -228,7 +228,7 @@ export default {
     engineNative: 'Rust Native (axum · tokio · sysinfo)',
     engineNode: 'Node.js Fallback',
     securityTitle: 'Data & Network Security',
-    securitySub: 'Wi-Fi Ket & Tailscale · SHA-256 PIN · HMAC Bridge · Secret Redaction',
+    securitySub: 'Trusted Wi-Fi & Tailscale · SHA-256 PIN · HMAC Bridge · Secret Redaction',
     dockerTitle: 'Docker & Host Bridge Control',
     dockerUp: 'Container running (:4310)',
     dockerStandalone: 'Standalone mode (:4310)',

@@ -797,7 +797,7 @@ export default function AntigravityIde() {
   const [loadingConv, setLoadingConv] = useState(false);
 
   /* ─── Composer State ─── */
-  const [selectedProjectDir, setSelectedProjectDir] = useState<string>('e:\\WorkOffice_Clone');
+  const [selectedProjectDir, setSelectedProjectDir] = useState<string>('e:\\MyProject');
   const [selectedBranch, setSelectedBranch] = useState<string>('main');
   const [selectedModel, setSelectedModel] = useState<string>('Gemini 4 Argon High');
   const [execMode, setExecMode] = useState<'Turbo' | 'Planning'>('Turbo');
@@ -1248,7 +1248,7 @@ export default function AntigravityIde() {
       conversation?.dir ||
       selectedProjectDir ||
       groupedProjects[0]?.dir ||
-      'e:\\WorkOffice_Clone';
+      'e:\\MyProject';
     return raw.replace(/[/\\]+$/, '');
   }, [conversation?.dir, selectedProjectDir, groupedProjects]);
 
@@ -1330,7 +1330,7 @@ export default function AntigravityIde() {
     async (rawPath: string) => {
       if (!rawPath) return;
       let resolvedPath = rawPath.trim().replace(/#L\d+.*$/, '');
-      const baseDir = activeWorkspaceRoot || 'e:\\WorkOffice_Clone';
+      const baseDir = activeWorkspaceRoot || 'e:\\MyProject';
       if (
         !resolvedPath.startsWith('/') &&
         !/^[a-zA-Z]:[/\\]/.test(resolvedPath)

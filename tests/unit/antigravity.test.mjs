@@ -232,7 +232,7 @@ test('Antigravity: computes dynamic 5h/weekly quota and returns email with empty
     ['a2', {
       id: '2',
       isAgy: true,
-      cwd: 'e:\\BioKit',
+      cwd: 'e:\\DemoApp',
       status: 'rest',
       usage: {
         cost: 1.1,
@@ -286,7 +286,7 @@ test('Remote Access Manager: approves Trợ lý Giám đốc, scopes Workspaces,
     assert.equal(reqMember.status, 'pending');
     assert.equal(reqMember.role, 'Trợ lý Giám đốc');
 
-    // Approve with access only to e:\WorkOffice (not e:\BioKit)
+    // Approve with access only to e:\WorkOffice (not e:\DemoApp)
     const approved = access.approveMember(reqMember.id, {
       name: 'Minh Anh',
       role: 'Trợ lý Giám đốc',
@@ -295,7 +295,7 @@ test('Remote Access Manager: approves Trợ lý Giám đốc, scopes Workspaces,
     assert.equal(approved.status, 'approved');
     assert.equal(access.canSeeWorkspace(approved, 'e:\\WorkOffice'), true);
     assert.equal(access.canSeeWorkspace(approved, 'e:\\WorkOffice\\server'), true);
-    assert.equal(access.canSeeWorkspace(approved, 'e:\\BioKit'), false);
+    assert.equal(access.canSeeWorkspace(approved, 'e:\\DemoApp'), false);
 
     // Queue a remote task while requireTaskApproval is ON
     assert.equal(access.effectiveRequireApproval(approved), true);
@@ -328,7 +328,7 @@ test('Remote Access Manager: approves Trợ lý Giám đốc, scopes Workspaces,
     assert.deepEqual(vp1.allowedWorkspaces, ['*']);
     assert.equal(vp1.requireApproval, false);
     assert.equal(access.effectiveRequireApproval(vp1), false);
-    assert.equal(access.canSeeWorkspace(vp1, 'e:\\BioKit'), true);
+    assert.equal(access.canSeeWorkspace(vp1, 'e:\\DemoApp'), true);
 
     // Second PIN login from another device creates Phó Giám đốc 2
     const vpReq2 = {
@@ -518,7 +518,7 @@ test('Group Chat: strictly separates work vs casual channels and enforces 7-day 
     now: () => fakeNow,
     members: () => [
       { id: '1', name: 'WorkOffice', status: 'work', task: 'Fix chat', ownerId: 'director', ownerName: 'Giám đốc' },
-      { id: '2', name: 'BioKit', status: 'rest', task: '', ownerId: 'director', ownerName: 'Giám đốc' },
+      { id: '2', name: 'DemoApp', status: 'rest', task: '', ownerId: 'director', ownerName: 'Giám đốc' },
     ],
     staffName: () => 'Nhân sự',
     store: { load: () => saved, save: (d) => { saved = d; } },

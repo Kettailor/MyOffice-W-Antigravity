@@ -469,9 +469,9 @@ export function renderPhone() {
       if (state.lanFixed) conn.append(el('p', 'muted pm-note', tr('topbar.phone.lanFixed')));
       if (state.lanUrl) {
         conn.append(where(state.lanUrl, state.lanBase || state.lanUrl, tr('topbar.phone.scan')));
-        conn.append(el('p', 'muted pm-note', '📶 Lưu ý khi dùng điện thoại qua Wi-Fi Ket: Vì cục phát Wi-Fi Ket là mạng nội bộ (không có Internet), điện thoại bật sẵn 4G/5G hoặc VPN/Tailscale sẽ tự động đẩy truy cập sang mạng 4G làm không vào được. Hãy tạm TẮT 4G/5G (Dữ liệu di động) và VPN trên điện thoại (hoặc chọn «Giữ kết nối Wi-Fi») rồi quét mã / mở địa chỉ trên.'));
+        conn.append(el('p', 'muted pm-note', '📶 Lưu ý khi dùng điện thoại qua Wi-Fi nội bộ: Nếu cục phát Wi-Fi là mạng nội bộ (không có Internet), điện thoại bật sẵn 4G/5G hoặc VPN/Tailscale sẽ tự động đẩy truy cập sang mạng 4G làm không vào được. Hãy tạm TẮT 4G/5G (Dữ liệu di động) và VPN trên điện thoại (hoặc chọn «Giữ kết nối Wi-Fi») rồi quét mã / mở địa chỉ trên.'));
       } else {
-        conn.append(el('p', 'muted pm-note', '⚠️ Máy tính hiện chưa có IP trên mạng Wi-Fi Ket. Hãy kiểm tra kết nối Wi-Fi Ket.'));
+        conn.append(el('p', 'muted pm-note', '⚠️ Máy tính hiện chưa có IP trên mạng Wi-Fi được cấu hình. Hãy kiểm tra kết nối Wi-Fi.'));
       }
       if (state.tsUrl) conn.append(where(state.tsUrl, state.tsUrl, tr('topbar.phone.tsOn')));
     }

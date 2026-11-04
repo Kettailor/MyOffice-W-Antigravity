@@ -2559,7 +2559,7 @@ export function createAntigravityWatcher({
       }
     }
 
-    // Normalize s.cwd against known workspace roots so subfolders (e.g. e:\BioKit\apps\backend) group under e:\BioKit
+    // Normalize s.cwd against known workspace roots so subfolders (e.g. e:\DemoApp\apps\backend) group under e:\DemoApp
     if (s.cwd && knownRoots.length) {
       const norm = normalizeWorkspacePath(s.cwd, knownRoots);
       if (norm && norm !== s.cwd) {

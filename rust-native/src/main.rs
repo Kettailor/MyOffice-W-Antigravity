@@ -770,7 +770,7 @@ fn build_health() -> HealthOutput {
         security: SecurityCapabilities {
             hmac_bridge: true,
             sha256_pin: true,
-            network_guard: "Ket+Tailscale",
+            network_guard: "TrustedWiFi+Tailscale",
             secret_redaction: true,
         },
     }
