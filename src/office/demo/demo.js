@@ -50,6 +50,7 @@ function demoEmit(s, type, label = '', extra = {}) {
   if (k && !extra.agent) s.counts[k] = (s.counts[k] || 0) + 1;
   if (s.usage && !extra.agent) { s.usage.ctx = Math.min(190000, s.usage.ctx + 1800 + Math.random() * 2600); s.usage.cost += 0.02 + Math.random() * 0.05; }
   if (type === 'prompt') state.stats.prompts = (state.stats.prompts || 0) + 1;
+  if (!['wait', 'stop', 'substart', 'substop'].includes(type)) state.stats.steps = (state.stats.steps || 0) + 1;
   if (type === 'read' || type === 'grep' || type === 'glob') state.stats.read = (state.stats.read || 0) + 1;
   if (type === 'edit' || type === 'write') state.stats.edit = (state.stats.edit || 0) + 1;
   if (type === 'bash' || type === 'test') state.stats.cmd = (state.stats.cmd || 0) + 1;
@@ -239,7 +240,7 @@ export function applyMsg(d, quiet = false) {
     if (d.stats) state.stats = d.stats; upsertSession(d.s, !quiet); syncSessionWaitCards();
     if (!quiet) onEvent(d.e); else if (!d.e.quiet && d.e.type !== 'start') addFeed(d.e);
   }
-  else if (d.k === 'stats') { state.stats = d.stats; if (d.s) { upsertSession(d.s, !quiet); syncSessionWaitCards(); } }
+  else if (d.k === 'stats') { state.stats = d.stats; if (d.s) { upsertSession(d.s, !quiet); syncSessionWaitCards(); } else queueUi(); }
   else if (d.k === 'perm') onPerm(d.p);
   else if (d.k === 'permDone') { perms.delete(d.id); renderPerms(); }
   else if (d.k === 'todos') { state.todos = d.todos || []; onTodos(); }

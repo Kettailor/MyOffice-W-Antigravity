@@ -384,7 +384,7 @@ const sidToKey = new Map();
 let feed = [];
 let seq = 0;
 const today = () => new Date().toLocaleDateString('sv-SE');
-let stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, deploy: 0, commit: 0, push: 0, pull: 0 };
+let stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, steps: 0, subs: 0, cost: 0, deploy: 0, commit: 0, push: 0, pull: 0 };
 let dirty = false;
 
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -461,7 +461,7 @@ setInterval(() => { if (watching()) pollGit(); }, 3_000).unref();
 setInterval(() => { if (watching()) git.pollCi(); }, 120_000).unref();
 setTimeout(pollGit, 1000).unref();
 
-function rollDay() { if (stats.day !== today()) stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, deploy: 0, commit: 0, push: 0, pull: 0 }; }
+function rollDay() { if (stats.day !== today()) stats = { day: today(), read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, steps: 0, subs: 0, cost: 0, deploy: 0, commit: 0, push: 0, pull: 0 }; }
 
 function newSession(key) {
   return { id: crypto.randomUUID(), key, sid: null, pid: null, name: '', cwd: '', link: null, desk: freeDesk(), status: 'rest', busy: false,
@@ -573,6 +573,7 @@ const pub = (s) => {
     git: gitOf(s),
     usage: s.usage?.model ? {
       cost: Math.round(s.usage.cost * 100) / 100,
+      costToday: typeof s.usage.costToday === 'number' ? s.usage.costToday : null,
       ...liveCtx(s),
       model: s.usage.model,
       out: s.usage.out,
@@ -580,6 +581,10 @@ const pub = (s) => {
       quota5hPct: s.usage.quota5hPct ?? null,
       prompts5h: s.usage.prompts5h ?? 0,
       steps5h: s.usage.steps5h ?? 0,
+      promptsToday: s.usage.promptsToday ?? 0,
+      stepsToday: s.usage.stepsToday ?? 0,
+      toolsToday: s.usage.toolsToday ?? 0,
+      subsToday: s.usage.subsToday ?? 0,
       prompts: s.usage.prompts ?? 0,
       steps: s.usage.steps ?? 0,
     } : null,

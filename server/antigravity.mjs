@@ -852,6 +852,7 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
   const sevenDaysMs = 7 * 86400_000;
   const cutoff5h = now - fiveHoursMs;
   const cutoff7d = now - sevenDaysMs;
+  const startOfTodayMs = new Date(now).setHours(0, 0, 0, 0);
 
   let units5h = 0;
   let units7d = 0;
@@ -913,6 +914,10 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
     let sessUnits5h = 0;
     let sessPrompts5h = 0;
     let sessSteps5h = 0;
+    let sessPromptsToday = 0;
+    let sessStepsToday = 0;
+    let sessToolsToday = 0;
+    let sessCostToday = 0;
 
     for (const st of stepList) {
       if (!st || !st.ts || st.ts < cutoff7d) continue;
@@ -930,6 +935,16 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
         steps7d++;
         tokens7d += tok;
         cost7d += Number(st.cost) || 0;
+      }
+
+      if (st.ts >= startOfTodayMs) {
+        if (st.kind === 'prompt') {
+          sessPromptsToday++;
+        } else {
+          sessStepsToday++;
+          sessCostToday += Number(st.cost) || 0;
+          sessToolsToday += (Number(st.read) || 0) + (Number(st.edit) || 0) + (Number(st.cmd) || 0) + (Number(st.web) || 0);
+        }
       }
 
       if (st.ts >= cutoff5h) {
@@ -955,6 +970,15 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
       s.usage.quota5hPct = Math.min(100, Math.round(sessUnits5h * 10) / 10);
       s.usage.prompts5h = sessPrompts5h;
       s.usage.steps5h = sessSteps5h;
+      s.usage.promptsToday = sessPromptsToday;
+      s.usage.stepsToday = sessStepsToday;
+      s.usage.toolsToday = sessToolsToday;
+      s.usage.costToday = Math.round(sessCostToday * 100) / 100;
+      const activeSubKeys = Object.keys(s.subs || {});
+      const doneTodayCount = (s.doneSubs || []).filter(
+        (d) => d && !activeSubKeys.includes(d.id) && (d.endedAt || d.startedAt || 0) >= startOfTodayMs,
+      ).length;
+      s.usage.subsToday = activeSubKeys.length + doneTodayCount;
     }
   }
 
@@ -1128,6 +1152,16 @@ export function createAntigravityWatcher({
       const inp = Number(j.input_tokens) || 0;
       const cr = Number(j.cache_read_tokens) || 0;
       const out = Number(j.output_tokens) || 0;
+      const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
+      let stepRead = 0, stepEdit = 0, stepCmd = 0, stepWeb = 0;
+      for (const tc of tools) {
+        const normT = normalizeAgyTool(String(tc.name || ''), tc.args);
+        const tk = { Read: 'read', Grep: 'read', Glob: 'read', Edit: 'edit', Write: 'edit', Bash: 'cmd', WebSearch: 'web', WebFetch: 'web' }[normT.tool_name];
+        if (tk === 'read') stepRead++;
+        else if (tk === 'edit') stepEdit++;
+        else if (tk === 'cmd') stepCmd++;
+        else if (tk === 'web') stepWeb++;
+      }
       s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: st.model || 'Gemini 3.1 Pro' };
       s.usage.steps = (s.usage.steps || 0) + 1;
       if (inp || cr || out) {
@@ -1139,14 +1173,13 @@ export function createAntigravityWatcher({
         s.usage.model = st.model || s.usage.model || 'Gemini 3.1 Pro';
         s.usage.cost += stepCost;
         if (ts >= cutoff8d) {
-          st.steps.push({ ts, kind: 'step', inp, cr, out, cost: stepCost, acct: s.agyAccount || activeAcct });
+          st.steps.push({ ts, kind: 'step', inp, cr, out, cost: stepCost, read: stepRead, edit: stepEdit, cmd: stepCmd, web: stepWeb, acct: s.agyAccount || activeAcct });
         }
         usageChanged = true;
       } else if (ts >= cutoff8d) {
-        st.steps.push({ ts, kind: 'step', inp: 0, cr: 0, out: 0, cost: 0, acct: s.agyAccount || activeAcct });
+        st.steps.push({ ts, kind: 'step', inp: 0, cr: 0, out: 0, cost: 0, read: stepRead, edit: stepEdit, cmd: stepCmd, web: stepWeb, acct: s.agyAccount || activeAcct });
         usageChanged = true;
       }
-      const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
       st.lastStepType = 'PLANNER_RESPONSE';
       st.lastStepHasTools = tools.length > 0;
 
@@ -1349,8 +1382,18 @@ export function createAntigravityWatcher({
               const cr = Number(j.cache_read_tokens) || 0;
               const out = Number(j.output_tokens) || 0;
               const stepCost = (inp * 1.25 + cr * 0.3 + out * 10) / 1e6;
+              const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
+              let stepRead = 0, stepEdit = 0, stepCmd = 0, stepWeb = 0;
+              for (const tc of tools) {
+                const normT = normalizeAgyTool(String(tc.name || ''), tc.args);
+                const tk = { Read: 'read', Grep: 'read', Glob: 'read', Edit: 'edit', Write: 'edit', Bash: 'cmd', WebSearch: 'web', WebFetch: 'web' }[normT.tool_name];
+                if (tk === 'read') stepRead++;
+                else if (tk === 'edit') stepEdit++;
+                else if (tk === 'cmd') stepCmd++;
+                else if (tk === 'web') stepWeb++;
+              }
               if (ts >= cutoff8d) {
-                const entry = { ts, kind: 'step', inp, cr, out, cost: stepCost, subId: subCand.convId, acct: subAcct };
+                const entry = { ts, kind: 'step', inp, cr, out, cost: stepCost, read: stepRead, edit: stepEdit, cmd: stepCmd, web: stepWeb, subId: subCand.convId, acct: subAcct };
                 subSt.steps.push(entry);
                 if (parentSession) {
                   parentSession.agySteps ||= [];
@@ -1364,7 +1407,6 @@ export function createAntigravityWatcher({
                 }
                 changed = true;
               }
-              const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
               if (tools.length > 0) {
                 const tc = tools[tools.length - 1];
                 const norm = normalizeAgyTool(tc.name, tc.args);
@@ -1544,6 +1586,32 @@ export function createAntigravityWatcher({
         chat.onEvent(e);
       } else {
         delete parentSession.subs[subCand.convId];
+        parentSession.doneSubs ||= [];
+        const existingIdx = parentSession.doneSubs.findIndex((d) => d && d.id === subCand.convId);
+        const lastInfo = subSt.lastClassified
+          ? { type: subSt.lastClassified.type, label: subSt.lastClassified.label }
+          : { type: 'agent', label: clip(meta.title || subSt.promptDesc || 'Đã hoàn thành', 60) };
+        const doneItem = {
+          id: subCand.convId,
+          type: subLabel,
+          desc: subDesc,
+          last: lastInfo,
+          startedAt: subCand.st.birthtimeMs || subCand.st.mtimeMs,
+          endedAt: subCand.st.mtimeMs,
+          steps: meta.stepCount || subSt.steps.length || 1,
+        };
+        if (existingIdx >= 0) {
+          const prev = parentSession.doneSubs[existingIdx];
+          if (prev.steps !== doneItem.steps || prev.endedAt !== doneItem.endedAt || prev.type !== doneItem.type) {
+            parentSession.doneSubs[existingIdx] = doneItem;
+            changed = true;
+          }
+        } else {
+          parentSession.doneSubs.push(doneItem);
+          parentSession.doneSubs.sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0));
+          if (parentSession.doneSubs.length > 12) parentSession.doneSubs.length = 12;
+          changed = true;
+        }
       }
     }
     return changed;
@@ -2108,12 +2176,16 @@ export function createAntigravityWatcher({
     }
 
     // Sync subagents and attach their token/step usage + active status to their parent conversation
+    const touchedParents = new Set();
     for (const sub of subCandidates) {
       if (now - sub.st.mtimeMs > 14 * 86400_000) continue;
       const parentKey = 'a' + sub.meta.parentId;
       const parentSession = sessions.get(parentKey);
       const subChanged = await syncSubagent(sub, sub.meta, parentSession).catch(() => false);
-      if (subChanged) anyUsageChanged = true;
+      if (subChanged) {
+        anyUsageChanged = true;
+        if (parentSession) touchedParents.add(parentSession);
+      }
     }
 
     for (const [key, s] of sessions) {
@@ -2133,6 +2205,100 @@ export function createAntigravityWatcher({
       }
     }
     capMap(subStates, 300, 220);
+
+    // Sync today's per-session and global stats so the Activity KPI strip is always accurate after startup/scan
+    const startOfTodayMs = new Date(now).setHours(0, 0, 0, 0);
+    let todayRead = 0, todayEdit = 0, todayCmd = 0, todayWeb = 0;
+    let todayPrompts = 0, todaySteps = 0, todaySubs = 0, todayCost = 0;
+    for (const s of sessions.values()) {
+      if (!s.isAgy) continue;
+      let sPromptsToday = 0, sStepsToday = 0, sToolsToday = 0, sCostToday = 0;
+      let sRead = 0, sEdit = 0, sCmd = 0, sWeb = 0;
+      for (const st of s.agySteps || []) {
+        if (!st || !st.ts || st.ts < startOfTodayMs) continue;
+        if (st.kind === 'prompt') {
+          sPromptsToday++;
+        } else {
+          sStepsToday++;
+          sCostToday += Number(st.cost) || 0;
+          const r = Number(st.read) || 0;
+          const e = Number(st.edit) || 0;
+          const c = Number(st.cmd) || 0;
+          const w = Number(st.web) || 0;
+          sRead += r; sEdit += e; sCmd += c; sWeb += w;
+          sToolsToday += r + e + c + w;
+        }
+      }
+      const activeSubIds = Object.keys(s.subs || {});
+      const doneTodayCount = (s.doneSubs || []).filter(
+        (d) => d && !activeSubIds.includes(d.id) && (d.endedAt || d.startedAt || 0) >= startOfTodayMs,
+      ).length;
+      const sSubsToday = activeSubIds.length + doneTodayCount;
+      todayRead += sRead;
+      todayEdit += sEdit;
+      todayCmd += sCmd;
+      todayWeb += sWeb;
+      todayPrompts += sPromptsToday;
+      todaySteps += sStepsToday;
+      todaySubs += sSubsToday;
+      todayCost += sCostToday;
+      if (s.usage) {
+        const roundedCost = Math.round(sCostToday * 100) / 100;
+        if (
+          s.usage.promptsToday !== sPromptsToday
+          || s.usage.stepsToday !== sStepsToday
+          || s.usage.toolsToday !== sToolsToday
+          || s.usage.costToday !== roundedCost
+          || s.usage.subsToday !== sSubsToday
+        ) {
+          s.usage.promptsToday = sPromptsToday;
+          s.usage.stepsToday = sStepsToday;
+          s.usage.toolsToday = sToolsToday;
+          s.usage.costToday = roundedCost;
+          s.usage.subsToday = sSubsToday;
+          touchedParents.add(s);
+        }
+      }
+    }
+    rollDay?.();
+    const statsObj = typeof getStats === 'function' ? getStats() : null;
+    let statsChanged = false;
+    if (statsObj) {
+      const nextRead = Math.max(statsObj.read || 0, todayRead);
+      const nextEdit = Math.max(statsObj.edit || 0, todayEdit);
+      const nextCmd = Math.max(statsObj.cmd || 0, todayCmd);
+      const nextWeb = Math.max(statsObj.web || 0, todayWeb);
+      const nextPrompts = Math.max(statsObj.prompts || 0, todayPrompts);
+      const nextSteps = Math.max(statsObj.steps || 0, todaySteps);
+      const nextSubs = Math.max(statsObj.subs || 0, todaySubs);
+      const nextCost = Math.round(Math.max(statsObj.cost || 0, todayCost) * 100) / 100;
+      if (
+        statsObj.read !== nextRead
+        || statsObj.edit !== nextEdit
+        || statsObj.cmd !== nextCmd
+        || statsObj.web !== nextWeb
+        || statsObj.prompts !== nextPrompts
+        || statsObj.steps !== nextSteps
+        || statsObj.subs !== nextSubs
+        || statsObj.cost !== nextCost
+      ) {
+        statsObj.read = nextRead;
+        statsObj.edit = nextEdit;
+        statsObj.cmd = nextCmd;
+        statsObj.web = nextWeb;
+        statsObj.prompts = nextPrompts;
+        statsObj.steps = nextSteps;
+        statsObj.subs = nextSubs;
+        statsObj.cost = nextCost;
+        statsChanged = true;
+      }
+    }
+    for (const pSess of touchedParents) {
+      broadcast({ k: 'sess', s: pub(pSess), ...(statsObj ? { stats: statsObj } : {}) });
+    }
+    if (statsChanged && touchedParents.size === 0 && statsObj) {
+      broadcast({ k: 'stats', stats: statsObj });
+    }
 
     if (anyUsageChanged && typeof onUsageChange === 'function') {
       onUsageChange();

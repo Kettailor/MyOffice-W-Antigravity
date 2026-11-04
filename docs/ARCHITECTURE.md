@@ -92,7 +92,7 @@ engine switches to demo mode and talks to no API.
 | `core/loop.js` | 299 | The render loop and its frame budget. |
 | `core/optimize.js` | 143 | Merging static meshes into fewer draw calls, then starting. |
 | `core/state.js` | 3 | Values that more than one module assigns (the clock, the selection, mode switches…), on one shared object so any module can change them. |
-| `demo/demo.js` | 381 | Demo mode: fictional projects and a fictional Mac. |
+| `demo/demo.js` | 382 | Demo mode: fictional projects and a fictional Mac. |
 | `interact/first-person.js` | 265 | First person: walk the office as your own character, and (with the city outside) down the lift and out on the street: the pavements, the zebras (the traffic stops for you), the shops, the bánh mì cart. |
 | `interact/place-cards.js` | 221 | Place cards: what happens at each place. |
 | `interact/place-chips.js` | 251 | Place chips over the furniture and label decluttering. |
@@ -139,7 +139,7 @@ engine switches to demo mode and talks to no API.
 | `scene/lights.js` | 39 | Sun, sky light and the room lamps (per-room night lighting on the company floor). |
 | `scene/quality.js` | 74 | Graphics quality: Auto (the default), Low, Medium or High, each viewer's own choice (Settings → Display). |
 | `scene/renderer.js` | 125 | Renderer, cameras, orbit controls, post-processing and environment light. |
-| `ui/activity.js` | 900 | The activity column and the session list. |
+| `ui/activity.js` | 946 | The activity column and the session list. |
 | `ui/camera-bar.js` | 132 | The camera toolbar. |
 | `ui/chat-avatars.js` | 72 | Round photos for the group chat (group-chat-view.js): each person's own chibi, head and shoulders, drawn once by the office's renderer (the way Settings draws its portraits: same materials, light and tone mapping) and kept as a data URL. |
 | `ui/clip-music.js` | 122 | The clip's music: an original lo-fi loop made right here, nothing borrowed (no samples, no files): a Rhodes-like FM electric piano on Fmaj9 – Em7 – Dm9 – G13, a round bass, a swung boom-bap kit, a soft pentatonic lead, vinyl crackle and a small Schroeder reverb. |

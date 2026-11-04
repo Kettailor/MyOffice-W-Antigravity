@@ -147,22 +147,36 @@ let lastFeedSig = '';
 export function renderFeed() {
   const list = $('feed-list');
   const mainFeed = state.feed.filter((e) => !e.agent && !['agent', 'substart', 'substop'].includes(e.type));
-  const latest = new Map(); for (const e of mainFeed) latest.set(e.sess, e.id);
-  const rows = mainFeed.filter((e) => (feedFilter === 'all' || ATT.has(e.type)) && kindOk(e)).slice(-90).reverse();
-  const att = mainFeed.filter((e) => ATT.has(e.type) && nowMs() - e.ts < 3600e3).length;
+  const latest = new Map();
+  const latestWait = new Map();
+  for (const e of mainFeed) {
+    latest.set(e.sess, e.id);
+    if (e.type === 'wait' || e.type === 'ask') latestWait.set(e.sess, e.id);
+  }
+  const isLiveAtt = (e) => {
+    if (!ATT.has(e.type)) return false;
+    if (e.type === 'wait' || e.type === 'ask') {
+      const s = sessions.get(e.sess);
+      return s?.status === 'wait' && latestWait.get(e.sess) === e.id;
+    }
+    return nowMs() - e.ts < 3600e3 && latest.get(e.sess) === e.id;
+  };
+  const rows = mainFeed.filter((e) => (feedFilter === 'all' || isLiveAtt(e)) && kindOk(e)).slice(-90).reverse();
+  const att = mainFeed.filter(isLiveAtt).length;
   const attEl = $('att-count');
   if (attEl) { attEl.hidden = !att; const attStr = String(att); if (attEl.textContent !== attStr) attEl.textContent = attStr; }
   const feedFabCount = $('feed-fab-count'), feedFabBtn = $('feed-expand-fab');
   if (feedFabCount) feedFabCount.textContent = String(att || rows.length);
   if (feedFabBtn) feedFabBtn.dataset.att = String(att);
-  const sig = `${feedFilter}|${[...typeFilter].join(',')}|${state.streamer ? 1 : 0}|${rows.map((e) => `${e.id}:${e.type}:${e.ts}:${dnOf(e)}`).join(';')}|${[...sessions.values()].filter((s) => s.status === 'work').map((s) => `${s.id}:${latest.get(s.id) || ''}`).join(',')}`;
+  const waitSig = [...sessions.values()].filter((s) => s.status === 'wait').map((s) => s.id).join(',');
+  const sig = `${feedFilter}|${[...typeFilter].join(',')}|${state.streamer ? 1 : 0}|${att}|${waitSig}|${rows.map((e) => `${e.id}:${e.type}:${e.ts}:${dnOf(e)}`).join(';')}|${[...sessions.values()].filter((s) => s.status === 'work').map((s) => `${s.id}:${latest.get(s.id) || ''}`).join(',')}`;
   if (sig === lastFeedSig) return;
   lastFeedSig = sig;
   list.replaceChildren();
   if (!rows.length) list.append(el('li', 'fi-empty', tr(feedFilter === 'att' ? 'activity.empty.att' : typeFilter.size ? 'activity.empty.type' : 'activity.empty.all')));
   const groups = [];
   for (const e of rows) {
-    const g = groups[groups.length - 1], attItem = ATT.has(e.type);
+    const g = groups[groups.length - 1], attItem = isLiveAtt(e);
     if (g && !attItem && !g.att && g.sess === e.sess && g.items[g.items.length - 1].ts - e.ts < 240e3) g.items.push(e);
     else groups.push({ sess: e.sess, agent: null, att: attItem, items: [e] });
   }
@@ -617,11 +631,36 @@ export const fmtUsd = (v) => `$${v >= 100 ? Math.round(v) : v.toFixed(2)}`;
 let lastKpiSig = '';
 export function renderKpi() {
   const list = [...sessions.values()];
-  const subCount = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
-  const toolsCount = (state.stats.read || 0) + (state.stats.edit || 0) + (state.stats.cmd || 0);
-  const stepsCount = Math.max(state.feed.length, (state.stats.prompts || 0) + toolsCount);
-  const costStr = fmtUsd(list.reduce((a, s) => a + (s.usage?.cost || 0), 0));
-  const kpiSig = `${stepsCount}|${toolsCount}|${subCount}|${costStr}`;
+  const runningSubs = list.reduce((a, s) => a + (s.subs?.length || 0), 0);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayStartMs = startOfToday.getTime();
+  const sessSubsToday = list.reduce((a, s) => {
+    if (typeof s.usage?.subsToday === 'number' && s.usage.subsToday > 0) return a + s.usage.subsToday;
+    const active = s.subs?.length || 0;
+    const doneToday = (s.doneSubs || []).filter((d) => (d.endedAt || d.startedAt || 0) >= todayStartMs).length;
+    return a + active + doneToday;
+  }, 0);
+  const subCount = Math.max(runningSubs, state.stats.subs || 0, sessSubsToday);
+
+  const statsTools = (state.stats.read || 0) + (state.stats.edit || 0) + (state.stats.cmd || 0) + (state.stats.web || 0);
+  const sessToolsToday = list.reduce((a, s) => a + (s.usage?.toolsToday || 0), 0);
+  const toolsCount = Math.max(statsTools, sessToolsToday);
+
+  const sessStepsToday = list.reduce((a, s) => a + (s.usage?.stepsToday || 0), 0);
+  const stepsCount = Math.max(state.stats.steps || 0, sessStepsToday, state.feed.length);
+
+  const hasTodayCost = (typeof state.stats.cost === 'number' && state.stats.cost > 0)
+    || list.some((s) => typeof s.usage?.costToday === 'number');
+  const rawCost = hasTodayCost
+    ? Math.max(
+      state.stats.cost || 0,
+      list.reduce((a, s) => a + (typeof s.usage?.costToday === 'number' ? s.usage.costToday : 0), 0),
+    )
+    : list.filter((s) => !isAtHome(s)).reduce((a, s) => a + (s.usage?.cost || 0), 0);
+  const costStr = fmtUsd(rawCost);
+
+  const kpiSig = `${stepsCount}|${toolsCount}|${subCount}:${runningSubs}|${costStr}`;
   if (kpiSig === lastKpiSig) return;
   lastKpiSig = kpiSig;
   const host = $('feed-stats') || $('kpi');
@@ -629,21 +668,28 @@ export function renderKpi() {
   const cards = [
     { key: 'steps', ic: 'sparkle', val: num(stepsCount) },
     { key: 'tools', ic: 'terminal', val: num(toolsCount) },
-    { key: 'subs', ic: 'users', val: num(subCount) },
+    { key: 'subs', ic: 'users', val: num(subCount), live: runningSubs > 0 },
     { key: 'cost', ic: 'coin', val: costStr, isCost: true },
   ];
-  host.replaceChildren(...cards.map(({ key, ic, val, isCost }) => {
+  host.replaceChildren(...cards.map(({ key, ic, val, isCost, live }) => {
     const label = tr(`activity.kpi.${key}`);
     const d = el('div', isCost ? 'kpi kpi--cost' : 'kpi');
     d.dataset.kpi = key;
+    if (live) d.classList.add('is-live');
+    const main = el('div', 'kpi-main');
     const topRow = el('div', 'kpi-top');
     const b = el('b', 'kpi-val', val);
     if (isCost) b.prepend(el('small', null, '≈'));
+    topRow.append(b);
+    if (live) {
+      const livePill = el('span', 'kpi-live-dot');
+      topRow.append(livePill);
+    }
+    main.append(topRow, el('span', 'kpi-lbl', label));
     const i = el('span', 'kpi-ic');
     i.append(icon(ic));
-    topRow.append(b, i);
-    d.append(topRow, el('span', 'kpi-lbl', label));
-    d.title = isCost ? tr('activity.costTitle') : tr('activity.kpiToday', { label });
+    d.append(main, i);
+    d.title = isCost ? `${label}: ${val} — ${tr('activity.costTitle')}` : `${tr('activity.kpiToday', { label })}: ${val}`;
     return d;
   }));
 }
