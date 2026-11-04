@@ -80,7 +80,7 @@ file per area; English is the reference and the fallback.
 
 `OFFICE_STATIC=1 next build` exports the page as a static site that runs demo mode with no server
 (`scripts/build-demo.mjs` builds every language, English at the root and the others under `/<lang>/`;
-`.github/workflows/pages.yml` publishes it). In that build `getLang()` takes the language from the build, and the
+`build-demo.mjs` publishes it). In that build `getLang()` takes the language from the build, and the
 engine switches to demo mode and talks to no API.
 
 ### Module map
