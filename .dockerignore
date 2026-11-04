@@ -7,4 +7,5 @@ tests
 playwright-report
 test-results
 rust-native/target
+.next/cache
 *.log
