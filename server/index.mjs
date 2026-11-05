@@ -565,6 +565,18 @@ function recordTaskOwner(sessId, dir, viewerObj) {
   }
 }
 
+let tasksRef = null;
+function hasActiveCliTask(convId = '', sessId = '') {
+  if (!tasksRef || typeof tasksRef.list !== 'function') return false;
+  const list = tasksRef.list();
+  if (!list.length) return false;
+  const cleanSid = String(convId || '').replace(/^(?:agy:|a)/, '');
+  return list.some((t) => (
+    (cleanSid && (t.sid === cleanSid || t.from?.sid === cleanSid || t.from?.orig === cleanSid))
+    || (sessId && (t.from?.id === sessId || t.id === sessId))
+  ));
+}
+
 const pubSub = (x) => ({ id: x.id, type: x.type, desc: x.desc || '', last: x.last || null, startedAt: x.startedAt, endedAt: x.endedAt || null, steps: x.steps || 0, ...(x.prevId ? { prevId: x.prevId } : {}), ...(x.provisional ? { provisional: true } : {}) });
 const pub = (s) => {
   let livePerm = null;
@@ -580,8 +592,9 @@ const pub = (s) => {
   const savedModelId = getSavedModel(s.sid, s.cwd) || s.preferredModel || '';
   const savedModelMeta = savedModelId ? AGY_MODELS.find((m) => m.id === savedModelId) : null;
   const effectiveModelLabel = savedModelMeta?.label || s.preferredModelLabel || s.usage?.model || '';
+  const effectiveStatus = (s.status === 'rest' && hasActiveCliTask(s.sid, s.id)) ? 'work' : s.status;
   return {
-    id: s.id, pid: s.pid, sid: s.sid || null, name: s.name, title: customTitle || s.customTitle || s.title || '', customTitle: customTitle || s.customTitle || '', dir: tilde(s.cwd), cwd: s.cwd || '', link: s.link, desk: s.desk, status: s.status, act: s.act || '',
+    id: s.id, pid: s.pid, sid: s.sid || null, name: s.name, title: customTitle || s.customTitle || s.title || '', customTitle: customTitle || s.customTitle || '', dir: tilde(s.cwd), cwd: s.cwd || '', link: s.link, desk: s.desk, status: effectiveStatus, act: s.act || '',
     selectedModel: savedModelId,
     modelLabel: effectiveModelLabel,
     waitCard: livePerm ? permPub(livePerm) : (s.waitCard || null),
@@ -1339,6 +1352,7 @@ const tasks = createTasks({
     scanSessions().then(() => fetchPlanUsage(true)).catch(() => {});
   },
 });
+tasksRef = tasks;
 /* Writing to a conversation from the chat ("Gửi tới"): the first message branches it (its whole context, the one open in
    your editor left as it is); what you write next carries on that branch, so it remembers what you said (for 6 hours). */
 const AGY_MODELS = [
@@ -1780,6 +1794,7 @@ const agyWatcher = createAntigravityWatcher({
   },
   onGitCmd: () => { setTimeout(pollGit, 400); setTimeout(pollGit, 1800); },
   getActiveAccount: () => nowSlug(),
+  isTaskRunning: hasActiveCliTask,
   maxDesks: DESKS,
 });
 
@@ -3737,7 +3752,6 @@ function resyncMemberClients(memberId) {
 const server = http.createServer((req, res) => {
   req.on('error', () => {});
   res.on('error', () => {});
-  req.socket?.on('error', () => {});
   let url;
   try { url = new URL(req.url || '/', 'http://x'); } catch { res.writeHead(400).end(); return; }
   if (req.method === 'POST' && url.pathname === '/event') {
@@ -6078,10 +6092,22 @@ process.on('unhandledRejection', (reason) => {
   console.error('[work-office] unhandledRejection:', reason);
 });
 
+server.requestTimeout = 0;
+server.timeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 65_000;
+server.on('connection', (socket) => {
+  socket.setMaxListeners(0);
+  socket.on('error', () => {});
+});
 server.listen(PORT, HOST, () => {
   syncLan();
   if (prefs.get('tunnel')) startTunnel(); else killStaleTunnel();
-  scanSessions();
+  scanSessions().then(() => {
+    for (const c of clients) {
+      try { send(c.res, snapNow(c.local, c.req)); } catch { /* ignore */ }
+    }
+  }).catch(() => {});
   scanCleanups().catch(() => {});   // macOS paths; elsewhere there may be nothing to scan
   trackOwners();
   startTrend();

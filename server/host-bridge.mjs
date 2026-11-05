@@ -400,12 +400,31 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'GET' && req.url?.startsWith('/task/status')) {
+    touchActivity();
+    if (!hasValidBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const st = typeof hostTasks.getStatus === 'function'
+      ? hostTasks.getStatus({
+          id: u.searchParams.get('id') || '',
+          sid: u.searchParams.get('sid') || '',
+          dir: u.searchParams.get('dir') || '',
+        })
+      : { ok: true, running: hostTasks.list().length > 0 };
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(st));
+    return;
+  }
   if (req.method === 'POST' && (req.url === '/task/start' || req.url === '/dispatch')) {
     touchActivity();
     if (!verifyBridgeToken(req)) {
       res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
       return;
     }
+    req.socket?.setTimeout?.(0);
+    req.socket?.setKeepAlive?.(true, 15_000);
     const chunks = [];
     let len = 0;
     req.on('data', (c) => { len += c.length; if (len <= 64_000_000) chunks.push(c); });
@@ -530,6 +549,14 @@ setInterval(() => {
   }
 }, 5_000).unref();
 
+server.requestTimeout = 0;
+server.timeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 65_000;
+server.on('connection', (socket) => {
+  socket.setMaxListeners(0);
+  socket.on('error', () => {});
+});
 server.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {
     // Another Host Bridge instance is already listening on 4311

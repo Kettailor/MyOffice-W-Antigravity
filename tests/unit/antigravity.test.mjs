@@ -891,4 +891,185 @@ test('Antigravity Quota: separates Gemini Ultra vs Claude/GPT 5h and weekly quot
   assert.ok(q.claudeGptWeekPct >= 1, 'Claude/GPT weekly pct should be >= 1');
 });
 
+test('Antigravity Watcher: keeps session in work during long external tool waits (>90s), truncated tool_calls, and pending background tasks without premature stop', async () => {
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'work-office-long-wait-'));
+  const prevBrainEnv = process.env.OFFICE_AGY_BRAIN_DIR;
+  try {
+    const brainDir = path.join(tmpDir, 'brain');
+    await fsp.mkdir(brainDir, { recursive: true });
+    process.env.OFFICE_AGY_BRAIN_DIR = brainDir;
+
+    // 1. Session waiting 4 minutes (240s > 90s) on an external command/connection
+    const convWaitExt = 'conv-ext-wait';
+    const extLogDir = path.join(brainDir, convWaitExt, '.system_generated', 'logs');
+    await fsp.mkdir(extLogDir, { recursive: true });
+    const extTranscript = path.join(extLogDir, 'transcript.jsonl');
+    const fourMinAgo = new Date(Date.now() - 4 * 60_000);
+    await fsp.writeFile(
+      extTranscript,
+      [
+        JSON.stringify({
+          step_index: 0,
+          type: 'USER_INPUT',
+          created_at: fourMinAgo.toISOString(),
+          content: '<USER_REQUEST>\nChạy kiểm tra kết nối hệ thống ngoài\n</USER_REQUEST>\nCommand Working Directory: e:\\WorkOffice',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          created_at: fourMinAgo.toISOString(),
+          content: 'Đang kết nối tới máy chủ bên ngoài...',
+          tool_calls: [{ id: 'tc1', name: 'default_api:run_command', args: { CommandLine: 'curl https://slow.example.com' } }],
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    await fsp.utimes(extTranscript, fourMinAgo, fourMinAgo);
+
+    // 2. Session with truncated tool_calls (transcript_full.jsonl not flushed yet) and background task waiting
+    const convBg = 'conv-bg-trunc';
+    const bgLogDir = path.join(brainDir, convBg, '.system_generated', 'logs');
+    await fsp.mkdir(bgLogDir, { recursive: true });
+    const bgTranscript = path.join(bgLogDir, 'transcript.jsonl');
+    const nowIso = new Date().toISOString();
+    await fsp.writeFile(
+      bgTranscript,
+      [
+        JSON.stringify({
+          step_index: 0,
+          type: 'USER_INPUT',
+          created_at: nowIso,
+          content: '<USER_REQUEST>\nBuild Docker image dài\n</USER_REQUEST>\nCommand Working Directory: e:\\WorkOffice',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          created_at: nowIso,
+          content: 'Đang ghi file cấu hình lớn...',
+          truncated_fields: ['tool_calls'],
+          tool_calls: [],
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    const sessions = new Map();
+    const sidToKey = new Map();
+    const emittedEvents = [];
+    let seq = 0;
+
+    const watcher = createAntigravityWatcher({
+      sessions,
+      sidToKey,
+      newSession: (key) => ({
+        id: key,
+        key,
+        status: 'rest',
+        counts: { read: 0, edit: 0, cmd: 0, web: 0 },
+        subs: {},
+        doneSubs: [],
+      }),
+      dropSession: () => {},
+      pub: (s) => s,
+      broadcast: (msg) => {
+        if (msg.k === 'ev' && msg.e) emittedEvents.push(msg.e);
+      },
+      noteDir: () => {},
+      isRemovedDir: () => false,
+      classifyVi: async (toolName) => ({ type: 'cmd', label: toolName }),
+      count: () => {},
+      testRunner: () => null,
+      imageId: () => null,
+      pushFeed: () => {},
+      chat: { onEvent: () => {} },
+      trophies: { bump: () => {}, session: () => {} },
+      rollDay: () => {},
+      getStats: () => ({ read: 0, edit: 0, cmd: 0, web: 0, prompts: 0, steps: 0, subs: 0, cost: 0 }),
+      nextSeq: () => ++seq,
+      onUsageChange: () => {},
+      onGitCmd: () => {},
+      getActiveAccount: () => '',
+    });
+
+    await watcher.scan();
+
+    // Verify 4-minute external tool wait stays 'work'
+    const extSess = sessions.get(`a${convWaitExt}`);
+    assert.ok(extSess, 'external wait session must exist');
+    assert.equal(extSess.status, 'work', 'Session waiting 4m on external tool must remain in work status');
+
+    // Verify truncated tool_calls step stays 'work'
+    const bgSess = sessions.get(`a${convBg}`);
+    assert.ok(bgSess, 'truncated/bg session must exist');
+    assert.equal(bgSess.status, 'work', 'Session with truncated_fields: [tool_calls] must stay in work status');
+
+    // Append background task start + intermediate PLANNER_RESPONSE without tool_calls -> must NOT emit 'stop'
+    const laterIso = new Date(Date.now() + 1000).toISOString();
+    await fsp.appendFile(
+      bgTranscript,
+      [
+        JSON.stringify({
+          step_index: 2,
+          type: 'GENERIC',
+          created_at: laterIso,
+          content: 'Tool is running as a background task with task id: bg-docker-build-99',
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: 'PLANNER_RESPONSE',
+          created_at: laterIso,
+          status: 'DONE',
+          content: 'Lệnh build đang chạy ngầm, tôi sẽ đợi thông báo hoàn tất.',
+          tool_calls: [],
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    await watcher.scan();
+    assert.equal(bgSess.status, 'work', 'Session with active background task must stay in work status even when PLANNER_RESPONSE has no tool_calls');
+    assert.equal(
+      emittedEvents.some((e) => e.sess === bgSess.id && e.type === 'stop'),
+      false,
+      'Must NOT emit premature stop event while background task is still running',
+    );
+
+    // Now finish the background task and emit final reply -> should transition to 'rest' and emit 'stop'
+    const doneIso = new Date(Date.now() + 2000).toISOString();
+    await fsp.appendFile(
+      bgTranscript,
+      [
+        JSON.stringify({
+          step_index: 4,
+          type: 'GENERIC',
+          created_at: doneIso,
+          content: 'Task id "bg-docker-build-99" finished with exit code 0.',
+        }),
+        JSON.stringify({
+          step_index: 5,
+          type: 'PLANNER_RESPONSE',
+          created_at: doneIso,
+          status: 'DONE',
+          content: 'Đã build xong toàn bộ Docker image thành công!',
+          tool_calls: [],
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    await watcher.scan();
+    assert.equal(bgSess.status, 'rest', 'Session must transition to rest once background task finished and final reply arrived');
+    assert.equal(
+      emittedEvents.some((e) => e.sess === bgSess.id && e.type === 'stop'),
+      true,
+      'Must emit stop event after background task finishes and final reply arrives',
+    );
+  } finally {
+    if (prevBrainEnv === undefined) delete process.env.OFFICE_AGY_BRAIN_DIR;
+    else process.env.OFFICE_AGY_BRAIN_DIR = prevBrainEnv;
+    await fsp.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
+  }
+});
+
+
 

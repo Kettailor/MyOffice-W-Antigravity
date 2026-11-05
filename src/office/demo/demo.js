@@ -249,6 +249,20 @@ export function applyMsg(d, quiet = false) {
       syncSessionWaitCards();
     }
     state.connectedOnce = true; queueUi();
+    if ((!d.sessions || d.sessions.length === 0) && sessions.size === 0 && !DEMO) {
+      setTimeout(() => {
+        if (sessions.size > 0 || replay.on) return;
+        fetch(`/api/live?since=-1${TOKEN ? `&k=${encodeURIComponent(TOKEN)}` : ''}`, { cache: 'no-store' })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => {
+            if (j && Array.isArray(j.msgs)) {
+              if (typeof j.seq === 'number') liveSince = j.seq;
+              for (const m of j.msgs) applyMsg(m);
+            }
+          })
+          .catch(() => {});
+      }, 2500);
+    }
   } else if (d.k === 'sess') { upsertSession(d.s, !quiet); if (d.stats) state.stats = d.stats; syncSessionWaitCards(); }
   else if (d.k === 'gone') { if (!quiet) chatLeft(sessions.get(d.id)); (quiet ? dropSessionNow : removeSession)(d.id); syncSessionWaitCards(); }
   else if (d.k === 'ev') {
@@ -342,13 +356,19 @@ function openEventSource() {
   liveES = { close: () => { try { currentES?.close(); } catch { /* ignore */ } currentES = null; stopFallbackPoll(); } };
   es.onopen = () => {
     lastStreamAt = Date.now();
-    stopFallbackPoll();
     setConn(true);
     reportPresence();
   };
   es.onerror = () => {
     setConn(false);
     startFallbackPoll();
+    if (es.readyState === EventSource.CLOSED) {
+      setTimeout(() => {
+        if (!VIA_TUNNEL && (!currentES || currentES.readyState === EventSource.CLOSED)) {
+          openEventSource();
+        }
+      }, 2500);
+    }
   };
   es.onmessage = (m) => {
     lastStreamAt = Date.now();
@@ -373,6 +393,11 @@ export function connect() {
       if (!VIA_TUNNEL && (!currentES || currentES.readyState === EventSource.CLOSED || now - lastStreamAt > 35_000)) {
         openEventSource();
       }
+    });
+    window.addEventListener('online', () => {
+      reportPresence();
+      if (!VIA_TUNNEL) openEventSource();
+      else startFallbackPoll();
     });
   }
   if (VIA_TUNNEL) {

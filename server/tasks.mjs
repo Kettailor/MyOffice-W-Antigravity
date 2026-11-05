@@ -295,7 +295,7 @@ function cleanAgyError(errStr = '') {
 
 /** claude() -> { file, kind? } | null; env() -> the environment to run with; onStart(task), onDone(task) for the office. */
 export function createTasks({ dataDir, claude, env, onStart, onDone, max = Number(process.env.OFFICE_MAX_CONCURRENT_TASKS) || 12, perHour = Number(process.env.OFFICE_TASKS_PER_HOUR) || 100 }) {
-  const running = new Map(), recent = [];   // id -> task; when the last ones started (the hourly cap)
+  const running = new Map(), finished = new Map(), recent = [];   // id -> task; when the last ones started (the hourly cap)
   const IMG_DIR = path.join(dataDir, 'task-images');
   const PROMPT_DIR = path.join(dataDir, 'task-prompts');
   function bridgeHeaders() {
@@ -304,6 +304,30 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
     return token
       ? { 'Content-Type': 'application/json', 'X-Bridge-Token': token }
       : { 'Content-Type': 'application/json' };
+  }
+  function getStatus({ id = '', sid = '', dir = '' } = {}) {
+    const cleanSid = String(sid || '').replace(/^(?:agy:|a)/, '');
+    const matchDir = normDirKey(dir);
+    for (const r of running.values()) {
+      const hitId = Boolean(id && (r.id === id || r.bridgeId === id));
+      const hitSid = Boolean(cleanSid && (r.sid === cleanSid || r.from?.sid === cleanSid));
+      const hitDir = Boolean(!id && !cleanSid && matchDir && normDirKey(r.dir) === matchDir);
+      if (hitId || hitSid || hitDir) {
+        return { ok: true, running: true, id: r.id, sid: r.sid || r.from?.sid || null };
+      }
+    }
+    if (id && finished.has(id)) {
+      const f = finished.get(id);
+      return { ok: true, running: false, id: f.id, sid: f.sid || null, result: f.result || '', error: f.error || '' };
+    }
+    if (cleanSid) {
+      for (const f of [...finished.values()].reverse()) {
+        if (f.sid === cleanSid) {
+          return { ok: true, running: false, id: f.id, sid: f.sid, result: f.result || '', error: f.error || '' };
+        }
+      }
+    }
+    return { ok: true, running: false };
   }
   function pruneTaskImages() {
     const now = Date.now();
@@ -356,6 +380,7 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
       const t = { id, pid: 0, proc: { kill: () => ac.abort() }, bridgeId: null, bridgeUrl: primaryUrl, dir, text, at: now, from, by, model: chosenModel, account, sid: from?.sid || null, result: '', error: '', buf: '', isAgyCli: true };
       running.set(id, t); recent.push(now);
       (async () => {
+        let gotDoneEvent = false;
         try {
           const { res, bridgeUrl } = await dispatchViaHostBridge({
             bridgeBase: primaryUrl,
@@ -378,8 +403,12 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
                 const j = JSON.parse(line);
                 if (j.event === 'queued' && j.task?.id) t.bridgeId = j.task.id;
                 if (j.sid) t.sid = j.sid;
-                if (j.event === 'error') t.error = j.code || 'error';
+                if (j.event === 'error') {
+                  t.error = j.code || 'error';
+                  gotDoneEvent = true;
+                }
                 if (j.event === 'done') {
+                  gotDoneEvent = true;
                   if (j.sid) t.sid = j.sid;
                   if (j.result) t.result = j.result;
                   if (j.error) t.error = j.error;
@@ -388,19 +417,57 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
             }
           }
         } catch (err) {
-          if (!ac.signal.aborted) {
+          if (!ac.signal.aborted && !t.bridgeId && !t.sid) {
             const rawErr = String(err?.message || err).trim();
             t.error = /^fetch failed$/i.test(rawErr)
               ? 'Không kết nối được Host Bridge (cổng 4311 trên máy chủ Windows). Hãy kiểm tra tiến trình server/host-bridge.mjs.'
               : rawErr.slice(0, 240);
           }
-        } finally {
-          running.delete(id);
-          if (!t.error && !t.result) {
-            t.result = `Đã gửi yêu cầu công việc tới Antigravity CLI (${String(dir).split(/[\\/]/).pop()}).`;
-          }
-          onDone?.(t);
         }
+        // If the NDJSON stream between Docker and Host Bridge dropped mid-task (e.g. network change or idle socket timeout),
+        // keep polling Host Bridge `/task/status` until the actual Windows CLI process finishes!
+        if (!gotDoneEvent && !ac.signal.aborted && !t.error && (t.bridgeId || t.sid || dir)) {
+          const pollDeadline = Date.now() + 4 * 3600_000;
+          let consecutivePollErrors = 0;
+          while (!ac.signal.aborted && Date.now() < pollDeadline) {
+            await new Promise((r) => setTimeout(r, 2500));
+            if (ac.signal.aborted) break;
+            const qs = `id=${encodeURIComponent(t.bridgeId || '')}&sid=${encodeURIComponent(t.sid || from?.sid || '')}&dir=${encodeURIComponent(dir || '')}`;
+            const urlsToTry = [...new Set([t.bridgeUrl, ...candidateUrls].filter(Boolean))];
+            let statusRes = null;
+            for (const u of urlsToTry) {
+              try {
+                const r = await fetch(`${u}/task/status?${qs}`, {
+                  headers: bridgeHeaders(),
+                  signal: AbortSignal.timeout(4000),
+                });
+                if (r.ok) {
+                  statusRes = await r.json();
+                  t.bridgeUrl = u;
+                  break;
+                }
+              } catch { /* try next candidate url */ }
+            }
+            if (!statusRes) {
+              consecutivePollErrors++;
+              if (consecutivePollErrors > 24) break; // ~60s completely unreachable
+              continue;
+            }
+            consecutivePollErrors = 0;
+            if (statusRes.sid && !t.sid) t.sid = statusRes.sid;
+            if (!statusRes.running) {
+              if (statusRes.result && !t.result) t.result = statusRes.result;
+              if (statusRes.error && !t.error) t.error = statusRes.error;
+              break;
+            }
+          }
+        }
+        running.delete(id);
+        setBounded(finished, id, { id, sid: t.sid, dir: t.dir, result: t.result, error: t.error, doneAt: Date.now() }, 200);
+        if (!t.error && !t.result) {
+          t.result = `Đã gửi yêu cầu công việc tới Antigravity CLI (${String(dir).split(/[\\/]/).pop()}).`;
+        }
+        onDone?.(t);
       })();
       onStart?.(t);
       return { ok: true, task: pub(t) };
@@ -460,8 +527,9 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
       }
     }
 
-    const buildArgs = (resumeSid, overrideModel = null) => {
+    const buildArgs = (resumeSid, overrideModel = null, overridePrompt = null) => {
       const effectiveModel = overrideModel || chosenModel || '';
+      const activePrompt = overridePrompt || prompt;
       if (isAgyCli) {
         return [
           '--add-dir', dir,
@@ -470,17 +538,17 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
           ...(effectiveModel ? ['--model', effectiveModel] : []),
           '--output-format', 'stream-json',
           '--dangerously-skip-permissions',
-          '--print-timeout', '30m',
-          '-p', prompt,
+          '--print-timeout', '4h',
+          '-p', activePrompt,
         ];
       }
       if (isAgy) {
         return resumeSid
-          ? ['agentapi', 'send-message', `--title=${text.slice(0, 60)}`, resumeSid, prompt]
-          : ['agentapi', 'new-conversation', `--title=${text.slice(0, 60)}`, prompt];
+          ? ['agentapi', 'send-message', `--title=${text.slice(0, 60)}`, resumeSid, activePrompt]
+          : ['agentapi', 'new-conversation', `--title=${text.slice(0, 60)}`, activePrompt];
       }
       return [
-        '-p', prompt,
+        '-p', activePrompt,
         '--output-format', 'stream-json',
         '--verbose',
         ...(effectiveModel ? ['--model', effectiveModel] : []),
@@ -563,6 +631,40 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
             return;
           } catch { /* fall through */ }
         }
+        // Third fallback: if a long-running task gets interrupted mid-way by a transient network/RPC error,
+        // automatically resume the same conversation up to 2 times so the task finishes seamlessly!
+        const resumeConvId = t.sid || from?.sid || null;
+        if (
+          !t.stopped
+          && t.isAgyCli
+          && resumeConvId
+          && (t.transientRetries || 0) < 2
+          && (code !== 0 || t.error)
+          && /unavailable|deadline_exceeded|resource_exhausted|connection reset|socket hang up|econnreset|etimedout|eof|stream error|internal error|502|503|504|rate.?limit/i.test(`${t.error || ''} ${t.buf || ''}`)
+        ) {
+          t.transientRetries = (t.transientRetries || 0) + 1;
+          t.error = '';
+          t.buf = '';
+          setTimeout(() => {
+            if (t.stopped) {
+              running.delete(id);
+              onDone?.(t);
+              return;
+            }
+            try {
+              const resumePrompt = 'Tiếp tục hoàn thành công việc đang thực hiện dở (Continue and complete the interrupted task).';
+              const retryProc = spawn(execBin, buildArgs(resumeConvId, chosenModel, resumePrompt), { cwd: dir, env: spawnEnv, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true });
+              t.proc = retryProc;
+              t.pid = retryProc.pid;
+              attachHandlers(retryProc);
+            } catch {
+              running.delete(id);
+              setBounded(finished, id, { id, sid: t.sid, dir: t.dir, result: t.result, error: t.error || `exit ${code}`, doneAt: Date.now() }, 200);
+              onDone?.(t);
+            }
+          }, 2500);
+          return;
+        }
         if (t.isAgyCli && code === 0 && t.sid) {
           syncCliConversationToDesktop(t.sid);
         }
@@ -605,6 +707,7 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
         if ((t.isAgy || t.isAgyCli) && !t.error && !t.result) {
           t.result = `Đã gửi yêu cầu công việc tới Antigravity CLI (${path.basename(dir)}). Agent đang xử lý trực tiếp trong phiên.`;
         }
+        setBounded(finished, id, { id, sid: t.sid, dir: t.dir, result: t.result, error: t.error, doneAt: Date.now() }, 200);
         onDone?.(t);
       });
     };
@@ -656,7 +759,7 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
     }
     return { ok: true, stopped };
   }
-  const api = { start, stop, stopBySession, list: () => [...running.values()].map(pub) };
+  const api = { start, stop, stopBySession, getStatus, list: () => [...running.values()].map(pub) };
   activeTasksInstance = api;
   return api;
 }

@@ -709,6 +709,7 @@ export function normalizeAgyHookPayload(p, defaultEvent = '') {
 // Extracts user prompt text from Antigravity's <USER_REQUEST>...</USER_REQUEST> block.
 export function extractUserRequest(content = '') {
   if (!content || typeof content !== 'string') return '';
+  if (/<SYSTEM_MESSAGE>/i.test(content) && !/<USER_REQUEST>/i.test(content)) return '';
   const m = /<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i.exec(content);
   const raw = m ? m[1] : content.replace(/<[a-zA-Z_][\w-]*>[\s\S]*?<\/[a-zA-Z_][\w-]*>/g, '');
   return raw.trim();
@@ -789,13 +790,22 @@ async function readAgyBgTasks(convDir) {
       if (!n.endsWith('.log')) continue;
       const full = path.join(dir, n);
       const st = await fsp.stat(full).catch(() => null);
-      if (!st || now - st.mtimeMs > 120_000) continue;
+      // Keep tracking active background tasks for up to 45 minutes even if stdout is quiet while waiting on network/IO
+      if (!st || now - st.mtimeMs > 45 * 60_000) continue;
       const fh = await fsp.open(full, 'r');
       try {
-        const len = Math.min(st.size, 4096), buf = Buffer.alloc(len);
-        await fh.read(buf, 0, len, 0);
-        const head = buf.toString('utf8');
-        if (/Command exited with code/i.test(head)) continue;
+        const headLen = Math.min(st.size, 4096);
+        const headBuf = Buffer.alloc(headLen);
+        await fh.read(headBuf, 0, headLen, 0);
+        const head = headBuf.toString('utf8');
+        let tail = head;
+        if (st.size > 4096) {
+          const tailLen = Math.min(st.size, 4096);
+          const tailBuf = Buffer.alloc(tailLen);
+          await fh.read(tailBuf, 0, tailLen, st.size - tailLen);
+          tail = tailBuf.toString('utf8');
+        }
+        if (/Command exited with code/i.test(head) || /Command exited with code/i.test(tail)) continue;
         const cmdMatch = /CommandLine:\s*(.+)/i.exec(head);
         const id = n.replace(/\.log$/, '');
         map.set(id, { id, desc: clip(redact(oneLine(cmdMatch ? cmdMatch[1] : id)), 70), at: st.birthtimeMs || st.mtimeMs });
@@ -2166,6 +2176,7 @@ export function createAntigravityWatcher({
   onUsageChange,
   onGitCmd,
   getActiveAccount,
+  isTaskRunning,
   maxDesks = 44,
 }) {
   const states = new Map(); // convId -> { offset, mtimeMs, model, firstPrompt, lastStepType, lastStepHasTools, lastFeedbackAt, steps }
@@ -2178,7 +2189,7 @@ export function createAntigravityWatcher({
       const fullPath = path.join(convDir, '.system_generated', 'logs', 'transcript_full.jsonl');
       if (!fs.existsSync(fullPath)) return null;
       const stat = fs.statSync(fullPath);
-      const maxRead = Math.min(stat.size, 2 * 1024 * 1024);
+      const maxRead = Math.min(stat.size, 8 * 1024 * 1024);
       const fd = fs.openSync(fullPath, 'r');
       try {
         const buf = Buffer.alloc(maxRead);
@@ -2205,7 +2216,10 @@ export function createAntigravityWatcher({
     if (!line.trim()) return false;
     let j;
     try { j = JSON.parse(line); } catch { return false; }
-    if (j.type === 'PLANNER_RESPONSE' && Array.isArray(j.truncated_fields) && j.truncated_fields.includes('tool_calls') && convDir) {
+    const hasTruncatedToolCalls = j.type === 'PLANNER_RESPONSE'
+      && Array.isArray(j.truncated_fields)
+      && j.truncated_fields.includes('tool_calls');
+    if (hasTruncatedToolCalls && convDir) {
       const fullTools = readFullStepToolCalls(convDir, j.step_index);
       if (Array.isArray(fullTools) && fullTools.length > 0) {
         j.tool_calls = fullTools;
@@ -2230,13 +2244,39 @@ export function createAntigravityWatcher({
     let usageChanged = false;
     const cutoff8d = Date.now() - 8 * 86400_000;
     const activeAcct = liveEvents && typeof getActiveAccount === 'function' ? (getActiveAccount() || '') : (s.agyAccount || '');
+    st.pendingBgTasks ||= new Set();
 
-    if (j.type !== 'PLANNER_RESPONSE' && typeof j.content === 'string' && !extractUserRequest(j.content)) {
+    if (j.type !== 'PLANNER_RESPONSE' && typeof j.content === 'string' && !/<USER_REQUEST>/i.test(j.content)) {
       const msgMatches = j.content.match(/\[Message\]\s+timestamp=[^\r\n]*?\bsender=/gi);
       if (msgMatches && msgMatches.length > 0) {
         st.pendingSubCalls = Math.max(0, (st.pendingSubCalls || 0) - msgMatches.length);
       } else if (/<SYSTEM_MESSAGE>[\s\S]*?\[Message\][\s\S]*?sender=/i.test(j.content)) {
         st.pendingSubCalls = Math.max(0, (st.pendingSubCalls || 0) - 1);
+      }
+      const bgStartRe = /Tool is running as a background task with task id:\s*([^\s"'<>]+)/gi;
+      let bgM;
+      while ((bgM = bgStartRe.exec(j.content)) !== null) {
+        const tid = bgM[1].trim();
+        if (tid) {
+          st.pendingBgTasks.add(tid);
+          st.lastBgStartAt = ts || Date.now();
+        }
+      }
+      const bgEndRe = /Task id\s+"([^"]+)"\s+finished/gi;
+      while ((bgM = bgEndRe.exec(j.content)) !== null) {
+        const tid = bgM[1].trim();
+        if (tid) {
+          st.pendingBgTasks.delete(tid);
+          st.lastSubStopAt = ts || Date.now();
+        }
+      }
+      const senderRe = /\[Message\][^\r\n]*?\bsender=([^\s"'<>]+)/gi;
+      while ((bgM = senderRe.exec(j.content)) !== null) {
+        const sid = bgM[1].trim();
+        if (sid && st.pendingBgTasks.has(sid)) {
+          st.pendingBgTasks.delete(sid);
+          st.lastSubStopAt = ts || Date.now();
+        }
       }
     }
 
@@ -2244,12 +2284,20 @@ export function createAntigravityWatcher({
       st.lastFeedbackAt = 0;
       st.waitInfo = null;
       if (s) s.waitCard = null;
+      if (!s.cwd && typeof j.content === 'string') {
+        const cwdMatch = /Command Working Directory:\s*([^\r\n<]+)/i.exec(j.content);
+        if (cwdMatch && cwdMatch[1].trim()) {
+          s.cwd = normalizeWorkspacePath(cwdMatch[1].trim(), knownRoots);
+          noteDir(s.cwd);
+        }
+      }
       const req = extractUserRequest(j.content || '');
       if (req) {
         const promptText = clip(redact(oneLine(req)), 90);
         if (!st.firstPrompt) st.firstPrompt = promptText;
         s.lastPrompt = promptText;
         s.taskStart = ts;
+        s.doneAt = 0;
         if (liveEvents && typeof getActiveAccount === 'function') {
           s.agyAccount = getActiveAccount() || '';
         }
@@ -2258,9 +2306,15 @@ export function createAntigravityWatcher({
         st.lastFeedbackAt = 0;
         st.waitInfo = null;
         st.pendingSubCalls = 0;
+        st.pendingBgTasks.clear();
         st.deferredStopLabel = null;
         st.deferredStopAt = 0;
         st.lastSubStopAt = 0;
+        if (liveEvents) {
+          for (let idx = liveEvents.length - 1; idx >= 0; idx--) {
+            if (liveEvents[idx].kind === 'stop') liveEvents.splice(idx, 1);
+          }
+        }
         s.usage ||= { cost: 0, in: 0, cr: 0, out: 0, ctx: 0, steps: 0, prompts: 0, model: s.preferredModelLabel || st.model || 'Gemini 3.1 Pro' };
         if (s.preferredModelLabel || st.model) {
           s.usage.model = s.preferredModelLabel || st.model || s.usage.model || 'Gemini 3.1 Pro';
@@ -2277,6 +2331,8 @@ export function createAntigravityWatcher({
       const cr = Number(j.cache_read_tokens) || 0;
       const out = Number(j.output_tokens) || 0;
       const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
+      const stepStillStreaming = Boolean(j.status && String(j.status).toUpperCase() !== 'DONE' && String(j.status).toUpperCase() !== 'ERROR');
+      const stepHasTools = tools.length > 0 || hasTruncatedToolCalls;
       let stepRead = 0, stepEdit = 0, stepCmd = 0, stepWeb = 0;
       for (const tc of tools) {
         const normT = normalizeAgyTool(String(tc.name || ''), tc.args);
@@ -2305,9 +2361,16 @@ export function createAntigravityWatcher({
         usageChanged = true;
       }
       st.lastStepType = 'PLANNER_RESPONSE';
-      st.lastStepHasTools = tools.length > 0;
+      st.lastStepHasTools = stepHasTools || stepStillStreaming;
 
-      if (tools.length > 0) {
+      if (stepHasTools) {
+        st.deferredStopLabel = null;
+        st.deferredStopAt = 0;
+        if (liveEvents) {
+          for (let idx = liveEvents.length - 1; idx >= 0; idx--) {
+            if (liveEvents[idx].kind === 'stop') liveEvents.splice(idx, 1);
+          }
+        }
         let stepHasWait = false;
         for (const tc of tools) {
           const rawName = String(tc.name || '');
@@ -2439,10 +2502,17 @@ export function createAntigravityWatcher({
       } else if (typeof j.content === 'string' && j.content.trim()) {
         s.lastReply = clip(redact(oneLine(j.content.trim())), 240);
         usageChanged = true;
-        if ((st.pendingSubCalls || 0) > 0 && st.lastSubInvokeAt > 0 && ts - st.lastSubInvokeAt > 5 * 60_000) {
+        if ((st.pendingSubCalls || 0) > 0 && st.lastSubInvokeAt > 0 && ts - st.lastSubInvokeAt > 15 * 60_000) {
           st.pendingSubCalls = 0;
         }
-        const hasActiveSubs = ((st.pendingSubCalls || 0) > 0 && Date.now() - ts < 5 * 60_000) || Object.keys(s.subs || {}).length > 0 || (s.bg && s.bg.size > 0);
+        if (st.pendingBgTasks && st.pendingBgTasks.size > 0 && st.lastBgStartAt > 0 && ts - st.lastBgStartAt > 45 * 60_000) {
+          st.pendingBgTasks.clear();
+        }
+        const hasActiveSubs = stepStillStreaming
+          || ((st.pendingSubCalls || 0) > 0 && Date.now() - ts < 15 * 60_000)
+          || (st.pendingBgTasks && st.pendingBgTasks.size > 0 && Date.now() - (st.lastBgStartAt || ts) < 45 * 60_000)
+          || Object.keys(s.subs || {}).length > 0
+          || (s.bg && s.bg.size > 0);
         if (hasActiveSubs) {
           s.status = 'work';
           s.busy = true;
@@ -2482,7 +2552,7 @@ export function createAntigravityWatcher({
   async function syncSubagent(subCand, meta, parentSession) {
     let subSt = subStates.get(subCand.convId);
     if (!subSt) {
-      subSt = { offset: 0, mtimeMs: 0, transcriptFile: subCand.transcriptFile, steps: [], parentId: meta.parentId, lastLabel: '', lastTool: null, lastClassified: null, promptDesc: '' };
+      subSt = { offset: 0, mtimeMs: 0, transcriptFile: subCand.transcriptFile, steps: [], parentId: meta.parentId, lastLabel: '', lastTool: null, lastClassified: null, promptDesc: '', lastStepType: '', lastStepHasTools: false };
       subStates.set(subCand.convId, subSt);
     } else if ((subSt.transcriptFile && subSt.transcriptFile !== subCand.transcriptFile) || subCand.st.size < subSt.offset) {
       subSt.offset = 0;
@@ -2510,15 +2580,23 @@ export function createAntigravityWatcher({
             let j;
             try { j = JSON.parse(line); } catch { continue; }
             const ts = j.created_at ? Date.parse(j.created_at) : (subCand.st.mtimeMs || Date.now());
-            if (j.type === 'USER_INPUT' && !subSt.promptDesc && typeof j.content === 'string') {
-              const req = extractUserRequest(j.content) || (/content=([^\r\n<]+)/.exec(j.content)?.[1] ?? '');
-              if (req) subSt.promptDesc = clip(redact(oneLine(req)), 70);
+            if (j.type === 'USER_INPUT') {
+              subSt.lastStepType = 'USER_INPUT';
+              subSt.lastStepHasTools = false;
+              if (!subSt.promptDesc && typeof j.content === 'string') {
+                const req = extractUserRequest(j.content) || (/content=([^\r\n<]+)/.exec(j.content)?.[1] ?? '');
+                if (req) subSt.promptDesc = clip(redact(oneLine(req)), 70);
+              }
             } else if (j.type === 'PLANNER_RESPONSE') {
               const inp = Number(j.input_tokens) || 0;
               const cr = Number(j.cache_read_tokens) || 0;
               const out = Number(j.output_tokens) || 0;
               const stepCost = (inp * 1.25 + cr * 0.3 + out * 10) / 1e6;
+              const hasTruncTools = Array.isArray(j.truncated_fields) && j.truncated_fields.includes('tool_calls');
+              const stillStreaming = Boolean(j.status && String(j.status).toUpperCase() !== 'DONE' && String(j.status).toUpperCase() !== 'ERROR');
               const tools = Array.isArray(j.tool_calls) ? j.tool_calls.filter((t) => t?.name) : [];
+              subSt.lastStepType = 'PLANNER_RESPONSE';
+              subSt.lastStepHasTools = tools.length > 0 || hasTruncTools || stillStreaming;
               let stepRead = 0, stepEdit = 0, stepCmd = 0, stepWeb = 0;
               for (const tc of tools) {
                 const normT = normalizeAgyTool(String(tc.name || ''), tc.args);
@@ -2550,6 +2628,8 @@ export function createAntigravityWatcher({
                 newTool = norm;
                 newToolTs = ts;
               }
+            } else if (j.type === 'GENERIC') {
+              subSt.lastStepType = 'GENERIC';
             }
           }
           if (subSt.steps.length > 300 && subSt.steps[0]?.ts < cutoff8d) {
@@ -2584,10 +2664,13 @@ export function createAntigravityWatcher({
       );
       const parentStForSub = states.get(meta.parentId);
       const isParentForceStopped = Boolean(parentStForSub?.stoppedAtMtime && subCand.st.mtimeMs <= parentStForSub.stoppedAtMtime + 500);
+      const isSubInActiveTurn = (subSt.lastStepType === 'USER_INPUT' || subSt.lastStepType === 'GENERIC' || subSt.lastStepHasTools)
+        && (nowSubMs - subCand.st.mtimeMs < 10 * 60_000);
       const isRunning = !isParentForceStopped && (
         meta.status === 'CASCADE_RUN_STATUS_RUNNING'
         || meta.notFullyIdle
-        || (nowSubMs - subCand.st.mtimeMs < 30_000)
+        || isSubInActiveTurn
+        || (nowSubMs - subCand.st.mtimeMs < 45_000)
         || recentlyInvoked
       );
       if (meta.agentName || meta.title) {
@@ -2896,7 +2979,7 @@ export function createAntigravityWatcher({
 
     // Refresh task.md checklist & artifact title only when modified or on active turn
     const nowMs = Date.now();
-    const shouldCheckAux = initial || fileStat.mtimeMs !== st.mtimeMs || (s.status === 'work' && nowMs - (st.auxAt || 0) > 8000);
+    const shouldCheckAux = initial || fileStat.mtimeMs !== st.mtimeMs || ((s.status === 'work' || s.bg?.size > 0) && nowMs - (st.auxAt || 0) > 4000);
     if (shouldCheckAux) {
       st.auxAt = nowMs;
       const taskStat = await fsp.stat(path.join(convDir, 'task.md')).catch(() => null);
@@ -2939,7 +3022,7 @@ export function createAntigravityWatcher({
         if (v?.provisional && Date.now() - (v.seenAt || 0) > 45_000) delete s.subs[k];
       }
     }
-    if ((st.pendingSubCalls || 0) > 0 && !hasActiveSubCandidate && Object.keys(s.subs || {}).length === 0 && Date.now() - (st.lastSubInvokeAt || 0) > 5 * 60_000) {
+    if ((st.pendingSubCalls || 0) > 0 && !hasActiveSubCandidate && Object.keys(s.subs || {}).length === 0 && Date.now() - (st.lastSubInvokeAt || 0) > 10 * 60_000) {
       st.pendingSubCalls = 0;
     }
 
@@ -2950,13 +3033,15 @@ export function createAntigravityWatcher({
     if (isForceStopped) {
       s.subs = {};
       st.pendingSubCalls = 0;
+      st.pendingBgTasks?.clear?.();
       st.deferredStopLabel = null;
       st.deferredStopAt = 0;
     }
 
-    // Determine live status ('work', 'wait', 'rest') combining DB status, subagent activity, and transcript freshness
+    // Determine live status ('work', 'wait', 'rest') combining DB status, subagent activity, CLI process status, and transcript freshness
     const ageMs = Date.now() - Math.max(fileStat.mtimeMs, s.lastEventAt || 0);
-    const dbRunning = !isForceStopped && dbMeta && (dbMeta.status === 'CASCADE_RUN_STATUS_RUNNING' || dbMeta.notFullyIdle) && ageMs < 5 * 60_000;
+    const cliTaskRunning = !isForceStopped && typeof isTaskRunning === 'function' && Boolean(isTaskRunning(convId, s.id));
+    const dbRunning = !isForceStopped && dbMeta && (dbMeta.status === 'CASCADE_RUN_STATUS_RUNNING' || dbMeta.notFullyIdle) && ageMs < 30 * 60_000;
     const hasWaitInfo = !isForceStopped && Boolean(st.waitInfo && (st.waitInfo.kind === 'ask' || st.waitInfo.kind === 'plan'));
     const waitingFeedback = !isForceStopped
       && st.lastFeedbackAt > 0
@@ -2964,13 +3049,24 @@ export function createAntigravityWatcher({
       && Date.now() - st.lastFeedbackAt < 12 * 3600_000
       && (
         (hasWaitInfo && (st.lastStepType === 'PLANNER_RESPONSE' || st.lastStepType === 'GENERIC'))
-        || (st.lastStepType === 'PLANNER_RESPONSE' && !st.lastStepHasTools && !dbRunning)
+        || (st.lastStepType === 'PLANNER_RESPONSE' && !st.lastStepHasTools && !dbRunning && !cliTaskRunning)
       );
-    const activeTurn = !isForceStopped && (dbRunning || ((st.lastStepType === 'USER_INPUT' || st.lastStepType === 'GENERIC' || st.lastStepHasTools) && ageMs < 90_000));
+    // Keep session in 'work' for up to 15 minutes when waiting on an external tool/connection (lastStepHasTools)
+    // or 10 minutes when waiting for LLM response after USER_INPUT / GENERIC tool output.
+    const activeTurnTimeoutMs = st.lastStepHasTools ? 15 * 60_000 : 10 * 60_000;
+    const activeTurn = !isForceStopped && (
+      cliTaskRunning
+      || dbRunning
+      || ((st.lastStepType === 'USER_INPUT' || st.lastStepType === 'GENERIC' || st.lastStepHasTools) && ageMs < activeTurnTimeoutMs)
+    );
+    const hasPendingBg = !isForceStopped && Boolean(
+      (s.bg && s.bg.size > 0)
+      || (st.pendingBgTasks && st.pendingBgTasks.size > 0 && Date.now() - (st.lastBgStartAt || 0) < 45 * 60_000)
+    );
     const hasRunningSubs = !isForceStopped && Boolean(hasActiveSubCandidate || Object.keys(s.subs || {}).length > 0 || (st.pendingSubCalls || 0) > 0);
 
-    // Strip any premature 'stop' events while subagents or background tasks are still running
-    if (hasRunningSubs || s.bg.size > 0) {
+    // Strip any premature 'stop' events while an active turn, subagents, or background tasks are still running
+    if (activeTurn || hasPendingBg || hasRunningSubs) {
       for (let idx = liveEvents.length - 1; idx >= 0; idx--) {
         if (liveEvents[idx].kind === 'stop') {
           st.deferredStopLabel = liveEvents[idx].label || st.deferredStopLabel || clip(s.lastReply || '', 90);
@@ -3050,22 +3146,22 @@ export function createAntigravityWatcher({
           t: st.waitInfo?.ts || st.lastFeedbackAt || Date.now(),
         };
       }
-    } else if (activeTurn || s.bg.size > 0 || hasRunningSubs) {
+    } else if (activeTurn || hasPendingBg || hasRunningSubs) {
       s.status = 'work';
       s.busy = true;
-      s.inTool = st.lastStepHasTools;
+      s.inTool = Boolean(st.lastStepHasTools || hasPendingBg);
       s.waitCard = null;
       if (!s.taskStart) s.taskStart = s.lastEventAt || fileStat.mtimeMs;
     } else if (st.deferredStopLabel) {
       const sinceSubEnd = Date.now() - Math.max(st.lastSubStopAt || 0, st.deferredStopAt || 0, fileStat.mtimeMs);
-      if (sinceSubEnd <= 15_000) {
+      if (sinceSubEnd <= 45_000) {
         // Keep Main Agent working briefly while waiting for reactive wakeup synthesis turn
         s.status = 'work';
         s.busy = true;
         s.inTool = false;
         s.waitCard = null;
       } else {
-        // Fallback: >15s elapsed after all subagents finished with no new Main Agent turn
+        // Fallback: >45s elapsed after all subagents finished with no new Main Agent turn
         const stopLabel = st.deferredStopLabel;
         const stopTs = Math.max(st.lastSubStopAt || 0, st.deferredStopAt || 0, s.lastEventAt || 0, fileStat.mtimeMs || 0);
         st.deferredStopLabel = null;
@@ -3197,7 +3293,7 @@ export function createAntigravityWatcher({
     const isCustomEnv = Boolean(process.env.OFFICE_AGY_BRAIN_DIR);
     const nativeBin = !isCustomEnv ? findNativeRustBin() : null;
     let candidates = nativeBin ? await scanBrainWithRust(nativeBin, brainDirs) : null;
-    if (!candidates) {
+    if (!candidates || candidates.length === 0) {
       const byConvId = new Map();
       const scanNow = Date.now();
       for (const brain of brainDirs) {
@@ -3273,11 +3369,18 @@ export function createAntigravityWatcher({
 
     // Keep top-level conversations active within the last 14 days, or at least the 8 most recent, up to maxDesks.
     const now = Date.now();
-    const ACTIVE_SUB_MS = 30_000;
+    const ACTIVE_SUB_MS = 45_000;
     const activeSubParents = new Set();
     for (const sub of subCandidates) {
+      const subSt = subStates.get(sub.convId);
+      const isSubInActiveTurn = Boolean(
+        subSt
+        && (subSt.lastStepType === 'USER_INPUT' || subSt.lastStepType === 'GENERIC' || subSt.lastStepHasTools)
+        && (now - sub.st.mtimeMs < 10 * 60_000)
+      );
       const isSubActive = sub.meta?.status === 'CASCADE_RUN_STATUS_RUNNING'
         || sub.meta?.notFullyIdle
+        || isSubInActiveTurn
         || (now - sub.st.mtimeMs < ACTIVE_SUB_MS);
       if (isSubActive && sub.meta?.parentId) {
         activeSubParents.add(sub.meta.parentId);
@@ -3487,6 +3590,7 @@ export function createAntigravityWatcher({
       if (st) {
         st.stoppedAtMtime = Math.max(st.mtimeMs || 0, Date.now());
         st.pendingSubCalls = 0;
+        st.pendingBgTasks?.clear?.();
         st.deferredStopLabel = null;
         st.deferredStopAt = 0;
         st.waitInfo = null;
@@ -3503,6 +3607,7 @@ export function createAntigravityWatcher({
         s.inTool = false;
         s.status = 'rest';
         s.subs = {};
+        s.bg?.clear?.();
         s.doneAt = Date.now();
       }
     }
