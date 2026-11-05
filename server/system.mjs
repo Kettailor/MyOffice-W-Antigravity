@@ -13,17 +13,158 @@ import { OS } from './platform/index.mjs';
 import { sh } from './platform/shared.mjs';
 import { findNativeRustBin } from './antigravity.mjs';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const BRIDGE_TOKEN_FILE = path.join(DATA_DIR, 'bridge-token.secret');
+const BRIDGE_WAKEUP_FILE = path.join(DATA_DIR, 'bridge-wakeup.json');
+const BRIDGE_WATCHER_FILE = path.join(DATA_DIR, 'bridge-watcher.json');
+const HOST_SYS_FILE = path.join(DATA_DIR, 'host-sys.json');
+
+function getBridgeBaseUrl() {
+  return (
+    process.env.OFFICE_HOST_BRIDGE ||
+    (process.env.OFFICE_DOCKER === '1' ? 'http://host.docker.internal:4311' : 'http://127.0.0.1:4311')
+  ).replace(/\/+$/, '');
+}
+
+function getBridgeToken() {
+  if (process.env.OFFICE_BRIDGE_TOKEN) return process.env.OFFICE_BRIDGE_TOKEN.trim();
+  try {
+    if (fs.existsSync(BRIDGE_TOKEN_FILE)) {
+      return fs.readFileSync(BRIDGE_TOKEN_FILE, 'utf8').trim();
+    }
+  } catch { /* ignore */ }
+  return '';
+}
+
+function isBridgeWatcherAlive() {
+  try {
+    if (!fs.existsSync(BRIDGE_WATCHER_FILE)) return false;
+    const st = fs.statSync(BRIDGE_WATCHER_FILE);
+    if (Date.now() - st.mtimeMs < 60_000) return true;
+    const raw = JSON.parse(fs.readFileSync(BRIDGE_WATCHER_FILE, 'utf8'));
+    return Boolean(raw?.ts && Date.now() - Number(raw.ts) < 60_000);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureHostBridgeAwake(bridgeBase, timeoutMs = 3000) {
+  try {
+    const r = await fetch(`${bridgeBase}/health`, { signal: AbortSignal.timeout(800) });
+    if (r.ok) {
+      lastBridgeUp = true;
+      return true;
+    }
+  } catch { /* asleep */ }
+  try {
+    await fsp.mkdir(DATA_DIR, { recursive: true });
+    await fsp.writeFile(
+      BRIDGE_WAKEUP_FILE,
+      JSON.stringify({ ts: Date.now(), reason: 'sys-telemetry' }),
+      'utf8',
+    );
+  } catch { /* ignore */ }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 220));
+    try {
+      const r = await fetch(`${bridgeBase}/health`, { signal: AbortSignal.timeout(700) });
+      if (r.ok) {
+        lastBridgeUp = true;
+        return true;
+      }
+    } catch { /* still waking */ }
+  }
+  return false;
+}
+
+async function fetchHostSysFromBridge(open = false) {
+  const bridgeBase = getBridgeBaseUrl();
+  const token = getBridgeToken();
+  const headers = token ? { 'X-Office-Bridge-Token': token } : {};
+
+  // Fast path if not explicitly opening the drawer and cached host-sys.json is very fresh (<12s)
+  if (!open) {
+    try {
+      const st = await fsp.stat(HOST_SYS_FILE);
+      if (Date.now() - st.mtimeMs < 12_000) {
+        const cached = JSON.parse(await fsp.readFile(HOST_SYS_FILE, 'utf8'));
+        if (cached && cached.mem && cached.cpu) {
+          cached.docker = { inDocker: true, containerRunning: true, bridgeUp: true };
+          return cached;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  const awake = await ensureHostBridgeAwake(bridgeBase, open ? 3500 : 2000);
+  if (awake) {
+    try {
+      const res = await fetch(
+        `${bridgeBase}/sys?open=${open ? '1' : '0'}&lang=${encodeURIComponent(langOf())}`,
+        { headers, signal: AbortSignal.timeout(open ? 8000 : 4500) },
+      );
+      if (res.ok) {
+        const snap = await res.json();
+        if (snap && snap.mem && snap.cpu) {
+          lastBridgeUp = true;
+          snap.docker = { inDocker: true, containerRunning: true, bridgeUp: true };
+          return snap;
+        }
+      }
+    } catch { /* fallback to file */ }
+  }
+
+  // Fallback to most recent host-sys.json if present
+  try {
+    const raw = JSON.parse(await fsp.readFile(HOST_SYS_FILE, 'utf8'));
+    if (raw && raw.mem && raw.cpu) {
+      raw.docker = {
+        inDocker: true,
+        containerRunning: true,
+        bridgeUp: lastBridgeUp || isBridgeWatcherAlive(),
+      };
+      return raw;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function forwardHostSysAction(payload) {
+  const bridgeBase = getBridgeBaseUrl();
+  const token = getBridgeToken();
+  const awake = await ensureHostBridgeAwake(bridgeBase, 3500);
+  if (!awake) return null;
+  try {
+    const res = await fetch(`${bridgeBase}/sys/action`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'X-Office-Bridge-Token': token } : {}),
+      },
+      body: JSON.stringify({ ...payload, lang: langOf() }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      cache = null;
+      return await res.json();
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 let lastDockerRunning = process.env.OFFICE_DOCKER === '1';
-let lastBridgeUp = false;
+let lastBridgeUp = isBridgeWatcherAlive();
 let lastDockerProbeAt = 0;
 function probeDockerAndBridge() {
   const now = Date.now();
   if (now - lastDockerProbeAt < 8000) return;
   lastDockerProbeAt = now;
-  const bridgeBase = (process.env.OFFICE_HOST_BRIDGE || 'http://127.0.0.1:4311').replace(/\/+$/, '');
+  const bridgeBase = getBridgeBaseUrl();
   fetch(`${bridgeBase}/health`, { signal: AbortSignal.timeout(1500) })
-    .then((r) => { lastBridgeUp = r.ok; })
-    .catch(() => { lastBridgeUp = false; });
+    .then((r) => { lastBridgeUp = r.ok || isBridgeWatcherAlive(); })
+    .catch(() => { lastBridgeUp = isBridgeWatcherAlive(); });
   if (process.env.OFFICE_DOCKER === '1') {
     lastDockerRunning = true;
   } else {
@@ -353,6 +494,10 @@ export async function sysSnapshot({ open = false } = {}) {
   return building;
 }
 async function buildSnapshot(open = true) {
+  if (process.env.OFFICE_DOCKER === '1') {
+    const hostSnap = await fetchHostSysFromBridge(open);
+    if (hostSnap) return hostSnap;
+  }
   const [P, mem, dsk, ports, files, est, gpuInfo] = await Promise.all([
     processes(open ? 25_000 : 120_000),
     memory(),
@@ -517,6 +662,7 @@ async function buildSnapshot(open = true) {
 
   return {
     at: now,
+    osPlatform: process.platform,
     mem, disk: dsk, tight, diskTight,
     cpu: { cores, percent: cpuPct, load: cpuLoad },
     gpu: gpuInfo || null,
@@ -549,22 +695,29 @@ async function buildSnapshot(open = true) {
    renderer carries. The Claude Code chats it holds: the sessions whose process sits under it. */
 function ideParts(P, appList, claude) {
   const first = [...P.procs.values()].find((p) => mine(p) && /--vscode-window-config=/.test(p.args));
-  const name = first && appOf(first.comm), app = name && appList.find((a) => a.name === name);
+  const fallbackApp = appList.find((a) => ['Antigravity IDE', 'Antigravity', 'VS Code', 'Cursor'].includes(a.name));
+  const name = (first && appOf(first.comm)) || fallbackApp?.name;
+  const app = name && appList.find((a) => a.name === name);
   if (!app) return null;
   const parts = { ui: { mem: 0, n: 0 }, ts: { mem: 0, n: 0 }, ext: { mem: 0, n: 0 } }, windows = new Set();
   let known = 0;
   for (const p of P.procs.values()) {
     if (!mine(p) || appOf(p.comm) !== name) continue;
-    const k = /--type=renderer/.test(p.args) ? 'ui' : /tsserver\.js/.test(p.args) ? 'ts' : /utility-sub-type=node\.mojom\.NodeService/.test(p.args) && /\(Plugin\)/.test(p.comm) ? 'ext' : null;
+    const k = /--type=renderer/.test(p.args) ? 'ui' : /tsserver\.js/.test(p.args) ? 'ts' : /utility-sub-type=node\.mojom\.NodeService/.test(p.args) && (/\(Plugin\)/.test(p.comm) || /extensionHost/i.test(p.args)) ? 'ext' : null;
     const w = /--vscode-window-config=vscode:([0-9a-f-]+)/.exec(p.args)?.[1];
     if (w) windows.add(w);
     if (!k) continue;
     parts[k].mem += p.mem; known += p.mem;
     if (k !== 'ts' || !/partialSemantic/.test(p.args)) parts[k].n++;   // (a project's TypeScript runs as two servers: count it once)
   }
-  const under = (pid) => { for (let p = P.procs.get(pid), i = 0; p && i < 12; p = P.procs.get(p.ppid), i++) if (p.comm.includes(`${name}.app/`)) return true; return false; };
+  const under = (pid) => {
+    for (let p = P.procs.get(pid), i = 0; p && i < 12; p = P.procs.get(p.ppid), i++) {
+      if (p.comm.includes(`${name}.app/`) || appOf(p.comm) === name) return true;
+    }
+    return false;
+  };
   const chats = claude.filter((c) => under(c.pid));
-  return { name, mem: app.mem, windows: windows.size, ui: parts.ui, ts: parts.ts, ext: parts.ext, other: Math.max(0, app.mem - known),
+  return { name, mem: app.mem, windows: Math.max(1, windows.size), ui: parts.ui, ts: parts.ts, ext: parts.ext, other: Math.max(0, app.mem - known),
     chats: chats.length, idleChats: chats.filter((c) => !c.busy).length };
 }
 
@@ -588,6 +741,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function within(p, roots) { const r = path.resolve(p); return roots.some((root) => r.startsWith(root + path.sep)); }
 
 export async function sysAction({ action, target, force, start, items }) {
+  if (process.env.OFFICE_DOCKER === '1') {
+    const proxied = await forwardHostSysAction({ action, target, force, start, items });
+    if (proxied) return proxied;
+  }
   // several idle Claude sessions at once (the drawer's main button, and closing idle sessions on a timer): the same checks
   // as closing one, never forced, never a session that is working
   if (action === 'closeIdle') {
@@ -629,7 +786,11 @@ export async function sysAction({ action, target, force, start, items }) {
     const snap = await buildSnapshot();
     const app = snap.apps.find((a) => a.name === target && a.quit);
     const P = await processes();
-    const main = [...P.procs.values()].find((p) => mine(p) && p.comm.includes(`${target}.app/Contents/MacOS/`) && !p.comm.includes('/Frameworks/'));
+    const main = [...P.procs.values()].find((p) => {
+      if (!mine(p)) return false;
+      if (process.platform === 'win32') return appOf(p.comm) === target && !/--type=/.test(p.args || '');
+      return p.comm.includes(`${target}.app/Contents/MacOS/`) && !p.comm.includes('/Frameworks/');
+    });
     if (!app || !main) return { ok: false, message: tr('server.sys.result.noApp') };
     try { process.kill(main.pid, force ? 'SIGKILL' : 'SIGTERM'); } catch { /* gone */ }
     await sleep(2500);

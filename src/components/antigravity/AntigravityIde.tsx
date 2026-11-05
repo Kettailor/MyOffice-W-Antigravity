@@ -99,6 +99,28 @@ interface WorkspaceTreeItem {
   category: string;
 }
 
+interface WaitCardQuestion {
+  header?: string;
+  question: string;
+  multi?: boolean;
+  options?: Array<{ label: string; description?: string }>;
+}
+
+interface WaitCardInfo {
+  id: string;
+  sess?: string;
+  sid?: string;
+  kind?: 'ask' | 'plan' | 'perm';
+  type?: string;
+  tool?: string;
+  label?: string;
+  detail?: string;
+  questions?: WaitCardQuestion[];
+  plan?: string;
+  planFile?: string;
+  planSummary?: string;
+}
+
 interface ConversationDetail {
   ok: boolean;
   id: string;
@@ -109,6 +131,7 @@ interface ConversationDetail {
   branch: string;
   status: string;
   busy: boolean;
+  waitCard?: WaitCardInfo | null;
   model: string;
   selectedModel: string;
   turns: ConversationTurn[];
@@ -163,22 +186,28 @@ interface LimitsWindow {
 interface LimitsStats {
   claudeGptLeft5hPct?: number;
   claudeGptLeftWeekPct?: number;
+  claudeGptResets5hAt?: number | null;
+  claudeGptResetsWeekAt?: number | null;
+  description5h?: string;
+  descriptionWeek?: string;
 }
 
 interface LimitsAccountOther {
   name?: string;
+  userName?: string;
   email?: string;
   label?: string;
-  account?: { email?: string; plan?: string };
+  account?: { email?: string; userName?: string; plan?: string; upgradeText?: string };
   windows?: LimitsWindow[];
   stats?: LimitsStats | null;
 }
 
 interface LimitsSnapshot {
+  userName?: string;
   email?: string;
   label?: string;
   useAiCredits?: boolean;
-  account?: { email?: string; plan?: string };
+  account?: { email?: string; userName?: string; plan?: string; upgradeText?: string };
   auto?: { on?: boolean; pick?: boolean; now?: string };
   windows?: LimitsWindow[];
   five?: LimitsWindow;
@@ -370,6 +399,34 @@ function renderCodeLineTokens(lineText: string): React.ReactNode {
   return out;
 }
 
+function sanitizeExternalUrl(rawUrl: string): string {
+  const trimmed = String(rawUrl || '').replace(
+    /^[\u0000-\u0020\u007F-\u009F]+|[\u0000-\u0020\u007F-\u009F]+$/g,
+    ''
+  );
+  if (!trimmed || /[\u0000-\u001F\u007F]/.test(trimmed)) return '#';
+  const normalized = trimmed.replace(/\s+/g, '').toLowerCase();
+  if (
+    normalized.startsWith('javascript:') ||
+    normalized.startsWith('vbscript:') ||
+    normalized.startsWith('data:') ||
+    normalized.startsWith('file:')
+  ) {
+    return '#';
+  }
+  if (
+    /^https?:\/\//i.test(trimmed) ||
+    /^mailto:/i.test(trimmed) ||
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../')
+  ) {
+    return trimmed;
+  }
+  return '#';
+}
+
 /* ─── Rich Markdown Renderer (supports Callouts, Tables, Code Blocks, File Links) ─── */
 const MarkdownRenderer = React.memo(function MarkdownRenderer({
   markdown,
@@ -455,9 +512,9 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
               nodes.push(
                 <a
                   key={`${keyPrefix}-a-${idx++}`}
-                  href={rawUrl}
+                  href={sanitizeExternalUrl(rawUrl)}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="agy-file-link"
                 >
                   {cleanLabel}
@@ -773,7 +830,7 @@ export default function AntigravityIde() {
   /* ─── Data & Permission State from Backend APIs ─── */
   const [sessions, setSessions] = useState<LiveSession[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [viewerName, setViewerName] = useState<string>('Kiệt');
+  const [viewerName, setViewerName] = useState<string>('Director');
   const [viewerPerms, setViewerPerms] = useState<ViewerPermissions>({
     isDirector: true,
     role: 'Giám đốc',
@@ -845,6 +902,10 @@ export default function AntigravityIde() {
   const liveFetchingRef = useRef(false);
   const convFetchingRef = useRef(false);
   const lastTasksFetchRef = useRef(0);
+  const lastConvSigRef = useRef<string>('');
+  const [waitAskPicks, setWaitAskPicks] = useState<Record<number, number[]>>({});
+  const [waitNoteText, setWaitNoteText] = useState<string>('');
+  const [waitDeciding, setWaitDeciding] = useState<boolean>(false);
 
   /* ─── Navigate Session with Back/Forward History ─── */
   const selectSession = useCallback(
@@ -905,6 +966,10 @@ export default function AntigravityIde() {
   const applyLimitsSnapshot = useCallback((lim: LimitsSnapshot | null | undefined) => {
     if (!lim || typeof lim !== 'object') return;
     setLimitsData(lim);
+    const liveUserName = lim.userName || lim.account?.userName || '';
+    if (liveUserName) {
+      setViewerName((prev) => (prev === 'Kiệt' || !prev ? liveUserName : prev));
+    }
     const activeSlug = lim.auto?.on || lim.auto?.pick ? lim.auto?.now || '' : '';
     const activeOther = activeSlug
       ? (lim.others || []).find((o: LimitsAccountOther) => o.name === activeSlug)
@@ -956,7 +1021,9 @@ export default function AntigravityIde() {
         }
         if (snap?.viewer) {
           const v = snap.viewer;
-          if (v.name && v.name !== 'Director' && v.name !== 'Giám đốc') {
+          if (v.userName) {
+            setViewerName(v.userName);
+          } else if (v.name && v.name !== 'Director' && v.name !== 'Giám đốc') {
             setViewerName(v.name);
           }
           const isDir = Boolean(
@@ -1043,7 +1110,7 @@ export default function AntigravityIde() {
     }, 0);
     const timer = setInterval(() => {
       void fetchLiveAndTasks(false);
-    }, 4000);
+    }, 5000);
     const onVisChange = () => {
       if (typeof document !== 'undefined' && !document.hidden) {
         void fetchLiveAndTasks(false);
@@ -1078,7 +1145,26 @@ export default function AntigravityIde() {
         if (!res.ok) return;
         const data: ConversationDetail = await res.json();
         if (data && data.ok) {
-          setConversation(data);
+          const lastTurn = data.turns?.[data.turns.length - 1];
+          const lastResp = lastTurn?.responses?.[lastTurn.responses.length - 1];
+          const sig = [
+            data.id,
+            data.title,
+            data.status,
+            data.busy ? 1 : 0,
+            data.waitCard?.id || '',
+            data.turns?.length || 0,
+            lastTurn?.id || '',
+            lastTurn?.steps?.length || 0,
+            lastTurn?.responses?.length || 0,
+            lastResp?.text?.length || 0,
+            lastTurn?.filesChanged?.length || 0,
+            (data.artifacts || []).map((a) => `${a.name}:${a.mtimeMs}`).join(','),
+          ].join('|');
+          if (!silent || sig !== lastConvSigRef.current) {
+            lastConvSigRef.current = sig;
+            setConversation(data);
+          }
           if (data.dir) setSelectedProjectDir(data.dir);
           if (data.branch) setSelectedBranch(data.branch);
           if (data.permissions) {
@@ -1395,6 +1481,68 @@ export default function AntigravityIde() {
   const activeTab = useMemo(
     () => openTabs.find((t) => t.key === activeTabKey) || openTabs[0] || null,
     [openTabs, activeTabKey]
+  );
+
+  const tokenizedCodeLines = useMemo(() => {
+    if (
+      !activeTab ||
+      activeTab.kind === 'artifact' ||
+      activeTab.name.toLowerCase().endsWith('.md') ||
+      isEditingDoc
+    ) {
+      return [];
+    }
+    const rawLines = String(activeTab.content || '')
+      .replace(/\r\n/g, '\n')
+      .split('\n');
+    const skipSyntax = rawLines.length > 1800;
+    return rawLines.map((lineText, idx) => ({
+      lineNo: idx + 1,
+      lineText,
+      tokens: skipSyntax ? (lineText || '\u00A0') : renderCodeLineTokens(lineText),
+    }));
+  }, [activeTab, isEditingDoc]);
+
+  const handleWaitDecision = useCallback(
+    async (choice: string) => {
+      const wc = conversation?.waitCard;
+      if (!wc || waitDeciding) return;
+      setWaitDeciding(true);
+      try {
+        const qs = Array.isArray(wc.questions) ? wc.questions : [];
+        const answers = qs.map((q, qi) => {
+          const picks = waitAskPicks[qi] || [0];
+          const labels = picks
+            .map((idx) => q.options?.[idx]?.label)
+            .filter(Boolean) as string[];
+          return { q: qi, pick: picks, labels, other: '' };
+        });
+        const note = waitNoteText.trim();
+        await fetch('/api/perm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: wc.id,
+            sess: conversation?.id || activeSessionId,
+            choice,
+            answers,
+            note,
+            text: note,
+          }),
+        });
+        setWaitNoteText('');
+        setWaitAskPicks({});
+        lastConvSigRef.current = '';
+        if (activeSessionId) {
+          setTimeout(() => void fetchConversation(activeSessionId, false), 250);
+        }
+      } catch {
+        // ignore
+      } finally {
+        setWaitDeciding(false);
+      }
+    },
+    [conversation, waitDeciding, waitAskPicks, waitNoteText, activeSessionId, fetchConversation]
   );
 
   /* ─── Line Comment (`C`) & Quote (`Ctrl+L`) Actions in Code Viewer ─── */
@@ -3159,10 +3307,211 @@ export default function AntigravityIde() {
                       />
                     </div>
                   )}
-                </div>
+                  </div>
 
-                {/* Bottom Floating Composer */}
-                <div className="agy-conv-composer" onPaste={handlePaste}>
+                  {/* Interactive Question / Plan Approval Banner (`waitCard`) */}
+                  {conversation?.waitCard && (
+                    <div
+                      style={{
+                        margin: '0 14px 10px',
+                        padding: '12px 14px',
+                        borderRadius: 10,
+                        background: 'rgba(30, 41, 59, 0.85)',
+                        border: '1px solid rgba(56, 189, 248, 0.35)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <strong style={{ color: '#38bdf8', fontSize: 12.5 }}>
+                          {conversation.waitCard.kind === 'plan'
+                            ? `📄 Cần duyệt kế hoạch: ${conversation.waitCard.label || 'implementation_plan.md'}`
+                            : conversation.waitCard.kind === 'ask'
+                            ? '❓ Agent đang chờ bạn chọn phương án trả lời'
+                            : `🛠️ Cần cấp quyền: ${conversation.waitCard.tool || conversation.waitCard.label || 'Tool'}`}
+                        </strong>
+                        {conversation.waitCard.kind === 'plan' && artifactList.length > 0 && (
+                          <button
+                            type="button"
+                            className="agy-review-btn"
+                            onClick={() => {
+                              const planArt =
+                                artifactList.find((a) =>
+                                  a.name.toLowerCase().includes('plan')
+                                ) || artifactList[0];
+                              if (planArt) openArtifactInPane(planArt);
+                            }}
+                          >
+                            <span>📄 Xem Kế hoạch</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {conversation.waitCard.detail && (
+                        <div style={{ color: '#d4d4d8', fontSize: 12, lineHeight: 1.45 }}>
+                          {conversation.waitCard.detail}
+                        </div>
+                      )}
+
+                      {conversation.waitCard.kind === 'ask' &&
+                        Array.isArray(conversation.waitCard.questions) &&
+                        conversation.waitCard.questions.map((q, qi) => {
+                          const curPicks = waitAskPicks[qi] || [0];
+                          return (
+                            <div key={qi} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              <div style={{ color: '#f4f4f5', fontSize: 12, fontWeight: 600 }}>
+                                {q.question}
+                              </div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                {(q.options || []).map((opt, oi) => {
+                                  const picked = curPicks.includes(oi);
+                                  return (
+                                    <button
+                                      key={oi}
+                                      type="button"
+                                      onClick={() => {
+                                        setWaitAskPicks((prev) => {
+                                          const old = prev[qi] || [0];
+                                          if (q.multi) {
+                                            const next = old.includes(oi)
+                                              ? old.filter((x) => x !== oi)
+                                              : [...old, oi];
+                                            return { ...prev, [qi]: next.length ? next : [oi] };
+                                          }
+                                          return { ...prev, [qi]: [oi] };
+                                        });
+                                      }}
+                                      style={{
+                                        padding: '5px 10px',
+                                        borderRadius: 6,
+                                        fontSize: 11.5,
+                                        cursor: 'pointer',
+                                        border: picked
+                                          ? '1px solid #38bdf8'
+                                          : '1px solid rgba(255,255,255,0.12)',
+                                        background: picked
+                                          ? 'rgba(56, 189, 248, 0.18)'
+                                          : 'rgba(24, 24, 31, 0.8)',
+                                        color: picked ? '#e0f2fe' : '#a1a1aa',
+                                      }}
+                                    >
+                                      {opt.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                      <input
+                        type="text"
+                        placeholder={
+                          conversation.waitCard.kind === 'plan'
+                            ? 'Nhập ghi chú bổ sung hoặc yêu cầu chỉnh sửa kế hoạch (tùy chọn)...'
+                            : 'Nhập câu trả lời hoặc chỉ thị bổ sung (tùy chọn)...'
+                        }
+                        value={waitNoteText}
+                        onChange={(e) => setWaitNoteText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleWaitDecision(
+                              conversation.waitCard?.kind === 'plan'
+                                ? waitNoteText.trim()
+                                  ? 'revise'
+                                  : 'approve'
+                                : conversation.waitCard?.kind === 'ask'
+                                ? 'answer'
+                                : 'allow'
+                            );
+                          }
+                        }}
+                        style={{
+                          background: '#121217',
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          borderRadius: 6,
+                          padding: '6px 10px',
+                          color: '#f4f4f5',
+                          fontSize: 12,
+                          outline: 'none',
+                        }}
+                      />
+
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {conversation.waitCard.kind === 'plan' ? (
+                          <>
+                            <button
+                              type="button"
+                              className="agy-review-btn"
+                              disabled={waitDeciding}
+                              onClick={() => void handleWaitDecision('approve')}
+                              style={{
+                                background: '#0284c7',
+                                color: '#fff',
+                                border: 'none',
+                                padding: '5px 12px',
+                              }}
+                            >
+                              {waitDeciding ? 'Đang gửi...' : '✅ Duyệt & Thực thi ngay (Proceed)'}
+                            </button>
+                            <button
+                              type="button"
+                              className="agy-review-btn"
+                              disabled={waitDeciding}
+                              onClick={() => void handleWaitDecision('revise')}
+                            >
+                              ✏️ Yêu cầu chỉnh sửa kế hoạch
+                            </button>
+                          </>
+                        ) : conversation.waitCard.kind === 'ask' ? (
+                          <button
+                            type="button"
+                            className="agy-review-btn"
+                            disabled={waitDeciding}
+                            onClick={() => void handleWaitDecision('answer')}
+                            style={{
+                              background: '#0284c7',
+                              color: '#fff',
+                              border: 'none',
+                              padding: '5px 12px',
+                            }}
+                          >
+                            {waitDeciding ? 'Đang gửi...' : '✅ Gửi câu trả lời & Tiếp tục'}
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="agy-review-btn"
+                              disabled={waitDeciding}
+                              onClick={() => void handleWaitDecision('allow')}
+                              style={{
+                                background: '#0284c7',
+                                color: '#fff',
+                                border: 'none',
+                                padding: '5px 12px',
+                              }}
+                            >
+                              ✅ Cho phép (Allow)
+                            </button>
+                            <button
+                              type="button"
+                              className="agy-review-btn"
+                              disabled={waitDeciding}
+                              onClick={() => void handleWaitDecision('deny')}
+                            >
+                              ❌ Từ chối
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bottom Floating Composer */}
+                  <div className="agy-conv-composer" onPaste={handlePaste}>
                   {attachedImages.length > 0 && (
                     <div className="agy-prompt-media-row">
                       {attachedImages.map((img) => (
@@ -3499,52 +3848,48 @@ export default function AntigravityIde() {
                   ) : (
                     /* Antigravity Native Line-Numbered Code Viewer with Active Line Highlight & `Comment C` / `Quote Ctrl+L` Pills */
                     <div className="agy-code-editor-view">
-                      {String(activeTab.content || '')
-                        .replace(/\r\n/g, '\n')
-                        .split('\n')
-                        .map((lineText, idx) => {
-                          const lineNo = idx + 1;
-                          const isLineSelected = selectedLine === lineNo;
-                          return (
-                            <div
-                              key={lineNo}
-                              className={`agy-code-line ${
-                                isLineSelected ? 'is-selected' : ''
-                              }`}
-                              onClick={() => setSelectedLine(lineNo)}
-                            >
-                              <span className="agy-code-gutter">{lineNo}</span>
-                              <span className="agy-code-text">
-                                {renderCodeLineTokens(lineText)}
-                              </span>
-                              {isLineSelected && (
-                                <div
-                                  className="agy-code-line-actions"
-                                  onClick={(e) => e.stopPropagation()}
+                      {tokenizedCodeLines.map(({ lineNo, lineText, tokens }) => {
+                        const isLineSelected = selectedLine === lineNo;
+                        return (
+                          <div
+                            key={lineNo}
+                            className={`agy-code-line ${
+                              isLineSelected ? 'is-selected' : ''
+                            }`}
+                            onClick={() => setSelectedLine(lineNo)}
+                          >
+                            <span className="agy-code-gutter">{lineNo}</span>
+                            <span className="agy-code-text">
+                              {tokens}
+                            </span>
+                            {isLineSelected && (
+                              <div
+                                className="agy-code-line-actions"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  className="agy-line-action-pill"
+                                  onClick={() => handleCommentOnLine(lineNo)}
                                 >
-                                  <button
-                                    type="button"
-                                    className="agy-line-action-pill"
-                                    onClick={() => handleCommentOnLine(lineNo)}
-                                  >
-                                    <span>Comment</span>
-                                    <kbd>C</kbd>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="agy-line-action-pill"
-                                    onClick={() =>
-                                      handleQuoteLine(lineNo, lineText)
-                                    }
-                                  >
-                                    <span>Quote</span>
-                                    <kbd>Ctrl+L</kbd>
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
+                                  <span>Comment</span>
+                                  <kbd>C</kbd>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="agy-line-action-pill"
+                                  onClick={() =>
+                                    handleQuoteLine(lineNo, lineText)
+                                  }
+                                >
+                                  <span>Quote</span>
+                                  <kbd>Ctrl+L</kbd>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -3891,6 +4236,11 @@ export default function AntigravityIde() {
                         : '';
                     const mainAccount = {
                       slug: '',
+                      userName:
+                        limitsData?.userName ||
+                        limitsData?.account?.userName ||
+                        viewerName ||
+                        '',
                       email:
                         limitsData?.email ||
                         limitsData?.account?.email ||
@@ -3901,14 +4251,21 @@ export default function AntigravityIde() {
                         limitsData?.email ||
                         'Tài khoản chính',
                       plan: limitsData?.account?.plan || 'Google AI Ultra',
+                      upgradeText:
+                        limitsData?.account?.upgradeText ||
+                        'You are subscribed to the best Google AI plan.',
                       windows: limitsData?.windows || [],
                       stats: limitsData?.stats || null,
                     };
                     const otherAccounts = (limitsData?.others || []).map((o: LimitsAccountOther) => ({
                       slug: o.name || '',
+                      userName: o.userName || o.account?.userName || '',
                       email: o.email || o.label || o.name || '',
                       label: o.label || o.email || o.name || '',
                       plan: o.account?.plan || 'Google AI Ultra',
+                      upgradeText:
+                        o.account?.upgradeText ||
+                        'You are subscribed to the best Google AI plan.',
                       windows: o.windows || [],
                       stats: o.stats || null,
                     }));
@@ -3928,6 +4285,8 @@ export default function AntigravityIde() {
                     const left7 = Math.max(0, 100 - used7);
                     const cgLeft5 = currentAcc.stats?.claudeGptLeft5hPct ?? 100;
                     const cgLeft7 = currentAcc.stats?.claudeGptLeftWeekPct ?? 100;
+                    const cgResets5h = currentAcc.stats?.claudeGptResets5hAt ?? null;
+                    const cgResetsWeek = currentAcc.stats?.claudeGptResetsWeekAt ?? null;
                     const useAiCredits = Boolean(limitsData?.useAiCredits);
 
                     const formatRefreshCountdown = (resetsAt?: number | null, isWeekly = false) => {
@@ -4014,7 +4373,7 @@ export default function AntigravityIde() {
                                 Your Plan: {currentAcc.plan || 'Google AI Ultra'}
                               </div>
                               <div style={{ fontSize: 12.5, color: '#a1a1aa', marginTop: 3 }}>
-                                You are subscribed to the best Google AI plan.
+                                {currentAcc.upgradeText || 'You are subscribed to the best Google AI plan.'}
                               </div>
                             </div>
                             <span
@@ -4027,7 +4386,9 @@ export default function AntigravityIde() {
                                 fontWeight: 600,
                               }}
                             >
-                              {currentAcc.email}
+                              {currentAcc.userName
+                                ? `${currentAcc.userName} · ${currentAcc.email}`
+                                : currentAcc.email}
                             </span>
                           </div>
                         </div>
@@ -4235,8 +4596,15 @@ export default function AntigravityIde() {
                                 borderBottom: '1px solid #222226',
                               }}
                             >
-                              <div style={{ fontSize: 14, fontWeight: 600, color: '#fafafa' }}>
-                                Weekly Limit Remaining
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: '#fafafa' }}>
+                                  Weekly Limit Remaining
+                                </div>
+                                <div style={{ fontSize: 12.5, color: '#a1a1aa', marginTop: 3 }}>
+                                  {cgLeft7 < 100 || cgResetsWeek
+                                    ? `Refreshes in ${formatRefreshCountdown(cgResetsWeek, true)}.`
+                                    : 'You have 100% of your weekly limit remaining.'}
+                                </div>
                               </div>
                               {renderQuotaRing(cgLeft7)}
                             </div>
@@ -4249,8 +4617,15 @@ export default function AntigravityIde() {
                                 gap: 12,
                               }}
                             >
-                              <div style={{ fontSize: 14, fontWeight: 600, color: '#fafafa' }}>
-                                Five Hour Limit Remaining
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: '#fafafa' }}>
+                                  Five Hour Limit Remaining
+                                </div>
+                                <div style={{ fontSize: 12.5, color: '#a1a1aa', marginTop: 3 }}>
+                                  {cgLeft5 < 100 || cgResets5h
+                                    ? `Refreshes in ${formatRefreshCountdown(cgResets5h, false)}.`
+                                    : 'You have 100% of your 5-hour limit remaining.'}
+                                </div>
                               </div>
                               {renderQuotaRing(cgLeft5)}
                             </div>

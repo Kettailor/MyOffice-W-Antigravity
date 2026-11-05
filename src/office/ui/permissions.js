@@ -19,6 +19,10 @@ import { t as tr } from '../../i18n/index.js';
 export const perms = new Map();
 let PAGE_ID;
 let presenceTimer = 0;
+let presenceInFlight = false;
+let lastPresenceAt = 0;
+let lastPresenceFocused = null;
+let networkCooldownUntil = 0;
 let activeWaitSessId = null;
 let activeModalCardId = null;
 let stopActiveMic = null;
@@ -31,9 +35,32 @@ export function reportPresence() {
   if (STATIC) return;   // the online demo has no server to tell
   clearTimeout(presenceTimer);
   presenceTimer = setTimeout(() => {
+    if (presenceInFlight) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    const now = Date.now();
+    if (now < networkCooldownUntil) return;
     const focused = !DEMO && state.permOn && document.visibilityState === 'visible' && document.hasFocus();
-    fetch(`/api/presence${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: PAGE_ID, focused }), keepalive: true }).catch(() => {});
-  }, 250);
+    if (focused === lastPresenceFocused && now - lastPresenceAt < 18_000) return;
+    presenceInFlight = true;
+    fetch(`/api/presence${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: PAGE_ID, focused }),
+      cache: 'no-store',
+    })
+      .then((r) => {
+        if (r && r.ok) {
+          lastPresenceAt = Date.now();
+          lastPresenceFocused = focused;
+        }
+      })
+      .catch(() => {
+        networkCooldownUntil = Date.now() + 5000;
+      })
+      .finally(() => {
+        presenceInFlight = false;
+      });
+  }, 450);
 }
 
 // a risky shell command (src/shared/danger.js): a red warning, a second click, no "always"
@@ -981,17 +1008,19 @@ export function setup() {
   PAGE_ID = Math.random().toString(36).slice(2, 10);
   ensureWaitModalEl();
   for (const ev of ['focus', 'blur', 'visibilitychange']) addEventListener(ev, reportPresence);
-  if (!STATIC) addEventListener('pagehide', () => { try { navigator.sendBeacon(`/api/presence${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, new Blob([JSON.stringify({ page: PAGE_ID, focused: false })], { type: 'application/json' })); } catch { /* ignore */ } });
-  setInterval(() => { if (document.hasFocus()) reportPresence(); }, 10000);
+  addEventListener('online', () => { networkCooldownUntil = Date.now() + 1500; setTimeout(reportPresence, 1600); });
+  addEventListener('offline', () => { networkCooldownUntil = Date.now() + 10_000; });
+  if (!STATIC) addEventListener('pagehide', () => { if (typeof navigator !== 'undefined' && navigator.onLine === false) return; try { navigator.sendBeacon(`/api/presence${TOKEN ? `?k=${encodeURIComponent(TOKEN)}` : ''}`, new Blob([JSON.stringify({ page: PAGE_ID, focused: false })], { type: 'application/json' })); } catch { /* ignore */ } });
+  setInterval(() => { if (!document.hidden && document.hasFocus()) reportPresence(); }, 25_000);
   setInterval(() => {
-    if (!perms.size && !activeModalCardId) return;
+    if (document.hidden || (!perms.size && !activeModalCardId)) return;
     const stack = $('perm-stack');
     if (stack && !stack.hidden) for (const c of stack.children) c._tick?.();
     if (activeModalCardId) {
       const modal = $('wait-focus-modal');
       if (modal && !modal.hidden) modal.firstElementChild?._tick?.();
     }
-  }, 250);
+  }, 1000);
   $('perm-stack').addEventListener('click', async (ev) => {
     const ab = ev.target.closest('[data-access]');
     if (ab) {

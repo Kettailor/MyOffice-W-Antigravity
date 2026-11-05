@@ -7,7 +7,7 @@
 // even at the lowest resolution step, it goes down one level and remembers that for this device. A remembered level is
 // tried one step higher again after three days, so a busy afternoon does not cap the office for good.
 import * as THREE from 'three';
-import { SOFTWARE_GL, bloom, camera, composer, renderer, scene } from './renderer.js';
+import { SOFTWARE_GL, bloom, camera, composer, renderer, resize, scene } from './renderer.js';
 import { sun } from './lights.js';
 
 export const LEVELS = ['low', 'medium', 'high'];
@@ -44,6 +44,7 @@ function apply(level) {
     renderer.shadowMap.needsUpdate = true;
     for (const rt of [composer.renderTarget1, composer.renderTarget2]) if (rt.samples !== p.msaa) { rt.samples = p.msaa; rt.dispose(); }
   }
+  resize();
   for (const fn of listeners) fn(quality);
 }
 

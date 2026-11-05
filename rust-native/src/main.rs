@@ -841,7 +841,22 @@ async fn run_axum_server(port: u16) {
         )
         .nest_service("/_next/static", next_static)
         .fallback_service(public_dir)
-        .layer(CorsLayer::permissive());
+        .layer(
+            CorsLayer::new()
+                .allow_origin([
+                    "http://localhost:4310"
+                        .parse::<axum::http::HeaderValue>()
+                        .unwrap(),
+                    "http://127.0.0.1:4310"
+                        .parse::<axum::http::HeaderValue>()
+                        .unwrap(),
+                ])
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::OPTIONS,
+                ]),
+        );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     println!(

@@ -71,16 +71,38 @@ This project is built upon and extends the open-source project **[My Office (`kh
 git clone https://github.com/Kettailor/MyOffice-W-Antigravity.git
 cd MyOffice-W-Antigravity
 
-# 2. Install dependencies
+# 2. Copy the environment template (optional)
+cp .env.example .env
+
+# 3. Install dependencies
 npm install
 
-# 3. Start development server (http://localhost:4310)
+# 4. Start development server (http://localhost:4310)
 npm run dev
 ```
 
 - Open **<http://localhost:4310>** for the 3D Office.
 - Open **<http://localhost:4310/antigravity>** for the **Antigravity Web IDE**.
 - Open **<http://localhost:4310/?demo>** to explore demo mode without any agents running.
+
+### ⚙️ Environment Configuration (`.env`) & Network Sharing (Wi-Fi / Tailscale)
+
+Copy [`.env.example`](.env.example) to `.env` to customize ports, Wi-Fi SSID restrictions, or CLI paths:
+
+```dotenv
+PORT=4310
+HOST_BRIDGE_PORT=4311
+
+# Restrict which Wi-Fi SSID is allowed for LAN mobile/tablet connections:
+# - Set "*" (default) to allow any Wi-Fi network the host is connected to
+# - Or specify your exact Wi-Fi SSID (e.g. OFFICE_WIFI_SSID=MyHomeWiFi)
+OFFICE_WIFI_SSID=*
+```
+
+Inside **Settings (`⚙️`) → Remote Access & Permissions**, the Director can toggle each sharing channel independently in real time:
+1. **Wi-Fi LAN Sharing**: Enable/disable local Wi-Fi access and toggle the host's Wi-Fi adapter directly.
+2. **Tailscale VPN Sharing (`100.64.0.0/10`)**: Enable/disable remote access over Tailscale.
+3. **6-Digit PIN (`Deputy Director`) & Name Gate (`Assistant Director`)**: View connection URLs, rotate the 6-digit PIN, and grant per-workspace permissions.
 
 ### Docker + On-Demand Host Bridge (Recommended on Windows)
 

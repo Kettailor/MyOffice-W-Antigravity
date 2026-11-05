@@ -26,12 +26,23 @@ import { createGit } from './git.mjs';
 import { weekSummary } from './wrapped.mjs';
 import { createPrefs } from './prefs.mjs';
 import { pickLang, createT } from '../src/i18n/index.js';
-import { createAntigravityWatcher, agyBrainDir, agyBrainDirs, normalizeAgyHookPayload, readAgyLog, readAgyRichConversation, readAgyBrainArtifacts, invalidateAgyArtifactCache, computeAgyQuota, detectAgyAccountEmail, clearAgyAccountEmailCache, readAgyUseAiCredits, writeAgyUseAiCredits, findNativeRustBin } from './antigravity.mjs';
+import { createAntigravityWatcher, agyBrainDir, agyBrainDirs, normalizeAgyHookPayload, readAgyLog, readAgyRichConversation, readAgyBrainArtifacts, invalidateAgyArtifactCache, computeAgyQuota, detectAgyAccountEmail, detectAgyUserProfile, fetchLiveAgyQuotaAndUser, clearAgyAccountEmailCache, readAgyUseAiCredits, writeAgyUseAiCredits, findNativeRustBin } from './antigravity.mjs';
 import { createAccessManager, renderRemoteAccessPage, DEFAULT_ROLE } from './access.mjs';
 import { createMcpManager } from './mcp.mjs';
 import { handleFilesApi } from './files.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+try {
+  const envFile = path.join(ROOT, '.env');
+  if (fs.existsSync(envFile)) {
+    for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
+      if (m && !(m[1] in process.env)) {
+        process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+      }
+    }
+  }
+} catch { /* ignore */ }
 const PORT = Number(process.env.OFFICE_PORT) || 4310;
 // Only this Mac by default; `my-office start --lan` (or OFFICE_HOST=0.0.0.0) opens it to the home wifi.
 const HOST = process.env.OFFICE_HOST || '127.0.0.1';
@@ -997,6 +1008,58 @@ async function replayRange(day, from, to, max = 80_000) {
   finally { rl.close(); }
   return { items, truncated };
 }
+function filterReplayItemsForViewer(items, local, viewer) {
+  if (local || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc') return items;
+  if (Array.isArray(viewer.allowedWorkspaces) && viewer.allowedWorkspaces.includes('*')) return items;
+  const allowedSessIds = new Set();
+  const deniedSessIds = new Set();
+  for (const s of sessions.values()) {
+    if (isSessionAllowed(s, viewer)) allowedSessIds.add(s.id);
+    else deniedSessIds.add(s.id);
+  }
+  const out = [];
+  for (const x of items || []) {
+    const m = x?.m;
+    if (!m || typeof m !== 'object') continue;
+    if (m.k === 'snap') {
+      const filteredSessions = (Array.isArray(m.sessions) ? m.sessions : []).filter((s) => {
+        const ok = isSessionAllowed(s, viewer);
+        if (s?.id) {
+          if (ok) { allowedSessIds.add(s.id); deniedSessIds.delete(s.id); }
+          else { deniedSessIds.add(s.id); allowedSessIds.delete(s.id); }
+        }
+        return ok;
+      });
+      const filteredFeed = (Array.isArray(m.feed) ? m.feed : []).filter((e) => e?.sess && allowedSessIds.has(e.sess));
+      out.push({ ...x, m: { ...m, sessions: filteredSessions, feed: filteredFeed } });
+      continue;
+    }
+    if (m.k === 'sess' || m.k === 'ev' || m.k === 'stats') {
+      const sObj = m.s || (m.e?.sess && sessions.get(m.e.sess)) || null;
+      const sid = sObj?.id || m.e?.sess || '';
+      let ok = false;
+      if (sObj && (sObj.cwd || sObj.dir)) {
+        ok = isSessionAllowed(sObj, viewer);
+        if (sid) {
+          if (ok) { allowedSessIds.add(sid); deniedSessIds.delete(sid); }
+          else { deniedSessIds.add(sid); allowedSessIds.delete(sid); }
+        }
+      } else if (sid) {
+        ok = allowedSessIds.has(sid) && !deniedSessIds.has(sid);
+      }
+      if (ok) out.push(x);
+      continue;
+    }
+    if (m.k === 'gone') {
+      const cwd = m.cwd || (m.id && sessions.get(m.id)?.cwd) || '';
+      const ok = cwd ? canViewWorkspace(viewer, cwd) : (m.id ? allowedSessIds.has(m.id) : false);
+      if (ok) out.push(x);
+      continue;
+    }
+    out.push(x);
+  }
+  return out;
+}
 
 /* ---------- the company group chat (src/shared/chat-engine.js; the window: src/office/ui/group-chat*.js) ----------
    One conversation for every page, kept here (data/chat.json): what the sessions say about their work comes straight
@@ -1229,7 +1292,19 @@ function setSavedModel(sid = '', dir = '', modelId = '') {
 const taskSids = new Set(), taskQuote = new Map();   // the sessions those runs became (their leaving isn't announced: their result is); your task, quoted in the answer
 const tasks = createTasks({
   dataDir: DATA_DIR, claude: () => findClaude(),
-  env: () => { const e = { ...process.env }; if (nowDir) e.CLAUDE_CONFIG_DIR = nowDir; return e; },   // (the account new sessions start on)
+  env: () => {
+    const e = { ...process.env };
+    delete e.ANTIGRAVITY_LS_ADDRESS;
+    delete e.ANTIGRAVITY_CSRF_TOKEN;
+    delete e.ANTIGRAVITY_CONVERSATION_ID;
+    delete e.ANTIGRAVITY_TRAJECTORY_ID;
+    delete e.ANTIGRAVITY_SOURCE_METADATA;
+    delete e.VSCODE_PID;
+    delete e.VSCODE_IPC_HOOK;
+    delete e.ELECTRON_RUN_AS_NODE;
+    if (nowDir) e.CLAUDE_CONFIG_DIR = nowDir;
+    return e;
+  },   // (the account new sessions start on; decoupled from Desktop IDE language_server)
   onDone: (t) => {
     if (t.sid) {
       if (taskSids.size >= 500 && !taskSids.has(t.sid)) {
@@ -1646,7 +1721,19 @@ const access = createAccessManager({
 
 /* ---------- session discovery ---------- */
 let scanning = null;
-function scanSessions() { return (scanning ??= doScan().finally(() => { scanning = null; })); }
+let lastScanCompletedAt = 0;
+function scanSessions() {
+  return (scanning ??= doScan().finally(() => {
+    lastScanCompletedAt = Date.now();
+    scanning = null;
+  }));
+}
+function scanSessionsIfStale(maxAgeMs = 2500) {
+  if (sessions.size > 0 && Date.now() - lastScanCompletedAt < maxAgeMs) {
+    return Promise.resolve();
+  }
+  return scanSessions();
+}
 // The pid in a session file is that session only if the process started when the session did (a reboot reuses
 // pids: without this a stale file shows a ghost). Start times come from ps, once per pid. Idea from W17ant (MIT).
 const procStart = new Map();   // pid -> start (ms)
@@ -2044,11 +2131,11 @@ function isLoopback(req) {
   if (req.viaTunnel) return false;
   const addr = String(req.socket?.remoteAddress || '');
   if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(addr)) return true;
-  if (process.env.OFFICE_DOCKER === '1') {
-    const cleanIp = addr.replace(/^::ffff:/, '');
-    const h = String(req.headers?.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
-    const isDockerGateway = /^172\.(1[6-9]|2\d|3[01])\./.test(cleanIp) || /^192\.168\.65\./.test(cleanIp);
-    if (isDockerGateway && ['localhost', '127.0.0.1', '::1'].includes(h)) return true;
+  if (process.env.OFFICE_DOCKER === '1' && !req.headers?.['x-forwarded-for']) {
+    const hostHdr = String(req.headers?.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (['localhost', '127.0.0.1', '::1'].includes(hostHdr) && /^(::ffff:)?(127\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.65\.)/.test(addr)) {
+      return true;
+    }
   }
   return false;
 }
@@ -2057,12 +2144,14 @@ const clientIp = (req) => (req.viaTunnel ? String(req.headers['cf-connecting-ip'
 // a POST from this office's own page (not another site's): http on this computer and the LAN, https through the tunnel
 function sameOriginOf(req) {
   const o = req.headers.origin;
-  return !o || o === `http://${req.headers.host}` || (req.viaTunnel && !!tunnel.url && o === tunnel.url);
+  if (!o) return true;
+  if (o === 'null') return false;
+  return o === `http://${req.headers.host}` || o === `https://${req.headers.host}` || (req.viaTunnel && !!tunnel.url && o === tunnel.url);
 }
-// Only allow external connections via trusted Wi-Fi SSID (configurable via OFFICE_WIFI_SSID) and Tailscale (100.64.0.0/10), never wired Ethernet LAN.
-const ALLOWED_WIFI_SSID = (process.env.OFFICE_WIFI_SSID || 'Ket').trim().toLowerCase();
+// Only allow external connections via trusted Wi-Fi SSID (configurable via OFFICE_WIFI_SSID in .env; '*' allows any active Wi-Fi interface) and Tailscale (100.64.0.0/10), never wired Ethernet LAN.
+const ALLOWED_WIFI_SSID = (process.env.OFFICE_WIFI_SSID || '*').trim().toLowerCase();
 const ALLOWED_WIFI_MAC = (process.env.OFFICE_WIFI_MAC || '').trim().toLowerCase();
-let wifiCache = { at: 0, onKet: false, macs: new Set(ALLOWED_WIFI_MAC ? [ALLOWED_WIFI_MAC] : []), names: new Set(['wi-fi', 'wlan']) };
+let wifiCache = { at: 0, onWifi: false, macs: new Set(ALLOWED_WIFI_MAC ? [ALLOWED_WIFI_MAC] : []), names: new Set(['wi-fi', 'wlan']) };
 let lastNetIfSig = '';
 function currentNetIfSig() {
   const parts = [];
@@ -2076,22 +2165,23 @@ function currentNetIfSig() {
 function parseNetshWlan(out = '') {
   const blocks = String(out || '').split(/\r?\n\s*\r?\n/);
   const macs = new Set(), names = new Set();
-  let onKet = false;
+  let onWifi = false;
   for (const b of blocks) {
     const ssidM = /^\s*SSID\s*:\s*(.+)$/im.exec(b);
-    if (!ssidM || ssidM[1].trim().toLowerCase() !== ALLOWED_WIFI_SSID) continue;
-    onKet = true;
+    const ssidVal = ssidM ? ssidM[1].trim().toLowerCase() : '';
+    if (!ssidVal || (ALLOWED_WIFI_SSID !== '*' && ALLOWED_WIFI_SSID !== 'any' && ssidVal !== ALLOWED_WIFI_SSID)) continue;
+    onWifi = true;
     const macM = /^\s*(?:Physical address|Địa chỉ vật lý)\s*:\s*([0-9a-f:-]{17})/im.exec(b);
     if (macM) macs.add(macM[1].trim().toLowerCase().replace(/-/g, ':'));
     const nameM = /^\s*(?:Name|Tên)\s*:\s*(.+)$/im.exec(b);
     if (nameM) names.add(nameM[1].trim().toLowerCase());
   }
-  wifiCache = { at: Date.now(), onKet, macs, names };
+  wifiCache = { at: Date.now(), onWifi, macs, names };
 }
 function refreshWifiCache(sync = false) {
   if (process.platform !== 'win32') return;
   const now = Date.now(), ifSig = currentNetIfSig(), ifChanged = ifSig !== lastNetIfSig;
-  const ttl = wifiCache.onKet ? 60_000 : 30_000;
+  const ttl = wifiCache.onWifi ? 60_000 : 30_000;
   if (!ifChanged && wifiCache.at > 0 && now - wifiCache.at < ttl) return;
   lastNetIfSig = ifSig;
   if (sync) {
@@ -2113,20 +2203,62 @@ function isTailscaleIp(addr = '') {
   const m = /^100\.(\d+)\./.exec(String(addr || ''));
   return !!(m && +m[1] >= 64 && +m[1] <= 127);
 }
-function readDockerHostNet() {
+let dockerHostNetCache = { at: 0, data: null };
+let dockerHostNetRefreshJob = null;
+function readDockerHostNet(force = false) {
+  const now = Date.now();
+  if (!force && dockerHostNetCache.data && now - dockerHostNetCache.at < 2000) {
+    return dockerHostNetCache.data;
+  }
   try {
     const f = path.join(DATA_DIR, 'host-net.json');
-    if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8'));
+    if (fs.existsSync(f)) {
+      const parsed = JSON.parse(fs.readFileSync(f, 'utf8'));
+      dockerHostNetCache = { at: now, data: parsed };
+      return parsed;
+    }
   } catch { /* ignore */ }
-  return null;
+  return dockerHostNetCache.data;
 }
-function ketWifiAddr(forceSync = false) {
+async function refreshDockerHostNet(force = false) {
+  if (process.env.OFFICE_DOCKER !== '1') return null;
+  const cur = readDockerHostNet(force);
+  if (!force && cur && Date.now() - (Number(cur.at) || 0) < 35_000) return cur;
+  if (dockerHostNetRefreshJob) return dockerHostNetRefreshJob;
+  dockerHostNetRefreshJob = (async () => {
+    try {
+      const bridgeBase = (process.env.OFFICE_HOST_BRIDGE || 'http://127.0.0.1:4311').replace(/\/+$/, '');
+      await ensureHostBridgeReady(bridgeBase, { 'x-bridge-token': TOKEN }, 2500, DATA_DIR);
+      const r = await fetch(`${bridgeBase}/docker/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-bridge-token': TOKEN },
+        body: JSON.stringify({ action: 'bridge' }),
+        signal: AbortSignal.timeout(2000),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && ('wifiIp' in d || 'tsIp' in d)) {
+          dockerHostNetCache = { at: Date.now(), data: d };
+          return d;
+        }
+      }
+    } catch { /* ignore */ }
+    return readDockerHostNet(true);
+  })().finally(() => {
+    dockerHostNetRefreshJob = null;
+  });
+  return dockerHostNetRefreshJob;
+}
+function trustedWifiAddr(forceSync = false) {
   if (process.env.OFFICE_WIFI_IP) return process.env.OFFICE_WIFI_IP;
   if (process.env.OFFICE_DOCKER === '1') {
-    const hn = readDockerHostNet();
+    const hn = readDockerHostNet(forceSync);
+    if (forceSync || !hn || Date.now() - (Number(hn.at) || 0) > 45_000) {
+      refreshDockerHostNet(forceSync).catch(() => {});
+    }
     if (hn?.wifiIp) return hn.wifiIp;
   }
-  refreshWifiCache(forceSync || wifiCache.at === 0 || !wifiCache.onKet);
+  refreshWifiCache(Boolean(forceSync && wifiCache.at === 0));
   const nets = os.networkInterfaces();
   for (const [ifName, list] of Object.entries(nets)) {
     const lowName = ifName.toLowerCase();
@@ -2136,7 +2268,7 @@ function ketWifiAddr(forceSync = false) {
       if (!n || n.family !== 'IPv4' || n.internal || /^169\.254\./.test(n.address) || isTailscaleIp(n.address)) continue;
       const mac = String(n.mac || '').toLowerCase().replace(/-/g, ':');
       if (process.platform === 'win32') {
-        if ((wifiCache.onKet && (wifiCache.macs.has(mac) || wifiCache.names.has(lowName) || (ALLOWED_WIFI_MAC && mac === ALLOWED_WIFI_MAC) || /wi-?fi|wlan/i.test(lowName))) || (ALLOWED_WIFI_MAC && mac === ALLOWED_WIFI_MAC)) {
+        if ((wifiCache.onWifi && (wifiCache.macs.has(mac) || wifiCache.names.has(lowName) || (ALLOWED_WIFI_MAC && mac === ALLOWED_WIFI_MAC) || /wi-?fi|wlan/i.test(lowName))) || (ALLOWED_WIFI_MAC && mac === ALLOWED_WIFI_MAC)) {
           return n.address;
         }
       } else if (/^en0|wlan|wi-?fi/i.test(lowName)) {
@@ -2157,15 +2289,19 @@ function tsAddr() {
   }
   return null;
 }
-// Only answer to our own host names: stops DNS-rebinding pages from reaching this server.
+// Only answer to our own host names and enabled network channels (Wi-Fi / Tailscale): stops DNS-rebinding and unauthorized LAN access.
 function hostAllowed(req) {
   const h = String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
   if (req.viaTunnel) return h === tunnel.host || h === '127.0.0.1';   // (the tunnel's own name, or its listener as cloudflared calls it)
-  if (['localhost', '127.0.0.1', '::1', `${os.hostname().toLowerCase()}`, `${os.hostname().toLowerCase().replace(/\.local$/, '')}.local`].includes(h)) return true;
+  if (['localhost', '127.0.0.1', '::1', `${os.hostname().toLowerCase()}`, `${os.hostname().toLowerCase().replace(/\.local$/, '')}.local`].includes(h)) {
+    return isLoopback(req);
+  }
+  if (!lanIsOn()) return false;
+  if (isTailscaleIp(h)) return tsIsOn();
+  const wifiIp = trustedWifiAddr();
+  if (wifiIp && h === wifiIp) return wifiIsOn();
   if (lanServers.has(h)) return true;
-  if (isTailscaleIp(h)) return true;
-  const ketIp = ketWifiAddr();
-  return !!(ketIp && h === ketIp);
+  return false;
 }
 function readJson(req, max = 64_000) {
   return new Promise((resolve) => {
@@ -2207,7 +2343,7 @@ function tsUrl() {
   return ip ? `http://${ip}:${PORT}/` : null;
 }
 function lanUrl(withToken = true) {
-  const ip = ketWifiAddr();
+  const ip = trustedWifiAddr();
   return ip ? `http://${ip}:${PORT}/${withToken ? `?k=${TOKEN}` : ''}` : null;
 }
 // The cookie: <expiry>.<k: a device you trust, kept a year | s: this visit, until the browser closes (12 h at most)>.<signature>.
@@ -2549,25 +2685,31 @@ function sanitizeAcctEmail(raw) {
 // windows: [{ key, label, pct, resetsAt, weekOf? }]; `five` / `seven` stay for the TV and older pages
 function setLimits(windows, source, account = planLimits?.account || null, extra = {}) {
   const customMain = acctLabel('');
+  const userProfile = detectAgyUserProfile();
   const email = customMain
     || sanitizeAcctEmail(extra.email)
     || sanitizeAcctEmail(account?.email)
     || sanitizeAcctEmail(planLimits?.email)
     || detectAgyAccountEmail();
+  const userName = String(extra.userName || userProfile.name || planLimits?.userName || '').trim();
+  const upgradeText = String(extra.upgradeText || userProfile.upgradeText || planLimits?.upgradeText || '').trim();
   const next = {
     at: Date.now(),
     source,
+    userName,
     email,
+    upgradeText,
     windows,
-    account: account ? { ...account, email } : { id: 'antigravity:local', plan: 'Antigravity', email },
+    account: account ? { ...account, email, userName } : { id: 'antigravity:local', plan: 'Google AI Ultra', email, userName },
     five: windows.find((w) => w.key === 'session') || null,
     seven: windows.find((w) => w.key === 'weekly') || null,
     stats: extra.stats || planLimits?.stats || null,
   };
   const sig = (l) => JSON.stringify([
     l?.email || null,
+    l?.userName || null,
     l?.windows?.map((w) => [w.key, w.pct, w.resetsAt]) || null,
-    l?.stats ? [l.stats.prompts5h, l.stats.steps5h, l.stats.prompts7d, l.stats.steps7d] : null,
+    l?.stats ? [l.stats.left5hPct, l.stats.leftWeekPct, l.stats.claudeGptLeft5hPct, l.stats.claudeGptLeftWeekPct, l.stats.prompts5h, l.stats.steps5h, l.stats.prompts7d, l.stats.steps7d] : null,
   ]);
   const moved = sig(planLimits) !== sig(next);
   planLimits = next;
@@ -2581,13 +2723,18 @@ function limitsOut(viewer = null) {
   const isRestrictedAssistant = viewer && !viewer.isDirectorDevice && viewer.role !== 'Phó Giám đốc';
   const l = planLimits;
   const customMain = acctLabel('');
+  const userProfile = detectAgyUserProfile();
   const email = customMain
     || sanitizeAcctEmail(l?.email)
     || sanitizeAcctEmail(l?.account?.email)
     || detectAgyAccountEmail();
+  const userName = String(l?.userName || userProfile.name || '').trim();
+  const upgradeText = String(l?.upgradeText || userProfile.upgradeText || '').trim();
   const more = isRestrictedAssistant ? [] : othersOut();
   const main = {
+    userName,
     email,
+    upgradeText,
     label: customMain || email,
     until: blockedUntil(l?.windows, hits.get('')),
     auto: isRestrictedAssistant ? null : autoOut(),
@@ -2605,11 +2752,13 @@ function limitsOut(viewer = null) {
     : '';
   return {
     ...restL,
+    userName,
     email,
+    upgradeText,
     useAiCredits: readAgyUseAiCredits(),
     account: l.account
-      ? { ...l.account, plan: l.account.plan === 'Antigravity' ? 'Google AI Ultra' : l.account.plan, email, org: billingSuffix ? `${email} · ${billingSuffix}` : (l.account.org || email) }
-      : { id: 'antigravity:local', plan: 'Google AI Ultra', email },
+      ? { ...l.account, userName, plan: l.account.plan === 'Antigravity' ? 'Google AI Ultra' : l.account.plan, email, org: billingSuffix ? `${email} · ${billingSuffix}` : (l.account.org || email) }
+      : { id: 'antigravity:local', userName, plan: 'Google AI Ultra', email },
     scopedToAssistant: !!isRestrictedAssistant,
     windows,
     five: l.five && { ...l.five, label: tr('server.limits.fiveHour') },
@@ -2687,10 +2836,13 @@ function fetchPlanUsage(force = false) {
     const login = await keychainLogin();
     if (!login?.accessToken) {
       if (fs.existsSync(agyBrainDir())) {
+        await fetchLiveAgyQuotaAndUser(force).catch(() => {});
         const qAll = computeAgyQuota(sessions);
         const q = agyAccounts.length > 0 ? computeAgyQuota(sessions, null, '') : qAll;
         const customMain = acctLabel('');
         const email = customMain || detectAgyAccountEmail() || q.email || qAll.email;
+        const userName = q.userName || qAll.userName || detectAgyUserProfile().name || '';
+        const upgradeText = q.upgradeText || qAll.upgradeText || detectAgyUserProfile().upgradeText || '';
         usageNote = null;
         setLimits(
           [
@@ -2698,17 +2850,25 @@ function fetchPlanUsage(force = false) {
             { key: 'weekly', label: tr('server.limits.week'), pct: q.weekPct, resetsAt: q.weekResetsAt ? Date.parse(q.weekResetsAt) : null },
           ],
           'agy',
-          { id: 'antigravity:local', plan: q.planName || 'Google AI Ultra', email, org: `${email} · ${q.billingCycle}` },
+          { id: 'antigravity:local', userName, plan: q.planName || 'Google AI Ultra', email, org: `${userName ? `${userName} (${email})` : email} · ${q.billingCycle}` },
           {
+            userName,
             email,
+            upgradeText,
             useAiCredits: q.useAiCredits,
             stats: {
               left5hPct: q.left5hPct,
               leftWeekPct: q.leftWeekPct,
+              resets5hAt: q.resetsAt || null,
+              resetsWeekAt: q.weekResetsAt || null,
+              description5h: q.description5h || '',
+              descriptionWeek: q.descriptionWeek || '',
               claudeGptPct5h: q.claudeGptPct5h,
               claudeGptLeft5hPct: q.claudeGptLeft5hPct,
               claudeGptWeekPct: q.claudeGptWeekPct,
               claudeGptLeftWeekPct: q.claudeGptLeftWeekPct,
+              claudeGptResets5hAt: q.claudeGptResets5hAt || null,
+              claudeGptResetsWeekAt: q.claudeGptResetsWeekAt || null,
               prompts5h: agyAccounts.length > 0 ? q.prompts5h : qAll.prompts5h,
               steps5h: agyAccounts.length > 0 ? q.steps5h : qAll.steps5h,
               tokens5h: agyAccounts.length > 0 ? q.tokens5h : qAll.tokens5h,
@@ -3533,7 +3693,10 @@ function snapNow(local, req = null) {
     feed: visibleFeed,
     stats: viewerStats,
     local,
-    viewer: viewer ? access.pubMember(viewer) : { isDirector: true, name: 'Giám đốc', role: 'Giám đốc', gender: 'male', canEditFiles: true },
+    viewer: viewer ? access.pubMember(viewer) : (() => {
+      const up = detectAgyUserProfile();
+      return { isDirector: true, name: 'Giám đốc', userName: up.name || '', email: up.email || '', role: 'Giám đốc', gender: 'male', canEditFiles: true };
+    })(),
     teamMembers: getOnlineTeamMembers(),
     participants: getOnlineParticipants(),
     requireTaskApproval: local ? access.state.requireTaskApproval : access.effectiveRequireApproval(viewer),
@@ -3543,10 +3706,14 @@ function snapNow(local, req = null) {
     limitsNote: noteText(),
     trophies: trophies.pub(),
     mcp: mcpManager.getPublicSummary(),
-    lan: local && lanOn ? lanUrl() : null,
-    lanBase: local && lanOn ? lanUrl(false) : null,
+    lanOn: local ? lanOn : false,
+    wifiOn: local ? prefs.get('lanWifi') !== false : false,
+    tsOn: local ? prefs.get('lanTs') !== false : false,
+    lan: local ? activeLanUrl(true) : null,
+    lanBase: local ? activeLanUrl(false) : null,
+    wifiHere: !!lanUrl(false),
     pin: local ? currentPin() : null,
-    ts: local && lanOn ? tsUrl() : null,
+    ts: local ? activeTsUrl() : null,
     tsHere: !!tsUrl(),
     phoneApprove: !!prefs.get('phoneApprove'),
     phoneTasks: prefs.get('phoneTasks') !== false,
@@ -3688,7 +3855,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/access/profile' && req.method === 'POST') {
-    if (!authorized(req, url) || !String(req.headers['content-type'] || '').startsWith('application/json')) {
+    if (!authorized(req, url) || !sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) {
       json(res, 403, { ok: false });
       return;
     }
@@ -3718,7 +3885,8 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/access' && (req.method === 'GET' || req.method === 'POST')) {
     if (req.method === 'GET') {
       if (!isLoopback(req)) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
-      json(res, 200, { ok: true, ...access.pubState(allKnownWorkspaces()) });
+      const up = detectAgyUserProfile();
+      json(res, 200, { ok: true, directorName: up.name || '', directorEmail: up.email || '', ...access.pubState(allKnownWorkspaces()) });
       return;
     }
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
@@ -3943,7 +4111,7 @@ const server = http.createServer((req, res) => {
           ? Object.values(out.hookSpecificOutput.updatedInput.answers).join(' · ')
           : b.choice;
         settlePerm(p.id, JSON.stringify(out), choiceSummary, byName);
-        if (s?.isAgy && s?.sid && (p.kind === 'plan' || p.kind === 'ask' || b.text?.trim() || (Array.isArray(b.images) && b.images.length > 0))) {
+        if (p.fromTranscript && s?.isAgy && s?.sid && (p.kind === 'plan' || p.kind === 'ask' || b.text?.trim() || (Array.isArray(b.images) && b.images.length > 0))) {
           let promptText = '';
           if (p.kind === 'ask') {
             const answersMap = out?.hookSpecificOutput?.updatedInput?.answers || {};
@@ -4108,7 +4276,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && (url.pathname === '/api/lan' || url.pathname === '/api/pin')) {   // phones on the home network: { on }; a new PIN (this computer only)
     const sameOrigin = sameOriginOf(req);
     if (!isLoopback(req) || !sameOrigin || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false, message: tr('server.api.approveOnMac') }); return; }
-    readJson(req).then((b) => {
+    readJson(req).then(async (b) => {
       if (url.pathname === '/api/pin') {   // { pin } of your own, or a random one; every phone signed out (the cookie's signature covers the PIN), open pages cut off now
         const own = b?.pin == null ? '' : String(b.pin).replace(/\s/g, '');
         if (own && pinWeak(own)) { json(res, 200, { ok: false, message: tr('server.pin.weak') }); return; }   // (turned down, not an error: the page shows why)
@@ -4118,14 +4286,35 @@ const server = http.createServer((req, res) => {
         json(res, 200, { ok: true, pin: currentPin() });
         return;
       }
-      if (!lanFixed) { prefs.set('lan', b?.on ? true : false); syncLan(true); }
-      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} phone lan ${b?.on ? 'on' : 'off'}\n`).catch(() => {});
+      if (!lanFixed && typeof b?.on === 'boolean') prefs.set('lan', b.on ? true : false);
+      if (typeof b?.wifi === 'boolean') prefs.set('lanWifi', b.wifi ? true : false);
+      if (typeof b?.ts === 'boolean') prefs.set('lanTs', b.ts ? true : false);
+      if (process.env.OFFICE_DOCKER === '1') {
+        await refreshDockerHostNet(true).catch(() => {});
+      }
+      syncLan(true);
       const on = lanIsOn();
-      json(res, 200, { ok: true, on, fixed: lanFixed, lan: on ? lanUrl() : null, lanBase: on ? lanUrl(false) : null, ts: on ? tsUrl() : null, pin: currentPin() });
+      const wifiOn = prefs.get('lanWifi') !== false;
+      const tsOn = prefs.get('lanTs') !== false;
+      fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} phone lan=${on ? 'on' : 'off'} wifi=${wifiOn ? 'on' : 'off'} ts=${tsOn ? 'on' : 'off'}\n`).catch(() => {});
+      json(res, 200, {
+        ok: true,
+        on,
+        lanOn: on,
+        wifiOn,
+        tsOn,
+        fixed: lanFixed,
+        lan: activeLanUrl(true),
+        lanBase: activeLanUrl(false),
+        wifiHere: !!lanUrl(false),
+        ts: activeTsUrl(),
+        tsHere: !!tsUrl(),
+        pin: currentPin(),
+      });
     });
     return;
   }
-  if ((url.pathname.startsWith('/api/tasks') || url.pathname === '/api/task') && req.method === 'POST') {   // giving Antigravity / Claude work: start, stop, allow, or queue for Director approval
+  if ((url.pathname.startsWith('/api/tasks') || url.pathname === '/api/task' || url.pathname === '/api/session/reply') && req.method === 'POST') {   // giving Antigravity / Claude work: start, stop, allow, or queue for Director approval
     if (!authorized(req, url) || !sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
     const mac = isLoopback(req);
     const viewer = viewerOf(req);
@@ -4141,19 +4330,32 @@ const server = http.createServer((req, res) => {
         broadcast({ k: 'phone', approve: !!prefs.get('phoneApprove'), tasks: !!b?.on });
         json(res, 200, tasksOut(true)); return;
       }
-      if (url.pathname === '/api/tasks/stop') { json(res, 200, { ok: tasks.stop(String(b?.id || '')) }); return; }
+      if (url.pathname === '/api/tasks/stop') {
+        const taskId = String(b?.id || '');
+        const runningTask = tasks.list().find((t) => t.id === taskId);
+        if (!mac && !access.canControlSession(viewer, 'stop', runningTask?.dir || '')) {
+          json(res, 403, { ok: false, message: 'Bạn chưa được Giám đốc cấp quyền dừng tác vụ trên Workspace này.' });
+          return;
+        }
+        json(res, 200, { ok: tasks.stop(taskId) });
+        return;
+      }
       if (url.pathname === '/api/tasks/model') {
         const sTarget = (b?.sid && [...sessions.values()].find((x) => x.sid === String(b.sid)))
           || (b?.id && sessions.get(String(b.id)));
         const wantDir = String(b?.dir || '').replace(/^~(?=$|[\\/])/, os.homedir());
         const targetSid = sTarget ? sTarget.sid : String(b?.sid || '').trim();
         const targetDir = sTarget ? sTarget.cwd : wantDir;
+        if (!mac && viewer && targetDir && !access.canSeeWorkspace(viewer, targetDir)) {
+          json(res, 403, { ok: false, code: 'notAllowed', message: 'Bạn chưa được Giám đốc cấp quyền trên Workspace này.' });
+          return;
+        }
         const chosenModel = String(b?.model ?? '').trim();
         setSavedModel(targetSid, targetDir, chosenModel);
         json(res, 200, { ok: true, sid: targetSid, dir: targetDir, model: chosenModel, sessionModels });
         return;
       }
-      if (url.pathname !== '/api/tasks' && url.pathname !== '/api/task') { json(res, 404, { ok: false }); return; }
+      if (url.pathname !== '/api/tasks' && url.pathname !== '/api/task' && url.pathname !== '/api/session/reply') { json(res, 404, { ok: false }); return; }
       if (!mac && prefs.get('phoneTasks') === false) { json(res, 403, { ok: false, code: 'notAllowed', message: tr('chat.task.notAllowed') }); return; }
 
       const s = (b?.sid && [...sessions.values()].find((x) => x.sid === String(b.sid) && x.cwd))
@@ -4170,8 +4372,11 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const text = String(b?.text || '').trim().slice(0, 200_000);
-      const images = (Array.isArray(b?.images) ? b.images : []).slice(0, 20).map(String);
+      const images = (Array.isArray(b?.images) ? b.images : [])
+        .slice(0, 20)
+        .map((img) => (typeof img === 'string' ? img : String(img?.dataUrl || img?.url || '')))
+        .filter(Boolean);
+      const text = String(b?.text || '').trim().slice(0, 200_000) || (images.length ? 'Hãy phân tích ảnh đính kèm.' : '');
       const hasExplicitModel = b && Object.prototype.hasOwnProperty.call(b, 'model');
       const model = hasExplicitModel ? String(b.model ?? '').trim() : getSavedModel(s ? s.sid : '', dir);
       if (hasExplicitModel) {
@@ -4239,26 +4444,26 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/chat' && req.method === 'POST') {   // the group chat: { op, … } or { text, to, images, mentions, humanOnly }
-    if (!authorized(req, url) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
+    if (!authorized(req, url) || !sameOriginOf(req) || !String(req.headers['content-type'] || '').startsWith('application/json')) { json(res, 403, { ok: false }); return; }
     readJson(req, 16_000_000).then((b) => {
       if (!b || typeof b !== 'object') { json(res, 400, { ok: false }); return; }
-      const mac = isLoopback(req), rawViewer = access.getApprovedMember(req) || viewerOf(req);
+      const mac = isLoopback(req);
+      const rawViewer = mac ? null : (viewerOf(req) || (cookieOk(req) ? ensurePinDirectorMember(req) : null));
+      if (!mac && !rawViewer) { json(res, 403, { ok: false }); return; }
       if (rawViewer) {
         markMemberSeen(rawViewer);
         broadcastTeamOnline();
       }
-      const hasRemoteIdentity = Boolean(
-        (rawViewer && rawViewer.id && rawViewer.id !== 'director')
-        || (b?.whoId && b.whoId !== 'director')
-      );
-      const viewer = !hasRemoteIdentity && mac
+      const viewer = mac
         ? { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isLocal: true, isDirectorDevice: true }
         : {
-            id: rawViewer?.id || b?.whoId || 'remote',
-            name: rawViewer?.name || b?.whoName || 'Trợ lý',
-            role: rawViewer?.role || b?.whoRole || DEFAULT_ROLE,
+            id: rawViewer.id,
+            name: rawViewer.name || 'Trợ lý',
+            role: rawViewer.role || DEFAULT_ROLE,
             isLocal: false,
-            isDirectorDevice: Boolean(rawViewer?.isDirectorDevice),
+            isDirectorDevice: Boolean(rawViewer.isDirectorDevice),
+            status: rawViewer.status,
+            allowedWorkspaces: rawViewer.allowedWorkspaces,
           };
       const op = String(b?.op || ''), str = (x, n) => String(x ?? '').slice(0, n);
       const reqChannel = b.channel === 'casual' ? 'casual' : (b.channel === 'work' ? 'work' : undefined);
@@ -4287,6 +4492,10 @@ const server = http.createServer((req, res) => {
         }
         // Directed to a specific AI session (`b.to`)
         const targetS = sessions.get(String(b.to)) || [...sessions.values()].find((x) => x.sid === String(b.to) || x.name === String(b.to) || x.title === String(b.to));
+        if (!mac && !viewer.isDirectorDevice && targetS?.cwd && !access.canSeeWorkspace(viewer, targetS.cwd)) {
+          json(res, 403, { ok: false, message: tr('server.forbidden') });
+          return;
+        }
         recordTaskOwner(targetS?.id, targetS?.cwd, { id: whoId, name: viewer.name, isLocal: viewer.isLocal });
         chat.fromBoss(rawText, b.to, imgIds, {
           whoName: viewer.name,
@@ -4305,7 +4514,14 @@ const server = http.createServer((req, res) => {
       else if (op === 'react') chat.react(str(b.id, 40), 'me', str(b.emoji, 8));
       else if (op === 'vote') chat.vote(str(b.id, 40), 'me', Number(b.i));
       else if (op === 'rsvp') chat.rsvp(str(b.id, 40), 'me', !!b.yes);
-      else if (op === 'recall') chat.recall(str(b.id, 40));
+      else if (op === 'recall') {
+        const targetMsg = chat.byId(str(b.id, 40));
+        if (!mac && !viewer.isDirectorDevice && !(targetMsg && (targetMsg.whoId === viewer.id || targetMsg.ownerId === viewer.id))) {
+          json(res, 403, { ok: false, message: tr('server.forbidden') });
+          return;
+        }
+        chat.recall(str(b.id, 40));
+      }
       else if (op === 'pin') chat.pin(str(b.id, 40), !mac && rawViewer ? `${rawViewer.role} · ${rawViewer.name}` : tr('chat.boss'));
       else if (op === 'poll') chat.poll('me', str(b.q, 120), (Array.isArray(b.opts) ? b.opts : []).slice(0, 6).map((x) => str(x, 60)), { channel: reqChannel || 'casual' });
       else if (op === 'photo' && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(String(b.data || '')) && b.data.length < 4_500_000) {
@@ -4629,6 +4845,34 @@ const server = http.createServer((req, res) => {
         json(res, 400, { ok: false, message: 'Không thể chọn trực tiếp gốc ổ đĩa làm dự án. Hãy chọn hoặc tạo một thư mục con.' });
         return;
       }
+      if (!isFullDirector) {
+        if (!access.canSeeWorkspace(viewer, canonicalDir) || !access.canControlSession(viewer, 'edit', canonicalDir)) {
+          json(res, 403, { ok: false, message: 'Bạn chỉ có thể thêm hoặc tạo thư mục dự án bên trong phạm vi Workspace đã được Giám đốc cấp phép.' });
+          return;
+        }
+        let checkDir = path.resolve(localDir);
+        const tailParts = [];
+        for (let depth = 0; depth < 64; depth++) {
+          if (fs.existsSync(checkDir)) {
+            try {
+              const realExisting = (fs.realpathSync.native || fs.realpathSync)(checkDir);
+              const realTarget = tailParts.length ? path.join(realExisting, ...tailParts) : realExisting;
+              if (!access.canSeeWorkspace(viewer, toHostDir(realTarget))) {
+                json(res, 403, { ok: false, message: 'Bạn chỉ có thể thêm hoặc tạo thư mục dự án bên trong phạm vi Workspace đã được Giám đốc cấp phép.' });
+                return;
+              }
+            } catch {
+              json(res, 403, { ok: false, message: 'Không thể xác thực đường dẫn thư mục dự án.' });
+              return;
+            }
+            break;
+          }
+          const parent = path.dirname(checkDir);
+          if (!parent || parent === checkDir) break;
+          tailParts.unshift(path.basename(checkDir));
+          checkDir = parent;
+        }
+      }
       let created = false;
       if (!fs.existsSync(localDir)) {
         if (b?.createIfMissing === false) {
@@ -4654,9 +4898,6 @@ const server = http.createServer((req, res) => {
         }
       }
       forceNoteDir(canonicalDir);
-      if (!isFullDirector && viewer?.id && Array.isArray(viewer.allowedWorkspaces) && !viewer.allowedWorkspaces.includes('*')) {
-        access.updateMember(viewer.id, { allowedWorkspaces: [...new Set([...viewer.allowedWorkspaces, canonicalDir])] });
-      }
       broadcast({ k: 'access', access: access.pubState(allKnownWorkspaces()) });
       fsp.appendFile(ACTION_LOG, `${new Date().toISOString()} project-add ${clientIp(req)} ${canonicalDir} (created=${created})\n`).catch(() => {});
       json(res, 200, {
@@ -4923,6 +5164,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname.startsWith('/_next/') || url.pathname.startsWith('/assets/') || PAGE_FILES.has(url.pathname) || (DEV && url.pathname.startsWith('/__nextjs'))) { Promise.resolve(nextHandle(req, res)).catch(() => {}); return; }
   if (url.pathname.startsWith('/api/files/')) {
     if (!authorized(req, url)) { json(res, 401, { ok: false, message: tr('server.pin.needed') }); return; }
+    if (req.method === 'POST' && !sameOriginOf(req)) { json(res, 403, { ok: false, error: 'forbidden_origin' }); return; }
     const local = isLoopback(req);
     const viewer = local ? null : viewerOf(req);
     if (viewer) markMemberSeen(viewer);
@@ -5113,7 +5355,16 @@ const server = http.createServer((req, res) => {
       json(res, 403, { ok: false, message: tr('chat.task.notAllowed') });
       return;
     }
-    const roots = getBrowseRoots();
+    const roots = isFullDirector || (Array.isArray(viewer?.allowedWorkspaces) && viewer.allowedWorkspaces.includes('*'))
+      ? getBrowseRoots()
+      : (Array.isArray(viewer?.allowedWorkspaces) ? viewer.allowedWorkspaces : [])
+          .map((w) => toHostDir(toContainerDir(w) || w))
+          .filter(Boolean)
+          .map((hostPath) => ({
+            name: base(hostPath) || hostPath,
+            dir: hostPath,
+            rawDir: hostPath,
+          }));
     const rawDir = String(url.searchParams.get('dir') || '').trim();
     if (!rawDir) {
       json(res, 200, { ok: true, currentDir: '', parentDir: '', roots, dirs: roots });
@@ -5121,10 +5372,21 @@ const server = http.createServer((req, res) => {
     }
     const localDir = toContainerDir(rawDir);
     const hostDir = toHostDir(localDir);
+    if (!isFullDirector && !access.canSeeWorkspace(viewer, hostDir)) {
+      json(res, 403, { ok: false, message: 'Bạn chỉ có thể duyệt thư mục bên trong phạm vi Workspace đã được Giám đốc cấp phép.', roots });
+      return;
+    }
     try {
       if (!fs.existsSync(localDir) || !fs.statSync(localDir).isDirectory()) {
         json(res, 404, { ok: false, message: 'Không tìm thấy thư mục này trên máy chủ.', roots });
         return;
+      }
+      if (!isFullDirector) {
+        const realLocalDir = (fs.realpathSync.native || fs.realpathSync)(localDir);
+        if (!access.canSeeWorkspace(viewer, toHostDir(realLocalDir))) {
+          json(res, 403, { ok: false, message: 'Thư mục liên kết nằm ngoài phạm vi Workspace được phép.', roots });
+          return;
+        }
       }
     } catch {
       json(res, 404, { ok: false, message: 'Không thể truy cập thư mục này.', roots });
@@ -5143,6 +5405,9 @@ const server = http.createServer((req, res) => {
         const p = path.dirname(cleanHost);
         if (p && p !== cleanHost) parentDir = p;
       }
+    }
+    if (!isFullDirector && parentDir && !access.canSeeWorkspace(viewer, parentDir)) {
+      parentDir = '';
     }
     const SKIP_DIRS = new Set([
       '$recycle.bin',
@@ -5207,12 +5472,33 @@ const server = http.createServer((req, res) => {
     };
     const raw = images.get(String(url.searchParams.get('id') || ''));
     const file = raw ? resolveImageFilePath(raw) : '';
-    const type = file && IMG_EXT[path.extname(file).slice(1).toLowerCase()];
+    let realFile = '';
+    if (file) {
+      try {
+        realFile = (fs.realpathSync.native || fs.realpathSync)(file);
+      } catch {
+        realFile = '';
+      }
+    }
+    const type = realFile && IMG_EXT[path.extname(realFile).slice(1).toLowerCase()];
     if (!type) { sendBlankGif(); return; }
-    fsp.stat(file).then((st) => {
+    if (!isLoopback(req)) {
+      const normReal = path.resolve(realFile).replace(/\\/g, '/').toLowerCase();
+      const normShot = path.resolve(SHOT_DIR).replace(/\\/g, '/').toLowerCase();
+      const normTaskImg = path.resolve(TASK_IMG_DIR).replace(/\\/g, '/').toLowerCase();
+      const normGemini = path.resolve(os.homedir(), '.gemini').replace(/\\/g, '/').toLowerCase();
+      const isSharedImg = normReal.startsWith(normShot + '/')
+        || normReal.startsWith(normTaskImg + '/')
+        || normReal.startsWith(normGemini + '/');
+      if (!isSharedImg && !canViewWorkspace(viewerOf(req), path.dirname(realFile))) {
+        sendBlankGif();
+        return;
+      }
+    }
+    fsp.stat(realFile).then((st) => {
       if (!st.isFile() || st.size > 40e6) { sendBlankGif(); return; }
       res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'private, max-age=30', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-      const stream = fs.createReadStream(file);
+      const stream = fs.createReadStream(realFile);
       res.on('close', () => stream.destroy());
       stream.on('error', () => {
         if (!res.headersSent) sendBlankGif();
@@ -5239,7 +5525,7 @@ const server = http.createServer((req, res) => {
     broadcastTeamOnline(true);
     fetchPlanUsage();   // skipped when the saved reading is fresh
     pollGit().then(() => git.pollCi());
-    scanSessions().then(() => send(res, snapNow(local, req)));
+    scanSessionsIfStale(2500).then(() => send(res, snapNow(local, req)));
     const ping = setInterval(() => {
       if (viewer) markMemberSeen(viewer);
       try {
@@ -5262,7 +5548,7 @@ const server = http.createServer((req, res) => {
     polledAt = Date.now();
     if (!(since >= 0) || since > sent || (backlog.length && since < backlog[0][0] - 1)) {
       if (fresh) { fetchPlanUsage(); pollGit().then(() => git.pollCi()); }
-      scanSessions().then(() => json(res, 200, { seq: sent, msgs: [snapNow(local, req)] }));
+      scanSessionsIfStale(2500).then(() => json(res, 200, { seq: sent, msgs: [snapNow(local, req)] }));
       return;
     }
     let timer = 0;
@@ -5446,6 +5732,7 @@ const server = http.createServer((req, res) => {
         branch: gitInfo?.branch || s?.git?.branch || 'main',
         status: s?.status || 'rest',
         busy: Boolean(s?.busy || s?.status === 'work'),
+        waitCard: s?.waitCard ? permPub(s.waitCard) : null,
         model: modelLabel,
         selectedModel: savedModelId,
         usage: s?.usage || null,
@@ -5453,7 +5740,10 @@ const server = http.createServer((req, res) => {
         todos: s?.todos || [],
         turns,
         artifacts,
-        viewer: viewer ? access.pubMember(viewer) : { id: 'director', name: 'Giám đốc', role: 'Giám đốc', isDirector: true, isDirectorDevice: true, canEditFiles: true },
+        viewer: viewer ? access.pubMember(viewer) : (() => {
+          const up = detectAgyUserProfile();
+          return { id: 'director', name: 'Giám đốc', userName: up.name || '', email: up.email || '', role: 'Giám đốc', isDirector: true, isDirectorDevice: true, canEditFiles: true };
+        })(),
         permissions,
       });
     })().catch((err) => {
@@ -5462,23 +5752,37 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/timeline') {
+    const local = isLoopback(req);
+    const viewer = local ? null : viewerOf(req);
     const to = Math.min(Number(url.searchParams.get('to')) || Date.now(), Date.now()), from = Math.max(Number(url.searchParams.get('from')) || to - 3600e3, to - 2 * 86400e3);
     const dayOf = (t) => new Date(t).toLocaleDateString('sv-SE');
     (async () => {
       let items = [], truncated = false;
       for (const d of [...new Set([dayOf(from), dayOf(to)])]) { const r = await replayRange(d, from, to, 400_000); items = items.concat(r.items); truncated ||= r.truncated; }
-      json(res, 200, { ...buildTimeline(items, from, to), truncated });
+      const filteredItems = filterReplayItemsForViewer(items, local, viewer);
+      json(res, 200, { ...buildTimeline(filteredItems, from, to), truncated });
     })().catch(() => json(res, 200, { from, to, rows: [], totals: { work: 0, wait: 0, turn: 0, prompts: 0 }, truncated: false }));
     return;
   }
   if (url.pathname === '/api/wrapped') {
+    const local = isLoopback(req);
+    const viewer = local ? null : viewerOf(req);
+    const isFullDirector = local || !viewer || viewer.isDirectorDevice || viewer.role === 'Phó Giám đốc' || (Array.isArray(viewer.allowedWorkspaces) && viewer.allowedWorkspaces.includes('*'));
+    if (!isFullDirector) {
+      json(res, 403, { ok: false, message: tr('server.forbidden') });
+      return;
+    }
     weekSummary({ replayDir: REPLAY_DIR, buildTimeline }).then((d) => json(res, 200, d)).catch((err) => json(res, 500, { error: String(err.message || err) }));
     return;
   }
   if (url.pathname === '/api/replay/days') { replayDays().then((days) => json(res, 200, { days, today: today() })); return; }
   if (url.pathname === '/api/replay') {
+    const local = isLoopback(req);
+    const viewer = local ? null : viewerOf(req);
     const from = Number(url.searchParams.get('from')) || 0, to = Number(url.searchParams.get('to')) || Date.now();
-    replayRange(String(url.searchParams.get('day') || ''), from, to).then((r) => json(res, 200, r)).catch(() => json(res, 200, { items: [], truncated: false }));
+    replayRange(String(url.searchParams.get('day') || ''), from, to)
+      .then((r) => json(res, 200, { ...r, items: filterReplayItemsForViewer(r.items, local, viewer) }))
+      .catch(() => json(res, 200, { items: [], truncated: false }));
     return;
   }
   if (url.pathname === '/api/sys') {
@@ -5538,13 +5842,31 @@ process.removeAllListeners('unhandledRejection');
    network), never on "every address", and only while the switch is on (prefs lan; `install --lan` / OFFICE_HOST still
    works the old way, and the switch then shows it on for good). Phones still need the PIN. The Mac's addresses change
    with its network: looked at again every 5 seconds. Off: the listeners close and the phones' pages are cut off. */
-const lanFixed = HOST !== '127.0.0.1' && HOST !== 'localhost';
+const lanFixed = process.env.OFFICE_DOCKER === '1' ? false : (HOST !== '127.0.0.1' && HOST !== 'localhost');
 const lanServers = new Map();   // address -> its http.Server
 let lastLanSig = '';
+function lanIsOn() { return lanFixed || prefs.get('lan') !== false; }
+function wifiIsOn() { return lanIsOn() && prefs.get('lanWifi') !== false; }
+function tsIsOn() { return lanIsOn() && prefs.get('lanTs') !== false; }
+function activeLanUrl(withToken = true) { return wifiIsOn() ? lanUrl(withToken) : null; }
+function activeTsUrl() { return tsIsOn() ? tsUrl() : null; }
+function closeDisallowedRemoteClients() {
+  for (const c of [...clients]) {
+    if (c.local || !c.req || c.req.viaTunnel) continue;
+    if (!hostAllowed(c.req)) {
+      try { c.res.end(); } catch { /* ignore */ }
+      try { c.req.socket?.destroy?.(); } catch { /* ignore */ }
+      clients.delete(c);
+    }
+  }
+}
 function syncLan(forceSync = false) {
-  const lanEnabled = prefs.get('lan') !== false;
-  const allowedAddrs = [ketWifiAddr(forceSync), tsAddr()].filter(Boolean);
-  const want = new Set(!lanFixed && lanEnabled ? allowedAddrs : []);
+  const lanEnabled = lanIsOn();
+  const allowedAddrs = [
+    wifiIsOn() ? trustedWifiAddr(forceSync) : null,
+    tsIsOn() ? tsAddr() : null,
+  ].filter(Boolean);
+  const want = new Set(process.env.OFFICE_DOCKER !== '1' && !lanFixed && lanEnabled ? allowedAddrs : []);
   for (const [addr, srv] of lanServers) if (!want.has(addr)) { srv.close(); srv.closeAllConnections?.(); lanServers.delete(addr); }
   for (const addr of want) {
     if (lanServers.has(addr)) continue;
@@ -5553,8 +5875,11 @@ function syncLan(forceSync = false) {
     srv.on('error', () => { if (lanServers.get(addr) === srv) lanServers.delete(addr); });   // (the address went away, or the port is taken on it)
     srv.listen(PORT, addr); lanServers.set(addr, srv);
   }
+  closeDisallowedRemoteClients();
   const on = lanIsOn();
-  const sig = `${on}|${lanUrl(false) || ''}|${tsUrl() || ''}`;
+  const wifiOn = prefs.get('lanWifi') !== false;
+  const tsOn = prefs.get('lanTs') !== false;
+  const sig = `${on}|${wifiOn}|${tsOn}|${activeLanUrl(false) || ''}|${activeTsUrl() || ''}|${!!lanUrl(false)}|${!!tsUrl()}`;
   if (sig !== lastLanSig) {
     lastLanSig = sig;
     broadcastDirector({
@@ -5562,16 +5887,20 @@ function syncLan(forceSync = false) {
       approve: !!prefs.get('phoneApprove'),
       tasks: prefs.get('phoneTasks') !== false,
       on,
-      lan: on ? lanUrl() : null,
-      lanBase: on ? lanUrl(false) : null,
-      ts: on ? tsUrl() : null,
+      lanOn: on,
+      wifiOn,
+      tsOn,
+      lan: activeLanUrl(true),
+      lanBase: activeLanUrl(false),
+      wifiHere: !!lanUrl(false),
+      ts: activeTsUrl(),
+      tsHere: !!tsUrl(),
       pin: currentPin(),
       fixed: lanFixed,
     });
   }
 }
-function lanIsOn() { return lanFixed || lanServers.size > 0; }
-setInterval(() => syncLan(false), 5_000).unref();
+setInterval(() => syncLan(false), 12_000).unref();
 
 /* ---------- the office from anywhere (mobile data, another Wi-Fi): a Cloudflare quick tunnel, switched on in the phone
    window ----------
@@ -5585,6 +5914,8 @@ const tunnel = { state: 'off', url: '', host: '', error: '', pid: 0, srv: null, 
 const TUNNEL_PID = path.join(DATA_DIR, 'tunnel.pid'), CF_BIN = path.join(DATA_DIR, 'bin', process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
 const tunnelOut = () => {
   const on = lanIsOn();
+  const wifiOn = prefs.get('lanWifi') !== false;
+  const tsOn = prefs.get('lanTs') !== false;
   return {
     ok: true,
     on: !!prefs.get('tunnel'),
@@ -5597,9 +5928,13 @@ const tunnelOut = () => {
     rc: rcAtStartup(),
     tasks: !!prefs.get('phoneTasks'),
     lanOn: on,
-    lan: on ? lanUrl() : null,
-    lanBase: on ? lanUrl(false) : null,
-    ts: on ? tsUrl() : null,
+    wifiOn,
+    tsOn,
+    lan: activeLanUrl(true),
+    lanBase: activeLanUrl(false),
+    wifiHere: !!lanUrl(false),
+    ts: activeTsUrl(),
+    tsHere: !!tsUrl(),
     lanFixed,
   };
 };

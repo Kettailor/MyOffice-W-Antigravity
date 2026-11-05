@@ -5,6 +5,7 @@
 // Antigravity tool calls and hook payloads into Work Office events.
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
@@ -191,10 +192,15 @@ function formatSubagentRole(raw = '') {
 export function agyBrainDirs() {
   if (process.env.OFFICE_AGY_BRAIN_DIR) return [path.resolve(process.env.OFFICE_AGY_BRAIN_DIR)];
   const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
-  return [
+  const candidates = [
     path.join(home, '.gemini', 'antigravity-cli', 'brain'),
     path.join(home, '.gemini', 'antigravity', 'brain'),
+    '/root/.gemini/antigravity-cli/brain',
+    '/root/.gemini/antigravity/brain',
+    '/home/node/.gemini/antigravity-cli/brain',
+    '/home/node/.gemini/antigravity/brain',
   ];
+  return [...new Set(candidates)];
 }
 
 export function agyBrainDir() {
@@ -256,8 +262,13 @@ function readConfigProjectWorkspaces() {
   const out = new Map();
   try {
     const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
-    const projDir = path.join(home, '.gemini', 'config', 'projects');
-    if (!fs.existsSync(projDir)) return out;
+    const projDirs = [
+      path.join(home, '.gemini', 'config', 'projects'),
+      '/root/.gemini/config/projects',
+      '/home/node/.gemini/config/projects',
+    ];
+    const projDir = projDirs.find((d) => fs.existsSync(d));
+    if (!projDir) return out;
     const st = fs.statSync(projDir);
     if (st.mtimeMs === projectWsCache.mtimeMs && projectWsCache.map.size > 0) {
       projectWsCache.at = now;
@@ -1344,9 +1355,20 @@ function stepQuotaUnits5h(step) {
   return (base + freshWeight + cacheWeight) * 1.15;
 }
 
+function resolveGeminiConfigPath() {
+  const candidates = [
+    path.join(os.homedir(), '.gemini', 'config', 'config.json'),
+    '/root/.gemini/config/config.json',
+  ];
+  for (const fp of candidates) {
+    try { if (fs.existsSync(fp)) return fp; } catch { /* ignore */ }
+  }
+  return candidates[0];
+}
+
 export function readAgyUseAiCredits() {
   try {
-    const cfgPath = path.join(os.homedir(), '.gemini', 'config', 'config.json');
+    const cfgPath = resolveGeminiConfigPath();
     if (!fs.existsSync(cfgPath)) return false;
     const j = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     return Boolean(j?.userSettings?.useAiCredits);
@@ -1357,7 +1379,7 @@ export function readAgyUseAiCredits() {
 
 export async function writeAgyUseAiCredits(enabled) {
   try {
-    const cfgPath = path.join(os.homedir(), '.gemini', 'config', 'config.json');
+    const cfgPath = resolveGeminiConfigPath();
     let j = {};
     if (fs.existsSync(cfgPath)) {
       j = JSON.parse(await fsp.readFile(cfgPath, 'utf8'));
@@ -1379,8 +1401,249 @@ export function clearAgyAccountEmailCache() {
   cachedAgyAccountEmailAt = 0;
 }
 
+const LIVE_AGY_STATUS_FILE = path.join(DATA_DIR, 'agy-live-status.json');
+let liveAgyStatusCache = null;
+let liveAgyStatusAt = 0;
+let liveAgyInflight = null;
+
+try {
+  if (fs.existsSync(LIVE_AGY_STATUS_FILE)) {
+    const savedLive = JSON.parse(fs.readFileSync(LIVE_AGY_STATUS_FILE, 'utf8'));
+    if (savedLive && typeof savedLive === 'object') {
+      liveAgyStatusCache = savedLive;
+    }
+  }
+} catch { /* ignore */ }
+
+function callLsConnectRpc(hostname, port, csrfToken, method) {
+  return new Promise((resolve) => {
+    const body = '{}';
+    const req = http.request(
+      {
+        hostname,
+        port,
+        path: `/exa.language_server_pb.LanguageServerService/${method}`,
+        method: 'POST',
+        timeout: 1200,
+        headers: {
+          Host: `127.0.0.1:${port}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': csrfToken,
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) { resolve(null); return; }
+          try { resolve(JSON.parse(data)); } catch { resolve(null); }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(body);
+    req.end();
+  });
+}
+
+function listAgyDaemonHubs() {
+  const daemonDirs = [
+    path.join(os.homedir(), '.gemini', 'antigravity', 'daemon'),
+    path.join(os.homedir(), '.gemini', 'antigravity-cli', 'daemon'),
+    '/root/.gemini/antigravity/daemon',
+    '/root/.gemini/antigravity-cli/daemon',
+  ];
+  const hubs = [];
+  for (const dir of daemonDirs) {
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { continue; }
+    for (const f of files) {
+      if (!/^hub_.*\.json$/i.test(f)) continue;
+      const fp = path.join(dir, f);
+      try {
+        const st = fs.statSync(fp);
+        if (!st.isFile()) continue;
+        const j = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        const httpPort = Number(j?.httpPort) || 0;
+        const csrfToken = String(j?.csrfToken || '').trim();
+        if (httpPort > 0 && csrfToken) {
+          hubs.push({ fp, mtimeMs: st.mtimeMs || 0, httpPort, csrfToken });
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  hubs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return hubs.slice(0, 4);
+}
+
+export async function fetchLiveAgyQuotaAndUser(force = false) {
+  const now = Date.now();
+  if (!force && liveAgyStatusCache && now - liveAgyStatusAt < 12_000) {
+    return liveAgyStatusCache;
+  }
+  if (liveAgyInflight) return liveAgyInflight;
+  liveAgyInflight = (async () => {
+    const hubs = listAgyDaemonHubs();
+    const hosts = process.env.OFFICE_DOCKER === '1'
+      ? ['host.docker.internal', '127.0.0.1']
+      : ['127.0.0.1'];
+    for (const hub of hubs) {
+      for (const host of hosts) {
+        const [quotaRes, userRes] = await Promise.all([
+          callLsConnectRpc(host, hub.httpPort, hub.csrfToken, 'RetrieveUserQuotaSummary'),
+          callLsConnectRpc(host, hub.httpPort, hub.csrfToken, 'GetUserStatus'),
+        ]);
+        if (!quotaRes && !userRes) continue;
+        const us = userRes?.userStatus || {};
+        const groups = Array.isArray(quotaRes?.response?.groups)
+          ? quotaRes.response.groups
+          : Array.isArray(quotaRes?.groups)
+          ? quotaRes.groups
+          : [];
+        const buckets = [
+          ...(Array.isArray(quotaRes?.buckets) ? quotaRes.buckets : []),
+          ...groups.flatMap((g) =>
+            (Array.isArray(g?.buckets) ? g.buckets : []).map((b) => ({
+              ...b,
+              groupName: g?.displayName || '',
+            })),
+          ),
+        ];
+        const findBucket = (idRe, titleRe) =>
+          buckets.find(
+            (b) =>
+              b &&
+              (idRe.test(String(b.bucketId || '')) ||
+                (titleRe && titleRe.test(`${b.groupName || ''} ${b.displayName || ''} ${b.title || ''}`))),
+          );
+        const geminiWeekly = findBucket(/^gemini-weekly$/i, /gemini.*weekly/i);
+        const gemini5h = findBucket(/^gemini-5h$/i, /gemini.*(five\s*hour|5\s*hour|5h)/i);
+        const claudeWeekly = findBucket(/^3p-weekly$/i, /(claude|gpt).*weekly/i);
+        const claude5h = findBucket(/^3p-5h$/i, /(claude|gpt).*(five\s*hour|5\s*hour|5h)/i);
+
+        const fracPct = (b) => {
+          if (!b || typeof b.remainingFraction !== 'number' || !Number.isFinite(b.remainingFraction)) return null;
+          return Math.max(0, Math.min(100, Math.round(b.remainingFraction * 100)));
+        };
+
+        let left5hPct = fracPct(gemini5h);
+        const leftWeekPct = fracPct(geminiWeekly);
+        let claudeGptLeft5hPct = fracPct(claude5h);
+        const claudeGptLeftWeekPct = fracPct(claudeWeekly);
+        let resetsAt = gemini5h?.resetTime || null;
+        const weekResetsAt = geminiWeekly?.resetTime || null;
+        let claudeGptResets5hAt = claude5h?.resetTime || null;
+        const claudeGptResetsWeekAt = claudeWeekly?.resetTime || null;
+
+        const modelConfigs = Array.isArray(us?.cascadeModelConfigData?.clientModelConfigs)
+          ? us.cascadeModelConfigData.clientModelConfigs
+          : [];
+        if (left5hPct === null && modelConfigs.length > 0) {
+          const gemModel = modelConfigs.find((m) => /gemini/i.test(String(m?.label || ''))) || modelConfigs[0];
+          if (typeof gemModel?.quotaInfo?.remainingFraction === 'number') {
+            left5hPct = Math.max(0, Math.min(100, Math.round(gemModel.quotaInfo.remainingFraction * 100)));
+            resetsAt ||= gemModel.quotaInfo.resetTime || null;
+          }
+        }
+        if (claudeGptLeft5hPct === null && modelConfigs.length > 0) {
+          const claudeModel = modelConfigs.find((m) => /claude|sonnet|opus|gpt/i.test(String(m?.label || '')));
+          if (typeof claudeModel?.quotaInfo?.remainingFraction === 'number') {
+            claudeGptLeft5hPct = Math.max(0, Math.min(100, Math.round(claudeModel.quotaInfo.remainingFraction * 100)));
+            claudeGptResets5hAt ||= claudeModel.quotaInfo.resetTime || null;
+          }
+        }
+
+        const email = String(us.email || liveAgyStatusCache?.email || '').trim();
+        const userName = String(us.name || liveAgyStatusCache?.userName || '').trim();
+        const planName = String(
+          us?.userTier?.name
+          || us?.planStatus?.planInfo?.planName
+          || liveAgyStatusCache?.planName
+          || 'Google AI Ultra',
+        ).trim();
+        const upgradeText = String(us?.userTier?.upgradeSubscriptionText || liveAgyStatusCache?.upgradeText || '').trim();
+        const availablePromptCredits = us?.planStatus?.availablePromptCredits ?? liveAgyStatusCache?.availablePromptCredits ?? null;
+        const availableFlowCredits = us?.planStatus?.availableFlowCredits ?? liveAgyStatusCache?.availableFlowCredits ?? null;
+
+        const nextLive = {
+          at: Date.now(),
+          userName,
+          email,
+          planName,
+          upgradeText,
+          availablePromptCredits,
+          availableFlowCredits,
+          left5hPct: left5hPct ?? liveAgyStatusCache?.left5hPct ?? null,
+          leftWeekPct: leftWeekPct ?? liveAgyStatusCache?.leftWeekPct ?? null,
+          resetsAt: resetsAt || liveAgyStatusCache?.resetsAt || null,
+          weekResetsAt: weekResetsAt || liveAgyStatusCache?.weekResetsAt || null,
+          description5h: gemini5h?.description || liveAgyStatusCache?.description5h || '',
+          descriptionWeek: geminiWeekly?.description || liveAgyStatusCache?.descriptionWeek || '',
+          claudeGptLeft5hPct: claudeGptLeft5hPct ?? liveAgyStatusCache?.claudeGptLeft5hPct ?? 100,
+          claudeGptLeftWeekPct: claudeGptLeftWeekPct ?? liveAgyStatusCache?.claudeGptLeftWeekPct ?? 100,
+          claudeGptResets5hAt: claudeGptResets5hAt || liveAgyStatusCache?.claudeGptResets5hAt || null,
+          claudeGptResetsWeekAt: claudeGptResetsWeekAt || liveAgyStatusCache?.claudeGptResetsWeekAt || null,
+          descriptionClaude5h: claude5h?.description || liveAgyStatusCache?.descriptionClaude5h || '',
+          descriptionClaudeWeek: claudeWeekly?.description || liveAgyStatusCache?.descriptionClaudeWeek || '',
+        };
+        liveAgyStatusCache = nextLive;
+        liveAgyStatusAt = Date.now();
+        if (email && email.includes('@')) {
+          cachedAgyAccountEmail = email;
+          cachedAgyAccountEmailAt = Date.now();
+        }
+        try {
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          fsp.writeFile(LIVE_AGY_STATUS_FILE, JSON.stringify(nextLive, null, 2)).catch(() => {});
+        } catch { /* ignore */ }
+        return nextLive;
+      }
+    }
+    try {
+      if (fs.existsSync(LIVE_AGY_STATUS_FILE)) {
+        const fromDisk = JSON.parse(await fsp.readFile(LIVE_AGY_STATUS_FILE, 'utf8'));
+        if (fromDisk && typeof fromDisk === 'object') {
+          liveAgyStatusCache = fromDisk;
+        }
+      }
+    } catch { /* ignore */ }
+    liveAgyStatusAt = Date.now();
+    return liveAgyStatusCache;
+  })().finally(() => {
+    liveAgyInflight = null;
+  });
+  return liveAgyInflight;
+}
+
+// Kick off an initial non-blocking live poll on module startup
+fetchLiveAgyQuotaAndUser().catch(() => {});
+
+export function detectAgyUserProfile() {
+  if (Date.now() - liveAgyStatusAt > 15_000) {
+    fetchLiveAgyQuotaAndUser().catch(() => {});
+  }
+  const email = (liveAgyStatusCache?.email && liveAgyStatusCache.email.includes('@'))
+    ? liveAgyStatusCache.email
+    : detectAgyAccountEmail();
+  const name = liveAgyStatusCache?.userName || '';
+  const planName = liveAgyStatusCache?.planName || 'Google AI Ultra';
+  const upgradeText = liveAgyStatusCache?.upgradeText || '';
+  return { name, email, planName, upgradeText };
+}
+
 export function detectAgyAccountEmail() {
   const now = Date.now();
+  if (Date.now() - liveAgyStatusAt > 20_000) {
+    fetchLiveAgyQuotaAndUser().catch(() => {});
+  }
+  if (liveAgyStatusCache?.email && liveAgyStatusCache.email.includes('@')) {
+    cachedAgyAccountEmail = liveAgyStatusCache.email;
+    cachedAgyAccountEmailAt = now;
+    return cachedAgyAccountEmail;
+  }
   if (cachedAgyAccountEmail && now - cachedAgyAccountEmailAt < 60_000) {
     return cachedAgyAccountEmail;
   }
@@ -1509,8 +1772,10 @@ function hasLocalUltraConfig() {
   );
   const candidates = [
     path.join(home, '.gemini', 'config', 'config.json'),
+    '/root/.gemini/config/config.json',
     path.join(appData, 'Antigravity', 'app_storage.json'),
     path.join(home, 'AppData', 'Roaming', 'Antigravity', 'app_storage.json'),
+    LIVE_AGY_STATUS_FILE,
   ];
   cachedHasUltraConfig = candidates.some((fp) => {
     try { return fs.existsSync(fp); } catch { return false; }
@@ -1733,18 +1998,67 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
     }
   }
 
-  const pct = Math.min(100, units5h > 0 ? Math.max(1, Math.round(units5h)) : 0);
+  let pct = Math.min(100, units5h > 0 ? Math.max(1, Math.round(units5h)) : 0);
   // Google AI Ultra weekly budget (~3.97x the 5-hour unit scale in the active weekly cycle)
-  const weekPct = Math.min(100, unitsWeekCycle > 0 ? Math.max(1, Math.round(unitsWeekCycle / 3.97)) : 0);
-  const left5hPct = Math.max(0, 100 - pct);
-  const leftWeekPct = Math.max(0, 100 - weekPct);
-  const claudeGptPct5h = Math.min(100, claudeUnits5h > 0 ? Math.max(1, Math.round(claudeUnits5h)) : 0);
-  const claudeGptLeft5hPct = Math.max(0, 100 - claudeGptPct5h);
-  const claudeGptWeekPct = Math.min(100, claudeUnitsWeek > 0 ? Math.max(1, Math.round(claudeUnitsWeek / 3.97)) : 0);
-  const claudeGptLeftWeekPct = Math.max(0, 100 - claudeGptWeekPct);
-  const resetsAt = new Date(activeReset5hMs).toISOString();
-  const weekResetsAt = new Date(activeReset7dMs).toISOString();
+  let weekPct = Math.min(100, unitsWeekCycle > 0 ? Math.max(1, Math.round(unitsWeekCycle / 3.97)) : 0);
+  let left5hPct = Math.max(0, 100 - pct);
+  let leftWeekPct = Math.max(0, 100 - weekPct);
+  let claudeGptPct5h = Math.min(100, claudeUnits5h > 0 ? Math.max(1, Math.round(claudeUnits5h)) : 0);
+  let claudeGptLeft5hPct = Math.max(0, 100 - claudeGptPct5h);
+  let claudeGptWeekPct = Math.min(100, claudeUnitsWeek > 0 ? Math.max(1, Math.round(claudeUnitsWeek / 3.97)) : 0);
+  let claudeGptLeftWeekPct = Math.max(0, 100 - claudeGptWeekPct);
+  let resetsAt = new Date(activeReset5hMs).toISOString();
+  let weekResetsAt = new Date(activeReset7dMs).toISOString();
+  let claudeGptResets5hAt = null;
+  let claudeGptResetsWeekAt = null;
+  let description5h = '';
+  let descriptionWeek = '';
   const useAiCredits = readAgyUseAiCredits();
+
+  const canUseLiveLsQuota = Boolean(
+    liveAgyStatusCache
+    && !allowedFilter
+    && (accountSlug === null || accountSlug === '')
+    && (!accountEmail || !liveAgyStatusCache.email || accountEmail.toLowerCase() === liveAgyStatusCache.email.toLowerCase())
+    && (isPrimaryUltraAnchor || process.env.OFFICE_DOCKER === '1' || sessions.size === 0 || sessions.size >= 4),
+  );
+  if (canUseLiveLsQuota) {
+    const live = liveAgyStatusCache;
+    if (typeof live.left5hPct === 'number') {
+      const r5Ms = live.resetsAt ? Date.parse(live.resetsAt) : 0;
+      if (!r5Ms || r5Ms > now) {
+        left5hPct = Math.max(0, Math.min(100, Math.round(live.left5hPct)));
+        pct = Math.max(0, 100 - left5hPct);
+        if (live.resetsAt) resetsAt = live.resetsAt;
+        if (live.description5h) description5h = live.description5h;
+      }
+    }
+    if (typeof live.leftWeekPct === 'number') {
+      const r7Ms = live.weekResetsAt ? Date.parse(live.weekResetsAt) : 0;
+      if (!r7Ms || r7Ms > now) {
+        leftWeekPct = Math.max(0, Math.min(100, Math.round(live.leftWeekPct)));
+        weekPct = Math.max(0, 100 - leftWeekPct);
+        if (live.weekResetsAt) weekResetsAt = live.weekResetsAt;
+        if (live.descriptionWeek) descriptionWeek = live.descriptionWeek;
+      }
+    }
+    if (typeof live.claudeGptLeft5hPct === 'number') {
+      const rc5Ms = live.claudeGptResets5hAt ? Date.parse(live.claudeGptResets5hAt) : 0;
+      if (!rc5Ms || rc5Ms > now) {
+        claudeGptLeft5hPct = Math.max(0, Math.min(100, Math.round(live.claudeGptLeft5hPct)));
+        claudeGptPct5h = Math.max(0, 100 - claudeGptLeft5hPct);
+        if (live.claudeGptResets5hAt) claudeGptResets5hAt = live.claudeGptResets5hAt;
+      }
+    }
+    if (typeof live.claudeGptLeftWeekPct === 'number') {
+      const rc7Ms = live.claudeGptResetsWeekAt ? Date.parse(live.claudeGptResetsWeekAt) : 0;
+      if (!rc7Ms || rc7Ms > now) {
+        claudeGptLeftWeekPct = Math.max(0, Math.min(100, Math.round(live.claudeGptLeftWeekPct)));
+        claudeGptWeekPct = Math.max(0, 100 - claudeGptLeftWeekPct);
+        if (live.claudeGptResetsWeekAt) claudeGptResetsWeekAt = live.claudeGptResetsWeekAt;
+      }
+    }
+  }
 
   const projects = [...byProject.values()]
     .map((p) => {
@@ -1790,11 +2104,14 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
   const resolvedEmail = (accountEmail && String(accountEmail).includes('@'))
     ? String(accountEmail).trim()
     : detectAgyAccountEmail();
+  const userProfile = detectAgyUserProfile();
 
   return {
     source: 'agy',
+    userName: userProfile.name || '',
     email: resolvedEmail,
-    planName: 'Google AI Ultra',
+    planName: userProfile.planName || 'Google AI Ultra',
+    upgradeText: userProfile.upgradeText || '',
     billingCycle: `5g: còn ${left5hPct}% · Tuần: còn ${leftWeekPct}%`,
     pct,
     left5hPct,
@@ -1802,10 +2119,14 @@ export function computeAgyQuota(sessions, allowedFilter = null, accountSlug = nu
     weekPct,
     leftWeekPct,
     weekResetsAt,
+    description5h,
+    descriptionWeek,
     claudeGptPct5h,
     claudeGptLeft5hPct,
     claudeGptWeekPct,
     claudeGptLeftWeekPct,
+    claudeGptResets5hAt,
+    claudeGptResetsWeekAt,
     useAiCredits,
     prompts5h,
     steps5h,

@@ -15,7 +15,21 @@ export let macSnap = null;
 let confirmKey = null;
 let confirmTimer = null;
 const busyKeys = new Set();
-export const isAssistantRestricted = () => !state.isLocal && !state.viewer?.isDirectorDevice && state.viewer?.role !== 'Phó Giám đốc';
+export const isAssistantRestricted = () => {
+  if (
+    state.isLocal ||
+    state.viewer?.isDirector ||
+    state.viewer?.isDirectorDevice ||
+    state.viewer?.role === 'Giám đốc' ||
+    state.viewer?.role === 'Phó Giám đốc'
+  ) {
+    return false;
+  }
+  if (!state.connectedOnce && typeof location !== 'undefined' && /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname)) {
+    return false;
+  }
+  return true;
+};
 export function openMac() {
   if (isAssistantRestricted()) { if ($('btn-mac')) $('btn-mac').hidden = true; drM.hidden = true; return; }
   if (state.selectedId) closeSession(); drM.hidden = false; if (small.matches) $('feed').classList.remove('feed--open'); loadMac(); clearInterval(state.macTimer); state.macTimer = setInterval(pollMac, 5000);
@@ -189,13 +203,16 @@ let editing = null;   // the account whose name is being typed ('' = the main on
 export const acctName = (slug, label, email = '') => email || label || (slug ? tr('mac.plan.otherAccount', { name: slug }) : tr('mac.plan.mainAccount'));
 const switchOn = () => { const a = state.limits?.auto; return !!(a?.on || a?.pick); };
 // an account's heading and its limits, together: hovering any of it shows its actions
-function acctBlock(slug, label, info, until, email = '') { const b = el('div', 'acct-block'); b.dataset.slug = slug; b.append(acctHead(slug, label, info, until, email)); return b; }
-function acctHead(slug, label, info, until, email = '') {
+function acctBlock(slug, label, info, until, email = '', userName = '') { const b = el('div', 'acct-block'); b.dataset.slug = slug; b.append(acctHead(slug, label, info, until, email, userName)); return b; }
+function acctHead(slug, label, info, until, email = '', userName = '') {
   const a = state.limits?.auto || {}, inUse = switchOn() ? (a.now || '') === slug : !slug;
   const head = el('div', `plan-other acct-head${inUse ? ' is-live' : ''}`), order = a.order || [];
   const displayEmail = email || label || acctName(slug, label);
+  const displayTitle = userName && displayEmail && !displayEmail.includes(userName)
+    ? `👤 ${userName} · 📧 ${displayEmail}`
+    : `📧 ${displayEmail}`;
   const name = el('button', 'acct-name'); name.type = 'button'; name.title = tr('mac.plan.rename');
-  name.append(el('b', null, `📧 ${displayEmail}`), el('span', 'acct-pen', '✏️'));
+  name.append(el('b', null, displayTitle), el('span', 'acct-pen', '✏️'));
   name.addEventListener('click', () => renameIn(head, slug, email || label));
   const end = el('span', 'acct-end');
   if (!inUse) {
@@ -477,18 +494,20 @@ export function renderLimits() {
   if (editing !== null || dragging) return;   // (a name being typed, an account being dragged: drawn again after)
   const rows = $('plan-rows'); rows.replaceChildren();
   const mainEmail = state.limits?.email || state.limits?.account?.email || state.limits?.label || '';
-  const mainRows = acctBlock('', mainEmail, accText, state.limits.until, mainEmail); rows.append(mainRows);
+  const mainUserName = state.limits?.userName || state.limits?.account?.userName || '';
+  const mainRows = acctBlock('', mainEmail, accText, state.limits.until, mainEmail, mainUserName); rows.append(mainRows);
   if (!ws.length) mainRows.append(el('small', 'plan-other-note', state.limitsNote || tr('mac.plan.loading')));
   for (const w of ws) limitRow(mainRows, w);
   if (state.limits?.stats) {
     const st = state.limits.stats;
     const cg5 = st.claudeGptLeft5hPct ?? 100;
     const cg7 = st.claudeGptLeftWeekPct ?? 100;
+    const cg5Reset = st.claudeGptResets5hAt ? ` (làm mới sau ${fmtRefreshIn(st.claudeGptResets5hAt)})` : '';
     mainRows.append(
       el(
         'small',
         'plan-reset',
-        `🤖 Claude & GPT models: Tuần còn ${cg7}% · 5 giờ còn ${cg5}%`,
+        `🤖 Claude & GPT models: Tuần còn ${cg7}% · 5 giờ còn ${cg5}%${cg5Reset}`,
       ),
       el(
         'small',
@@ -799,6 +818,7 @@ async function setAutoClose(hours) {
 export function renderMac() {
   const s = macSnap; const body = $('mac-body');
   if (!s?.mem) { body.replaceChildren(el('p', 'muted', tr('mac.measuring'))); return; }
+  if (s.osPlatform && typeof document !== 'undefined') document.documentElement.dataset.os = s.osPlatform;
   $('mac-at').textContent = tr('mac.updated', { time: hhmm(s.at, true) });
   const keepScroll = body.scrollTop, focusKey = body.contains(document.activeElement) ? document.activeElement.dataset?.fk : null;
   const frag = document.createDocumentFragment();
@@ -826,8 +846,11 @@ export function renderMac() {
       );
     }
   }
+  const drivesNote = Array.isArray(s.disk?.drives) && s.disk.drives.length > 1
+    ? ` (${s.disk.drives.map((d) => `${d.root.replace(/\\$/, '')} ${fmtBytes(d.free)}/${fmtBytes(d.total)}`).join(' · ')})`
+    : '';
   meters.append(
-    meter(tr('mac.meter.disk'), `${pct(s.disk.used, s.disk.total)}%`, tr('mac.meter.diskSub', { free: fmtBytes(s.disk.free), total: fmtBytes(s.disk.total) }), s.disk.used / s.disk.total, s.diskTight ? 'warn' : 'normal'),
+    meter(tr('mac.meter.disk'), `${pct(s.disk.used, s.disk.total)}%`, `${tr('mac.meter.diskSub', { free: fmtBytes(s.disk.free), total: fmtBytes(s.disk.total) })}${drivesNote}`, s.disk.used / s.disk.total, s.diskTight ? 'warn' : 'normal'),
   );
   for (const w of liveWindows()) {
     const u = Math.round(w.pct || 0), left = Math.max(0, 100 - u);
@@ -910,7 +933,8 @@ export function renderMac() {
 
 export function setup() {
   /* ---------- Mac drawer ---------- */
-  state.macTimer = null;
+  state.macTimer = setInterval(pollMac, 30000);
+  setTimeout(loadMac, 150);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadMac(); });
   /* plan usage (5-hour / 7-day windows) from Claude Code's status line */
   state.limits = null; state.limitsNote = '';

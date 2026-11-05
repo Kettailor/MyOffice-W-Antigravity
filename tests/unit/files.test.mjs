@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { createAccessManager } from '../../server/access.mjs';
 import { handleFilesApi, resolveAllowedFilePath } from '../../server/files.mjs';
 
@@ -187,6 +188,70 @@ test('Files API & resolveAllowedFilePath: workspace scoping, path traversal prot
     });
     assert.ok(deputySecretResolved, 'Deputy Director must have access to all workspaces');
     assert.equal(deputySecretResolved.fullPath, path.resolve(secretFile));
+
+    // 9. Stored XSS prevention on GET /api/files/raw for .html files
+    const htmlPath = path.join(wsAllowed, 'xss-poc.html');
+    await fsp.writeFile(htmlPath, '<!doctype html><script>alert("xss")</script>', 'utf8');
+
+    async function callRawFilesApi(urlStr, customViewer = viewer) {
+      let status = 200;
+      let headers = {};
+      const req = { method: 'GET' };
+      const res = new PassThrough();
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      const finished = new Promise((resolve) => {
+        res.once('finish', resolve);
+        res.once('close', resolve);
+      });
+      res.writeHead = (code, hdrs = {}) => {
+        status = code;
+        headers = hdrs;
+        return res;
+      };
+      const url = new URL(urlStr, 'http://localhost:3333');
+      const handled = await handleFilesApi(req, res, url, {
+        viewer: customViewer,
+        isLocal: false,
+        access,
+        getWorkspaces: () => allWorkspaces,
+        readJson: async () => null,
+        json: () => {},
+      });
+      await finished;
+      return { handled, status, headers, body: Buffer.concat(chunks).toString('utf8') };
+    }
+
+    const rawHtmlRes = await callRawFilesApi(`/api/files/raw?path=${encodeURIComponent(htmlPath)}`);
+    assert.equal(rawHtmlRes.handled, true);
+    assert.equal(rawHtmlRes.status, 200);
+    assert.equal(rawHtmlRes.headers['Content-Type'], 'text/plain; charset=utf-8');
+    assert.equal(rawHtmlRes.headers['X-Content-Type-Options'], 'nosniff');
+    assert.ok(
+      String(rawHtmlRes.headers['Content-Security-Policy'] || '').includes('sandbox'),
+      'Content-Security-Policy header must include sandbox directive',
+    );
+    assert.ok(rawHtmlRes.body.includes('<script>alert("xss")</script>'));
+
+    // 10. Symlink / Junction Traversal protection
+    const junctionPath = path.join(wsAllowed, 'linked-secret');
+    fs.symlinkSync(wsSecret, junctionPath, 'junction');
+
+    const escapedViaJunction = path.join(junctionPath, 'confidential.txt');
+    const resolvedViaJunction = resolveAllowedFilePath(escapedViaJunction, allWorkspaces, {
+      isLocal: false,
+      viewer,
+      access,
+    });
+    assert.equal(resolvedViaJunction, null, 'resolveAllowedFilePath must return null for files inside junction pointing outside workspace');
+
+    const listAfterJunction = await callFilesApi('GET', `/api/files/list?dir=${encodeURIComponent(wsAllowed)}`);
+    assert.equal(listAfterJunction.status, 200);
+    const namesAfterJunction = listAfterJunction.payload.items.map((i) => i.name);
+    assert.ok(
+      !namesAfterJunction.includes('linked-secret'),
+      'GET /api/files/list must not list junction/symlink pointing outside allowed workspace',
+    );
   } finally {
     await fsp.rm(rootTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
   }

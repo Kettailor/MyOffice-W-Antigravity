@@ -32,7 +32,13 @@ export function resize() {
   if (cw < 10 || ch < 10) return;
   const w = cw, h = ch;
   renderer.setSize(w, h); labels.setSize(w, h);
-  composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h);
+  if (bloom?.enabled) {
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(w, h);
+  } else if (composer) {
+    composer.setPixelRatio(1);
+    composer.setSize(1, 1);
+  }
   const aspect = w / h, s = Math.max(8.8, 12 / aspect);
   camera.left = -s * aspect; camera.right = s * aspect; camera.top = s; camera.bottom = -s;
   camera.updateProjectionMatrix();
@@ -50,7 +56,7 @@ export function restoreRenderer() {
 }
 
 export function setup() {
-  try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' }); }
+  try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'default' }); }
   catch (err) { stage.append(el('p', 'empty panel', tr('world.noWebgl'))); throw err; }
   // Without a GPU (a virtual machine, a CI runner, a browser that fell back to SwiftShader) every frame is drawn by the
   // CPU and takes seconds: then the office runs light, with no shadows or post effects, a quarter of the pixels and a few
@@ -89,17 +95,28 @@ export function setup() {
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
   // Image-based light: a bright studio room by day, a dark blue room with a warm ceiling glow by night.
-  pmrem = new THREE.PMREMGenerator(renderer);
-  envDay = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
-  envNight = (() => {
+  const bakeEnv = () => {
+    pmrem = new THREE.PMREMGenerator(renderer);
+    const room = new RoomEnvironment(renderer);
+    envDay = pmrem.fromScene(room, 0.04).texture;
+    room.dispose?.();
     const s = new THREE.Scene();
-    s.add(new THREE.Mesh(new THREE.BoxGeometry(12, 12, 12), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.035, 0.05, 0.11), side: THREE.BackSide })));
-    const warm = new THREE.Mesh(new THREE.PlaneGeometry(5, 3), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.0, 0.5), side: THREE.DoubleSide }));
+    const boxGeo = new THREE.BoxGeometry(12, 12, 12);
+    const boxMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.035, 0.05, 0.11), side: THREE.BackSide });
+    s.add(new THREE.Mesh(boxGeo, boxMat));
+    const warmGeo = new THREE.PlaneGeometry(5, 3);
+    const warmMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.0, 0.5), side: THREE.DoubleSide });
+    const warm = new THREE.Mesh(warmGeo, warmMat);
     warm.position.set(0, 5.5, 0); warm.rotation.x = Math.PI / 2; s.add(warm);
-    const cool = new THREE.Mesh(new THREE.PlaneGeometry(4, 3), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.25, 0.35, 0.7), side: THREE.DoubleSide }));
+    const coolGeo = new THREE.PlaneGeometry(4, 3);
+    const coolMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.25, 0.35, 0.7), side: THREE.DoubleSide });
+    const cool = new THREE.Mesh(coolGeo, coolMat);
     cool.position.set(0, 2, -5.8); s.add(cool);
-    return pmrem.fromScene(s, 0.02).texture;
-  })();
+    envNight = pmrem.fromScene(s, 0.02).texture;
+    boxGeo.dispose(); boxMat.dispose(); warmGeo.dispose(); warmMat.dispose(); coolGeo.dispose(); coolMat.dispose();
+    pmrem.dispose();
+  };
+  bakeEnv();
   scene.environment = envDay;
   renderer.domElement.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
@@ -107,15 +124,7 @@ export function setup() {
   renderer.domElement.addEventListener('webglcontextrestored', () => {
     try {
       const wasNight = scene.environment === envNight;
-      pmrem = new THREE.PMREMGenerator(renderer);
-      envDay = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
-      const s = new THREE.Scene();
-      s.add(new THREE.Mesh(new THREE.BoxGeometry(12, 12, 12), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.035, 0.05, 0.11), side: THREE.BackSide })));
-      const warm = new THREE.Mesh(new THREE.PlaneGeometry(5, 3), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.0, 0.5), side: THREE.DoubleSide }));
-      warm.position.set(0, 5.5, 0); warm.rotation.x = Math.PI / 2; s.add(warm);
-      const cool = new THREE.Mesh(new THREE.PlaneGeometry(4, 3), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.25, 0.35, 0.7), side: THREE.DoubleSide }));
-      cool.position.set(0, 2, -5.8); s.add(cool);
-      envNight = pmrem.fromScene(s, 0.02).texture;
+      bakeEnv();
       scene.environment = wasNight ? envNight : envDay;
     } catch { /* ignore */ }
     restoreRenderer();

@@ -62,7 +62,8 @@
     "docker:down": "node scripts/docker-ctl.mjs down",
     "docker:restart": "node scripts/docker-ctl.mjs restart",
     "docker:status": "node scripts/docker-ctl.mjs status",
-    "docker:logs": "docker compose logs -f"
+    "docker:logs": "docker compose logs -f",
+    "export:github": "node scripts/export-github.mjs"
   },
   "engines": {
     "node": ">=20.9"
@@ -83,5 +84,10 @@
     "gifenc": "1.0.3",
     "pngjs": "7.0.0",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   }
 }

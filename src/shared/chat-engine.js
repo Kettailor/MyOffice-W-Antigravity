@@ -318,7 +318,15 @@ export function createChatEngine(ctx) {
     m.perm.byName = byName || '';
     update(m);
   }
-  function recall(id) { const m = byId(id); if (!m || m.from !== 'me' || m.recalled) return; Object.assign(m, { recalled: true, text: '', sticker: null, photo: null, reacts: {} }); if (st.pinned === id) st.pinned = null; update(m); }
+  function recall(id, byWhoId = null, isDirector = true) {
+    const m = byId(id);
+    if (!m || m.from !== 'me' || m.recalled) return false;
+    if (!isDirector && byWhoId && m.whoId && m.whoId !== byWhoId && m.ownerId !== byWhoId) return false;
+    Object.assign(m, { recalled: true, text: '', sticker: null, photo: null, images: undefined, reacts: {} });
+    if (st.pinned === id) st.pinned = null;
+    update(m);
+    return true;
+  }
 
   /* ---------- what the sessions say about their work (the hooks' events) ---------- */
   const ok = (key, ms) => {

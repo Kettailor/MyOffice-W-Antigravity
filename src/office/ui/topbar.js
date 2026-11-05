@@ -42,9 +42,14 @@ let pmTab = null;              // the way in shown: 'home' | 'away' (null: the t
 async function loadTunnel() {
   tun = await fetch('/api/tunnel').then((r) => r.json()).catch(() => null);
   if (tun) {
+    if ('lanOn' in tun) state.lanOn = !!tun.lanOn;
+    if ('wifiOn' in tun) state.wifiOn = !!tun.wifiOn;
+    if ('tsOn' in tun) state.tsOn = !!tun.tsOn;
     if ('lan' in tun) state.lanUrl = tun.lan || null;
     if ('lanBase' in tun) state.lanBase = tun.lanBase || null;
+    if ('wifiHere' in tun) state.wifiHere = !!tun.wifiHere;
     if ('ts' in tun) state.tsUrl = tun.ts || null;
+    if ('tsHere' in tun) state.tsHere = !!tun.tsHere;
     if (tun.pin) state.phonePin = tun.pin;
     if ('lanFixed' in tun) state.lanFixed = !!tun.lanFixed;
   }
@@ -446,7 +451,10 @@ export function renderPhone() {
   const qr = (text) => { const box = el('div', 'qr'); try { new window.QRCode(box, { text, width: 132, height: 132 }); } catch { return el('span'); } return box; };
   // the code beside the address and what to do with it
   const where = (code, shown, lead, foot) => { const row = el('div', 'pm-where'), info = el('div', 'pm-info'); info.append(el('p', 'muted', lead), urlRow(shown)); if (foot) info.append(el('p', 'muted pm-note', foot)); row.append(qr(code), info); return row; };
-  const lanOn = !!(state.lanUrl || state.tsUrl || tun?.lanOn), tunOn = !!tun?.on, tab = pmTab || (tunOn ? 'away' : 'home');
+  const lanOn = state.lanOn !== undefined ? !!state.lanOn : !!(state.lanUrl || state.tsUrl || tun?.lanOn);
+  const wifiOn = state.wifiOn !== false;
+  const tsOn = state.tsOn !== false;
+  const tunOn = !!tun?.on, tab = pmTab || (tunOn ? 'away' : 'home');
   // 1. the two ways in, as tabs (a dot: on)
   const tabs = el('div', 'pm-tabs'); tabs.setAttribute('role', 'tablist');
   for (const [k, on] of [['home', lanOn], ['away', tunOn]]) {
@@ -457,23 +465,59 @@ export function renderPhone() {
   }
   const conn = el('div', 'pm-conn');
   body.append(tabs, conn);
+  const applyLanResp = (r) => {
+    state.lanOn = !!(r.lanOn ?? r.on);
+    if ('wifiOn' in r) state.wifiOn = !!r.wifiOn;
+    if ('tsOn' in r) state.tsOn = !!r.tsOn;
+    state.lanUrl = r.lan || null;
+    state.lanBase = r.lanBase || null;
+    if ('wifiHere' in r) state.wifiHere = !!r.wifiHere;
+    state.tsUrl = r.ts || null;
+    if ('tsHere' in r) state.tsHere = !!r.tsHere;
+    if (r.pin) state.phonePin = r.pin;
+    state.lanFixed = !!r.fixed;
+    if (tun) {
+      tun.lanOn = state.lanOn;
+      tun.wifiOn = state.wifiOn;
+      tun.tsOn = state.tsOn;
+    }
+  };
   if (tab === 'home') {   // the home network: the Mac's own addresses (and its Tailscale one)
     conn.append(phoneSwitch(tr('topbar.phone.lanSwitch'), lanOn, !!state.lanFixed, async (want) => {
       const r = await post('/api/lan', { on: want }); if (!r?.ok) return false;
-      state.lanUrl = r.lan; state.lanBase = r.lanBase; state.tsUrl = r.ts; state.phonePin = r.pin; state.lanFixed = r.fixed;
-      if (tun) tun.lanOn = want;
+      applyLanResp(r);
       renderPhone(); return true;
-    }));
+    }, tr('topbar.phone.lanDesc')));
     if (!lanOn) conn.append(el('p', 'muted pm-note', tr('topbar.phone.lanOffNote')));
     else {
       if (state.lanFixed) conn.append(el('p', 'muted pm-note', tr('topbar.phone.lanFixed')));
-      if (state.lanUrl) {
+      // Sub-toggle 1: Share over local Wi-Fi
+      conn.append(phoneSwitch(tr('topbar.phone.wifiSwitch'), wifiOn, false, async (want) => {
+        const r = await post('/api/lan', { wifi: want }); if (!r?.ok) return false;
+        applyLanResp(r);
+        renderPhone(); return true;
+      }, tr('topbar.phone.wifiDesc')));
+      if (!wifiOn) {
+        conn.append(el('p', 'muted pm-note', tr('topbar.phone.wifiOffNote')));
+      } else if (state.lanUrl) {
         conn.append(where(state.lanUrl, state.lanBase || state.lanUrl, tr('topbar.phone.scan')));
-        conn.append(el('p', 'muted pm-note', '📶 Lưu ý khi dùng điện thoại qua Wi-Fi nội bộ: Nếu cục phát Wi-Fi là mạng nội bộ (không có Internet), điện thoại bật sẵn 4G/5G hoặc VPN/Tailscale sẽ tự động đẩy truy cập sang mạng 4G làm không vào được. Hãy tạm TẮT 4G/5G (Dữ liệu di động) và VPN trên điện thoại (hoặc chọn «Giữ kết nối Wi-Fi») rồi quét mã / mở địa chỉ trên.'));
+        conn.append(el('p', 'muted pm-note', tr('topbar.phone.wifiTip')));
       } else {
-        conn.append(el('p', 'muted pm-note', '⚠️ Máy tính hiện chưa có IP trên mạng Wi-Fi được cấu hình. Hãy kiểm tra kết nối Wi-Fi.'));
+        conn.append(el('p', 'muted pm-note', tr('topbar.phone.wifiNoIp')));
       }
-      if (state.tsUrl) conn.append(where(state.tsUrl, state.tsUrl, tr('topbar.phone.tsOn')));
+      // Sub-toggle 2: Share over Tailscale
+      conn.append(phoneSwitch(tr('topbar.phone.tsSwitch'), tsOn, false, async (want) => {
+        const r = await post('/api/lan', { ts: want }); if (!r?.ok) return false;
+        applyLanResp(r);
+        renderPhone(); return true;
+      }, tr('topbar.phone.tsDesc')));
+      if (!tsOn) {
+        conn.append(el('p', 'muted pm-note', tr('topbar.phone.tsOffNote')));
+      } else if (state.tsUrl) {
+        conn.append(where(state.tsUrl, state.tsUrl, tr('topbar.phone.tsOn')));
+      } else {
+        conn.append(el('p', 'muted pm-note', tr('topbar.phone.tsNoIp')));
+      }
     }
   } else {                // anywhere: the Cloudflare tunnel
     conn.append(phoneSwitch(tr('topbar.phone.tunSwitch'), tunOn, ['download', 'starting'].includes(tun?.state), async (want) => {

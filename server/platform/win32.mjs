@@ -141,8 +141,33 @@ export async function memory() {
   return { total, used, compressed: 0, swapTotal: r.pageTotal, swapUsed: r.pageUsed, pressure: left < 0.08 ? 'critical' : left < 0.18 ? 'warn' : 'normal' };
 }
 export async function disk() {
-  try { const s = await fsp.statfs(`${process.env.SystemDrive || 'C:'}\\`); const total = s.blocks * s.bsize, free = s.bavail * s.bsize; return { total, free, used: total - free }; }
-  catch { return { total: 0, free: 0, used: 0 }; }
+  try {
+    let total = 0;
+    let free = 0;
+    const drives = [];
+    for (let code = 67; code <= 90; code++) {
+      const letter = String.fromCharCode(code);
+      const drv = `${letter}:\\`;
+      try {
+        const s = await fsp.statfs(drv);
+        const dTotal = (Number(s.blocks) || 0) * (Number(s.bsize) || 0);
+        const dFree = (Number(s.bavail) || 0) * (Number(s.bsize) || 0);
+        if (dTotal > 0) {
+          total += dTotal;
+          free += dFree;
+          drives.push({ drive: `${letter}:`, total: dTotal, free: dFree, used: Math.max(0, dTotal - dFree) });
+        }
+      } catch { /* drive not mounted */ }
+    }
+    if (total > 0) {
+      return { total, free, used: Math.max(0, total - free), drives };
+    }
+    const s = await fsp.statfs(`${process.env.SystemDrive || 'C:'}\\`);
+    const sysTotal = s.blocks * s.bsize, sysFree = s.bavail * s.bsize;
+    return { total: sysTotal, free: sysFree, used: sysTotal - sysFree };
+  } catch {
+    return { total: 0, free: 0, used: 0 };
+  }
 }
 
 /* ---------- GPU reading (NVIDIA nvidia-smi with CIM fallback) ---------- */
@@ -250,11 +275,13 @@ const WIN_APP_MAP = [
   [/language_server[^\\/]*\.exe$/i, 'Antigravity Engine'],
   [/chrome\.exe$/i, 'Google Chrome'],
   [/msedge\.exe$/i, 'Microsoft Edge'],
+  [/msedgewebview2\.exe$/i, 'WebView2 Runtime'],
   [/firefox\.exe$/i, 'Firefox'],
   [/brave\.exe$/i, 'Brave Browser'],
   [/code\.exe$/i, 'VS Code'],
   [/cursor\.exe$/i, 'Cursor'],
-  [/docker desktop\.exe$|com\.docker\.backend\.exe$/i, 'Docker Desktop'],
+  [/blender\.exe$/i, 'Blender'],
+  [/docker desktop\.exe$|com\.docker\.backend\.exe$|vmmemwsl|vmmem/i, 'Docker Desktop'],
   [/tailscale[^\\/]*\.exe$/i, 'Tailscale'],
   [/discord\.exe$/i, 'Discord'],
   [/telegram\.exe$/i, 'Telegram'],
@@ -262,6 +289,8 @@ const WIN_APP_MAP = [
   [/slack\.exe$/i, 'Slack'],
   [/spotify\.exe$/i, 'Spotify'],
   [/obs64\.exe$/i, 'OBS Studio'],
+  [/epicgameslauncher\.exe$|epicwebhelper\.exe$/i, 'Epic Games'],
+  [/steam\.exe$|steamwebhelper\.exe$/i, 'Steam'],
   [/windowsterminal\.exe$/i, 'Windows Terminal'],
   [/explorer\.exe$/i, 'Windows Explorer'],
 ];

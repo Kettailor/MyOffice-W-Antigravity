@@ -67,7 +67,7 @@ const activeWorkWalking = () => {
   }
   if (director?.phase === 'walk') return true;
   for (const w of npcs) {
-    if (w.phase === 'walk' && String(w.id || '').startsWith('__team_')) return true;
+    if (w.phase === 'walk') return true;
   }
   return flights.length > 0;
 };
@@ -76,21 +76,30 @@ const isFocusMode = () => {
   if (!appEl || !appEl.isConnected) appEl = $('app');
   return appEl?.dataset?.wsMode === 'focus';
 };
+const isOverlayDrawerOpen = () => {
+  const macDr = $('mac-drawer');
+  if (macDr && !macDr.hidden) return true;
+  const phoneMod = $('phone-modal');
+  if (phoneMod && !phoneMod.hidden) return true;
+  const settingsMod = $('settings-modal');
+  if (settingsMod && !settingsMod.hidden) return true;
+  return false;
+};
 function frameGap(now) {
   if (SOFTWARE_GL) return 1000 / 5;
   if (document.hidden) return 1000 / 4;
   if (recorder || state.clip) return 1000 / 30;
-  if (isFocusMode() && !fp.on && !camGliding && panKeys.size === 0) return 1000 / 12;
+  if ((isFocusMode() || isOverlayDrawerOpen()) && !fp.on && !camGliding && panKeys.size === 0) return 1000 / 12;
   const activeMoving = activeWorkWalking() || rocketState.t >= 0 || (replay.on && replay.playing);
   if (phoneLike()) {
-    return activeMoving || now - lastInput < 1200 ? 1000 / 30 : 1000 / 12;
+    return activeMoving || now - lastInput < 1200 ? 1000 / 30 : 1000 / 15;
   }
-  const interacting = fp.on || camGliding || panKeys.size > 0 || state.zoomGoal !== null || (now - lastInput < 1200);
+  const interacting = fp.on || camGliding || panKeys.size > 0 || state.zoomGoal !== null || (now - lastInput < 1500);
   if (interacting) return 1000 / 60;
   if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
-    return activeMoving ? 1000 / 24 : 1000 / 12;
+    return activeMoving ? 1000 / 30 : 1000 / 12;
   }
-  return activeMoving ? 1000 / 30 : 1000 / 18;
+  return activeMoving ? 1000 / 30 : 1000 / 20;
 }
 /* World matrices, once a frame, for what is drawn. Left to three, the whole scene is updated twice a frame (the 3D pass
    and the label pass each do it), hidden things included: ~3,600 objects, a tenth of the frame's script time. Here a
@@ -153,15 +162,16 @@ export function loop(now = 0) {
   requestAnimationFrame(loop);
   if (document.hidden) return;
   const g = frameGap(now), gap = lite ? 1000 : quality.fps < 60 ? Math.max(g, 1000 / quality.fps) : g;   // list mode: the office keeps its state, barely draws
-  if (now - lastFrame < gap - 2) return;
+  if (now - lastFrame < gap * 0.85) return;
   if (lastFrame && !fp.on && !state.clip) adaptResolution(now - lastFrame, gap, Math.min(0.1, (now - lastFrame) / 1000));
   lastFrame = now; frameNo++;
   const focusMode = isFocusMode();
-  const interacting = fp.on || camGliding || panKeys.size > 0 || state.zoomGoal !== null || (!focusMode && now - lastInput < 1200);
+  const activeMoving = activeWorkWalking() || rocketState.t >= 0 || (replay.on && replay.playing);
+  const interacting = fp.on || camGliding || panKeys.size > 0 || state.zoomGoal !== null || (!focusMode && now - lastInput < 1500);
   const runSecondary = interacting || frameNo % 2 === 0;
-  // the shadow map is redrawn every other frame while active work chibis walk, every sixth otherwise (every 12th in focus mode):
+  // the shadow map is redrawn every 3rd frame while chibis walk, every 10th otherwise (every 16th in focus mode):
   // furniture never moves, and the shadow pass costs as many draw calls again as the picture
-  if (frameNo % (focusMode ? 12 : (fp.on || activeWorkWalking() ? 2 : 6)) === 0) renderer.shadowMap.needsUpdate = true;
+  if (frameNo % (focusMode ? 16 : (fp.on || activeMoving ? 3 : 10)) === 0) renderer.shadowMap.needsUpdate = true;
   const dt0 = Math.min(clock.getDelta(), 0.1) * (reduceMotion ? 0.7 : 1);
   replayTick();
   const dt = dt0 * (replay.on && replay.playing ? REPLAY_MOTION : 1) * (state.speed || 1);   // (state.speed: a timelapse clip)
@@ -254,8 +264,11 @@ export function loop(now = 0) {
   updateWorld(scene, needFullWorldUpdate); needFullWorldUpdate = false; if (PERF) lap('world');
   drawFrame(camera); if (PERF) lap('draw');
   clipFrame();
-  labels.render(scene, camera);
-  placePlc(); if (PERF) lap('labels');
+  if (interacting || activeMoving || frameNo % 2 === 0) {
+    labels.render(scene, camera);
+    placePlc();
+  }
+  if (PERF) lap('labels');
 }
 
 export function setup() {
@@ -296,7 +309,8 @@ export function setup() {
       needFullWorldUpdate = true;
     });
   });
-  for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'touchstart']) addEventListener(ev, () => { lastInput = performance.now(); }, { passive: true, capture: true });
+  for (const ev of ['pointerdown', 'wheel', 'keydown', 'touchstart']) addEventListener(ev, () => { lastInput = performance.now(); }, { passive: true, capture: true });
+  addEventListener('pointermove', (e) => { if (e.buttons > 0 || fp.on) lastInput = performance.now(); }, { passive: true, capture: true });
   renderer.shadowMap.autoUpdate = false;
   scene.matrixWorldAutoUpdate = false;   // (updateWorld above does it, once a frame)
   // the tests' and the performance checks' hooks (?debug): frames drawn so far, the renderer (its info: draw calls…)

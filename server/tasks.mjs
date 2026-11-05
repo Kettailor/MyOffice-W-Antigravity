@@ -245,6 +245,8 @@ function syncDesktopConversationToCli(sid) {
     const dstDir = path.join(home, '.gemini', 'antigravity-cli', 'conversations');
     const dstDb = path.join(dstDir, `${sid}.db`);
     if (!fs.existsSync(srcDb)) return;
+    // Never overwrite CLI DB while CLI is actively holding a WAL lock on it
+    if (fs.existsSync(`${dstDb}-wal`) || fs.existsSync(`${dstDb}-shm`)) return;
     const srcStat = fs.statSync(srcDb);
     const dstStat = fs.existsSync(dstDb) ? fs.statSync(dstDb) : null;
     if (!dstStat || srcStat.mtimeMs > dstStat.mtimeMs) {
@@ -252,6 +254,9 @@ function syncDesktopConversationToCli(sid) {
       fs.copyFileSync(srcDb, dstDb);
       if (fs.existsSync(`${srcDb}-wal`)) {
         fs.copyFileSync(`${srcDb}-wal`, `${dstDb}-wal`);
+      } else {
+        try { fs.rmSync(`${dstDb}-wal`, { force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(`${dstDb}-shm`, { force: true }); } catch { /* ignore */ }
       }
     }
   } catch { /* best effort */ }
@@ -265,40 +270,20 @@ function syncCliConversationToDesktop(sid) {
     const dstDir = path.join(home, '.gemini', 'antigravity', 'conversations');
     const dstDb = path.join(dstDir, `${sid}.db`);
     if (!fs.existsSync(srcDb)) return;
-    const srcStat = fs.statSync(srcDb);
-    const dstStat = fs.existsSync(dstDb) ? fs.statSync(dstDb) : null;
-    if (!dstStat || srcStat.mtimeMs > dstStat.mtimeMs) {
-      fs.mkdirSync(dstDir, { recursive: true });
-      fs.copyFileSync(srcDb, dstDb);
-    }
+    // CRITICAL: Never overwrite an existing Desktop IDE conversation DB or WAL-locked DB!
+    // Overwriting an open SQLite DB on disk while the Desktop IDE (`language_server`) holds a WAL/SHM map
+    // corrupts its in-memory WAL index and freezes the Desktop IDE. Only seed if the file does not exist yet.
+    if (fs.existsSync(dstDb) || fs.existsSync(`${dstDb}-wal`) || fs.existsSync(`${dstDb}-shm`)) return;
+    fs.mkdirSync(dstDir, { recursive: true });
+    fs.copyFileSync(srcDb, dstDb);
   } catch { /* best effort */ }
 }
 
-function resolveAgyProjectId(binFile, dir, sid, baseEnv) {
+function resolveAgyProjectId(_binFile, dir, sid) {
   if (sid && projectIdBySid.has(sid)) return projectIdBySid.get(sid);
-  const cleanEnv = { ...baseEnv };
-  delete cleanEnv.ANTIGRAVITY_PROJECT_ID;
-  delete cleanEnv.ANTIGRAVITY_SOURCE_METADATA;
-  delete cleanEnv.ANTIGRAVITY_TRAJECTORY_ID;
-  delete cleanEnv.ANTIGRAVITY_CONVERSATION_ID;
-  if (sid) {
-    try {
-      const raw = execFileSync(binFile, ['agentapi', 'get-conversation-metadata', sid], {
-        cwd: dir || undefined,
-        env: cleanEnv,
-        timeout: 4500,
-        windowsHide: true,
-      }).toString('utf8');
-      const parsed = JSON.parse(raw.trim());
-      const pid = parsed?.response?.conversationMetadata?.metadata?.projectId || '';
-      if (pid) {
-        setBounded(projectIdBySid, sid, pid);
-        if (dir) setBounded(projectIdByDir, normDirKey(dir), pid);
-        return pid;
-      }
-    } catch { /* fallback to proto lookup */ }
-  }
-  return lookupProjectIdFromSummariesProto(dir);
+  const pid = lookupProjectIdFromSummariesProto(dir);
+  if (pid && sid) setBounded(projectIdBySid, sid, pid);
+  return pid;
 }
 
 function cleanAgyError(errStr = '') {
@@ -421,7 +406,8 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
       return { ok: true, task: pub(t) };
     }
 
-    for (const [i, d] of images.slice(0, MAX_IMAGES).entries()) {
+    for (const [i, rawImg] of images.slice(0, MAX_IMAGES).entries()) {
+      const d = typeof rawImg === 'string' ? rawImg : String(rawImg?.dataUrl || rawImg?.url || '');
       const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(d || ''));
       if (!m || d.length > MAX_IMAGE) continue;
       fs.mkdirSync(IMG_DIR, { recursive: true });
@@ -445,8 +431,9 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
     if (chosenModel) {
       spawnEnv.ANTIGRAVITY_MODEL = chosenModel;
     }
-    // Prefer language_server agentapi only when ANTIGRAVITY_LS_ADDRESS is active in env; otherwise run standalone `agy` CLI!
-    const useLsAgentApi = (bin.kind === 'agy' || (bin.kind === 'agy-cli' && bin.lsFile)) && Boolean(spawnEnv.ANTIGRAVITY_LS_ADDRESS);
+    // Always prefer standalone headless `agy` CLI (`agy-cli`) over the Desktop IDE's `language_server` (`agentapi`)
+    // so closing the Desktop IDE never interrupts or kills website tasks!
+    const useLsAgentApi = bin.kind === 'agy' && Boolean(spawnEnv.ANTIGRAVITY_LS_ADDRESS);
     const isAgyCli = bin.kind === 'agy-cli' && !useLsAgentApi;
     const isAgy = useLsAgentApi;
     const execBin = useLsAgentApi ? (bin.lsFile || bin.file) : bin.file;
@@ -456,6 +443,10 @@ export function createTasks({ dataDir, claude, env, onStart, onDone, max = Numbe
       delete spawnEnv.ANTIGRAVITY_SOURCE_METADATA;
       delete spawnEnv.ANTIGRAVITY_TRAJECTORY_ID;
       delete spawnEnv.ANTIGRAVITY_CONVERSATION_ID;
+      delete spawnEnv.VSCODE_PID;
+      delete spawnEnv.VSCODE_IPC_HOOK;
+      delete spawnEnv.VSCODE_CWD;
+      delete spawnEnv.ELECTRON_RUN_AS_NODE;
       targetProjectId = resolveAgyProjectId(bin.lsFile || bin.file, dir, from?.sid || null, spawnEnv);
       if (isAgy) {
         if (targetProjectId) spawnEnv.ANTIGRAVITY_PROJECT_ID = targetProjectId;

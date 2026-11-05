@@ -12,12 +12,27 @@ import crypto from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createTasks } from './tasks.mjs';
+import { sysSnapshot, sysAction, setI18n, startTrend, trackOwners } from './system.mjs';
+import { fetchLiveAgyQuotaAndUser } from './antigravity.mjs';
+import { pickLang, createT } from '../src/i18n/index.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+try {
+  const envFile = path.join(ROOT, '.env');
+  if (fs.existsSync(envFile)) {
+    for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
+      if (m && !(m[1] in process.env)) {
+        process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+      }
+    }
+  }
+} catch { /* ignore */ }
 const DATA_DIR = process.env.OFFICE_DATA_DIR ? path.resolve(process.env.OFFICE_DATA_DIR) : path.join(ROOT, 'data');
 const BRIDGE_PORT = Number(process.env.OFFICE_BRIDGE_PORT) || 4311;
-const ALLOWED_WIFI_SSID = (process.env.OFFICE_WIFI_SSID || 'Ket').trim().toLowerCase();
+const ALLOWED_WIFI_SSID = (process.env.OFFICE_WIFI_SSID || '*').trim().toLowerCase();
 const HOST_NET_FILE = path.join(DATA_DIR, 'host-net.json');
+const HOST_SYS_FILE = path.join(DATA_DIR, 'host-sys.json');
 const TOKEN_FILE = path.join(DATA_DIR, 'token');
 const STOP_FLAG_FILE = path.join(DATA_DIR, '.bridge-stopped');
 const WAKEUP_FILE = path.join(DATA_DIR, 'bridge-wakeup.json');
@@ -26,7 +41,7 @@ const AUTO_STOP = !process.argv.includes('--keep-alive') && (
   process.env.WORKOFFICE_BRIDGE_AUTO_STOP === '1' ||
   process.env.WORKOFFICE_BRIDGE_AUTO_STOP !== '0'
 );
-const IDLE_TIMEOUT_MS = Number(process.env.WORKOFFICE_BRIDGE_IDLE_MS) || 45_000;
+const IDLE_TIMEOUT_MS = Number(process.env.WORKOFFICE_BRIDGE_IDLE_MS) || 95_000;
 let lastActivityAt = Date.now();
 function touchActivity() {
   lastActivityAt = Date.now();
@@ -39,6 +54,24 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 if (process.argv.includes('--watchdog')) {
   const rustWatcher = path.join(ROOT, 'bin', process.platform === 'win32' ? 'work-office-native.exe' : 'work-office-native');
   if (fs.existsSync(rustWatcher)) {
+    if (process.platform === 'win32') {
+      try {
+        const cmdLine = `"${rustWatcher}" watch-bridge "${ROOT}"`.replace(/'/g, "''");
+        const cwdStr = ROOT.replace(/'/g, "''");
+        const ps = [
+          '$si = [CimInstance]::new((Get-CimClass Win32_ProcessStartup));',
+          '$si.ShowWindow = 0;',
+          `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${cmdLine}'; CurrentDirectory = '${cwdStr}'; ProcessStartupInformation = $si } | Out-Null`,
+        ].join(' ');
+        execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+          cwd: ROOT,
+          stdio: 'ignore',
+          timeout: 6000,
+          windowsHide: true,
+        });
+        process.exit(0);
+      } catch { /* fallback to detached spawn */ }
+    }
     spawn(rustWatcher, ['watch-bridge', ROOT], {
       cwd: ROOT,
       detached: true,
@@ -79,12 +112,13 @@ function getBridgeToken() {
 function verifyBridgeToken(req) {
   const expected = getBridgeToken();
   if (!expected) return true;
-  const provided = String(req.headers['x-bridge-token'] || '').trim();
+  const provided = String(req.headers['x-bridge-token'] || req.headers['x-office-bridge-token'] || '').trim();
   if (!provided) return false;
   const a = Buffer.from(provided, 'utf8');
   const b = Buffer.from(expected, 'utf8');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+const hasValidBridgeToken = verifyBridgeToken;
 
 function isTailscaleIp(addr = '') {
   const m = /^100\.(\d+)\./.exec(String(addr || ''));
@@ -101,37 +135,38 @@ function currentNetIfSig() {
   return parts.sort().join('|');
 }
 
-const wlanCache = { at: 0, sig: '', onKet: false, macs: new Set(), names: new Set(['wi-fi', 'wlan']) };
+const wlanCache = { at: 0, sig: '', onWifi: false, macs: new Set(), names: new Set(['wi-fi', 'wlan']) };
 
 function detectHostIps(force = false) {
   let wifiIp = null;
   let tsIp = null;
   const now = Date.now();
   const sig = currentNetIfSig();
-  const ttl = wlanCache.onKet ? 60_000 : 30_000;
+  const ttl = wlanCache.onWifi ? 60_000 : 30_000;
   if (process.platform === 'win32' && (force || !wlanCache.at || sig !== wlanCache.sig || now - wlanCache.at >= ttl)) {
     wlanCache.at = now;
     wlanCache.sig = sig;
-    let onKet = false;
+    let onWifi = false;
     const macs = new Set();
     const names = new Set(['wi-fi', 'wlan']);
     try {
       const out = execFileSync('netsh', ['wlan', 'show', 'interfaces'], { timeout: 2500, windowsHide: true }).toString('utf8');
       for (const b of out.split(/\r?\n\s*\r?\n/)) {
         const ssidM = /^\s*SSID\s*:\s*(.+)$/im.exec(b);
-        if (!ssidM || ssidM[1].trim().toLowerCase() !== ALLOWED_WIFI_SSID) continue;
-        onKet = true;
+        const ssidVal = ssidM ? ssidM[1].trim().toLowerCase() : '';
+        if (!ssidVal || (ALLOWED_WIFI_SSID !== '*' && ALLOWED_WIFI_SSID !== 'any' && ssidVal !== ALLOWED_WIFI_SSID)) continue;
+        onWifi = true;
         const macM = /^\s*(?:Physical address|Địa chỉ vật lý)\s*:\s*([0-9a-f:-]{17})/im.exec(b);
         if (macM) macs.add(macM[1].trim().toLowerCase().replace(/-/g, ':'));
         const nameM = /^\s*(?:Name|Tên)\s*:\s*(.+)$/im.exec(b);
         if (nameM) names.add(nameM[1].trim().toLowerCase());
       }
     } catch { /* ignore */ }
-    wlanCache.onKet = onKet;
+    wlanCache.onWifi = onWifi;
     wlanCache.macs = macs;
     wlanCache.names = names;
   }
-  const onKet = wlanCache.onKet;
+  const onWifi = wlanCache.onWifi;
   const macs = wlanCache.macs;
   const names = wlanCache.names;
   const nets = os.networkInterfaces();
@@ -146,7 +181,7 @@ function detectHostIps(force = false) {
       if (/ethernet|vethernet|vmware|vbox|virtualbox|hyper-v|local area|loopback|tailscale|bluetooth/i.test(lowName)) continue;
       const mac = String(n.mac || '').toLowerCase().replace(/-/g, ':');
       if (process.platform === 'win32') {
-        if (onKet && (macs.has(mac) || names.has(lowName) || /wi-?fi|wlan/i.test(lowName))) {
+        if (onWifi && (macs.has(mac) || names.has(lowName) || /wi-?fi|wlan/i.test(lowName))) {
           wifiIp = n.address;
         }
       } else if (/^en0|wlan|wi-?fi/i.test(lowName)) {
@@ -155,13 +190,46 @@ function detectHostIps(force = false) {
     }
   }
   try {
-    fs.writeFileSync(HOST_NET_FILE, JSON.stringify({ wifiIp, tsIp, onKet, at: Date.now() }, null, 2));
+    fs.writeFileSync(HOST_NET_FILE, JSON.stringify({ wifiIp, tsIp, onWifi, at: Date.now() }, null, 2));
   } catch { /* ignore */ }
-  return { wifiIp, tsIp, onKet };
+  return { wifiIp, tsIp, onWifi };
 }
 
 detectHostIps();
 setInterval(detectHostIps, 15_000).unref();
+
+let currentBridgeLang = 'vi';
+function applyBridgeLang(lang = 'vi') {
+  const l = pickLang(lang || 'vi');
+  currentBridgeLang = l;
+  const tObj = createT(l);
+  setI18n({ tr: tObj.t, num: tObj.num, lang: () => currentBridgeLang });
+}
+applyBridgeLang('vi');
+startTrend();
+trackOwners();
+
+async function syncHostSysSnapshot(open = true, lang = currentBridgeLang) {
+  try {
+    if (lang && lang !== currentBridgeLang) applyBridgeLang(lang);
+    const [snap] = await Promise.all([
+      sysSnapshot({ open }),
+      fetchLiveAgyQuotaAndUser(true).catch(() => null),
+    ]);
+    if (snap && snap.mem) {
+      fs.writeFileSync(HOST_SYS_FILE, JSON.stringify(snap));
+    }
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
+// Take baseline and second delta reading on startup so CPU % and per-app CPU deltas are populated immediately
+syncHostSysSnapshot(false).then(() => {
+  setTimeout(() => { syncHostSysSnapshot(true).catch(() => {}); }, 600).unref?.();
+}).catch(() => {});
+setInterval(() => { syncHostSysSnapshot(false).catch(() => {}); }, 15_000).unref();
 
 function findHostCli() {
   const home = os.homedir();
@@ -218,6 +286,9 @@ const hostTasks = createTasks({
     delete e.ANTIGRAVITY_CONVERSATION_ID;
     delete e.ANTIGRAVITY_TRAJECTORY_ID;
     delete e.ANTIGRAVITY_SOURCE_METADATA;
+    delete e.VSCODE_PID;
+    delete e.VSCODE_IPC_HOOK;
+    delete e.ELECTRON_RUN_AS_NODE;
     return e;
   },
   onStart(t) {
@@ -254,8 +325,24 @@ const server = http.createServer((req, res) => {
     res.writeHead(403).end();
     return;
   }
-  if (req.method === 'GET' && (req.url === '/health' || req.url === '/status')) {
+  if (req.method === 'GET' && req.url === '/health') {
     touchActivity();
+    const activeTasks = hostTasks.list().length;
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+      ok: true,
+      mode: AUTO_STOP ? 'on-demand' : 'persistent',
+      running: activeTasks,
+      idleMs: Math.max(0, Date.now() - lastActivityAt),
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
+    }));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/status') {
+    touchActivity();
+    if (!hasValidBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
     const net = detectHostIps();
     const activeTasks = hostTasks.list().length;
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
@@ -266,6 +353,51 @@ const server = http.createServer((req, res) => {
       idleTimeoutMs: IDLE_TIMEOUT_MS,
       ...net,
     }));
+    return;
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/sys')) {
+    touchActivity();
+    if (!hasValidBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const open = u.searchParams.get('open') === '1';
+    const lang = u.searchParams.get('lang') || 'vi';
+    syncHostSysSnapshot(open, lang)
+      .then((snap) => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          .end(JSON.stringify(snap || { ok: false }));
+      })
+      .catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+          .end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+      });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/sys/action') {
+    touchActivity();
+    if (!verifyBridgeToken(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, code: 'forbidden' }));
+      return;
+    }
+    const chunks = [];
+    let len = 0;
+    req.on('data', (c) => { len += c.length; if (len <= 1_000_000) chunks.push(c); });
+    req.on('end', () => {
+      touchActivity();
+      let body = {};
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* ignore */ }
+      if (body?.lang) applyBridgeLang(body.lang);
+      sysAction(body || {})
+        .then((out) => {
+          syncHostSysSnapshot(true).catch(() => {});
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(out));
+        })
+        .catch((err) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: false, message: String(err?.message || err) }));
+        });
+    });
     return;
   }
   if (req.method === 'POST' && (req.url === '/task/start' || req.url === '/dispatch')) {

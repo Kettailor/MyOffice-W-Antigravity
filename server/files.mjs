@@ -57,6 +57,26 @@ const MIME_MAP = {
   '.xml': 'application/xml; charset=utf-8',
 };
 
+const realpathSyncFn = typeof fs.realpathSync?.native === 'function' ? fs.realpathSync.native : fs.realpathSync;
+
+function resolveRealPathSafe(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return '';
+  let cur = path.resolve(targetPath);
+  const tail = [];
+  for (let depth = 0; depth < 64; depth++) {
+    try {
+      const realBase = realpathSyncFn(cur);
+      return tail.length ? path.join(realBase, ...tail) : realBase;
+    } catch {
+      const parent = path.dirname(cur);
+      if (!parent || parent === cur) break;
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+  return cur;
+}
+
 function normComparePath(p) {
   return path.resolve(String(p || '')).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
@@ -128,6 +148,14 @@ export function resolveAllowedFilePath(rawPath, allowedWorkspaces, opts = {}) {
         continue;
       }
       if (hasSensitivePathPart(resolved, resolvedWs, allowLocalGemini)) {
+        return null;
+      }
+      const realWs = resolveRealPathSafe(resolvedWs);
+      const realTarget = resolveRealPathSafe(resolved);
+      if (!realWs || !realTarget || !isInsideRoot(realTarget, realWs)) {
+        return null;
+      }
+      if (hasSensitivePathPart(realTarget, realWs, allowLocalGemini)) {
         return null;
       }
       return {
@@ -592,11 +620,21 @@ export async function handleFilesApi(req, res, url, ctx) {
         return true;
       }
       const allowLocalGemini = isFullDirector;
+      const realWsRoot = resolveRealPathSafe(resolved.workspaceRoot);
       const dirents = await fsp.readdir(resolved.fullPath, { withFileTypes: true });
       const items = [];
       for (const d of dirents) {
         if (isSensitiveSegment(d.name, allowLocalGemini)) continue;
         const itemPath = path.join(resolved.fullPath, d.name);
+        const realItemPath = resolveRealPathSafe(itemPath);
+        if (
+          !realItemPath
+          || !realWsRoot
+          || !isInsideRoot(realItemPath, realWsRoot)
+          || hasSensitivePathPart(realItemPath, realWsRoot, allowLocalGemini)
+        ) {
+          continue;
+        }
         let itemStat = null;
         try {
           itemStat = await fsp.stat(itemPath);
@@ -770,7 +808,11 @@ export async function handleFilesApi(req, res, url, ctx) {
       }
       const name = path.basename(resolved.fullPath);
       const ext = path.extname(name).toLowerCase();
-      const contentType = MIME_MAP[ext] || 'application/octet-stream';
+      const rawContentType = MIME_MAP[ext] || 'application/octet-stream';
+      const activeScriptExts = ['.html', '.htm', '.xhtml', '.xml', '.js', '.mjs', '.cjs'];
+      const contentType = (!download && activeScriptExts.includes(ext))
+        ? 'text/plain; charset=utf-8'
+        : rawContentType;
       const dispType = download ? 'attachment' : 'inline';
       const encodedName = encodeURIComponent(name);
       res.writeHead(200, {
@@ -778,6 +820,8 @@ export async function handleFilesApi(req, res, url, ctx) {
         'Content-Length': stat.size,
         'Content-Disposition': `${dispType}; filename*=UTF-8''${encodedName}`,
         'Cache-Control': 'no-cache',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox",
       });
       const stream = fs.createReadStream(resolved.fullPath);
       res.on('close', () => stream.destroy());
@@ -817,7 +861,17 @@ export async function handleFilesApi(req, res, url, ctx) {
         const cleanName = sanitizeFileName(f?.name);
         if (!cleanName || isSensitiveSegment(cleanName, allowLocalGemini)) continue;
         const targetPath = path.join(resolvedDir.fullPath, cleanName);
-        if (!isInsideRoot(targetPath, resolvedDir.workspaceRoot)) continue;
+        const realTarget = resolveRealPathSafe(targetPath);
+        const realWs = resolveRealPathSafe(resolvedDir.workspaceRoot);
+        if (
+          !isInsideRoot(targetPath, resolvedDir.workspaceRoot)
+          || !realTarget
+          || !realWs
+          || !isInsideRoot(realTarget, realWs)
+          || hasSensitivePathPart(realTarget, realWs, allowLocalGemini)
+        ) {
+          continue;
+        }
         let b64 = String(f?.contentBase64 || f?.dataUrl || '');
         const commaIdx = b64.indexOf(',');
         if (b64.startsWith('data:') && commaIdx >= 0) {

@@ -7,7 +7,7 @@ import { chatAct, chatApply, chatLeft, chatLoad } from '../ui/group-chat.js';
 import { setTrophies } from '../life/trophies.js';
 import { addFeed, queueFeed, queueUi, renderFeed, toast } from '../ui/activity.js';
 import { closeSession, drM, refreshIfSelected } from '../ui/session-drawer.js';
-import { acctLogin, acctMoved, acctSwitched, limitWarned, liveWindows, loadMac, renderLimits, renderMac } from '../ui/mac-drawer.js';
+import { acctLogin, acctMoved, acctSwitched, limitWarned, liveWindows, loadMac, macSnap, renderLimits, renderMac } from '../ui/mac-drawer.js';
 import { syncMcpBadge } from '../ui/mcp-drawer.js';
 import { DEMO_TODOS, onTodos } from '../ui/whiteboard.js';
 import { TOKEN, freeDesk, removeSession, setConn, upsertSession } from '../net/live.js';
@@ -218,7 +218,19 @@ export function applyMsg(d, quiet = false) {
       perms.clear(); for (const p of d.perms || []) perms.set(p.id, p); renderPerms(); reportPresence();
       const now = Date.now();
       if (!quiet && now - lastChatLoadAt > 1500) { lastChatLoadAt = now; chatLoad(); }   // (the group chat as it is now: after a reconnect, what was missed)
-      state.isLocal = !!d.local; state.lanUrl = d.lan || null; state.lanBase = d.lanBase || null; state.phonePin = d.pin || null; state.tsUrl = d.ts || null; state.tsHere = !!d.tsHere; state.phoneApprove = !!d.phoneApprove; state.phoneTasks = !!d.phoneTasks; state.lanFixed = !!d.lanFixed;
+      state.isLocal = !!d.local;
+      state.lanOn = d.lanOn !== undefined ? !!d.lanOn : !!(d.lan || d.ts);
+      state.wifiOn = d.wifiOn !== undefined ? !!d.wifiOn : true;
+      state.tsOn = d.tsOn !== undefined ? !!d.tsOn : true;
+      state.lanUrl = d.lan || null;
+      state.lanBase = d.lanBase || null;
+      state.wifiHere = d.wifiHere !== undefined ? !!d.wifiHere : !!d.lan;
+      state.phonePin = d.pin || null;
+      state.tsUrl = d.ts || null;
+      state.tsHere = !!d.tsHere;
+      state.phoneApprove = !!d.phoneApprove;
+      state.phoneTasks = !!d.phoneTasks;
+      state.lanFixed = !!d.lanFixed;
       state.viewer = d.viewer || null; state.access = d.access || null; state.requireTaskApproval = !!d.requireTaskApproval;
       state.participants = d.participants || [];
       state.teamMembers = d.teamMembers || [];
@@ -231,6 +243,7 @@ export function applyMsg(d, quiet = false) {
       $('btn-phone').hidden = false; if ($('btn-phone-top')) $('btn-phone-top').hidden = false;
       $('btn-bell').hidden = !('Notification' in window) || !window.isSecureContext;
       renderViewerBadge();
+      if (!macSnap) loadMac();
       if (!$('phone-modal').hidden) renderPhone();
     } else {
       syncSessionWaitCards();
@@ -248,9 +261,14 @@ export function applyMsg(d, quiet = false) {
   else if (d.k === 'todos') { state.todos = d.todos || []; onTodos(); }
   else if (d.k === 'phone') {
     state.phoneApprove = !!d.approve; state.phoneTasks = !!d.tasks;
+    if ('on' in d || 'lanOn' in d) state.lanOn = !!(d.lanOn ?? d.on);
+    if ('wifiOn' in d) state.wifiOn = !!d.wifiOn;
+    if ('tsOn' in d) state.tsOn = !!d.tsOn;
     if ('lan' in d) state.lanUrl = d.lan || null;
     if ('lanBase' in d) state.lanBase = d.lanBase || null;
+    if ('wifiHere' in d) state.wifiHere = !!d.wifiHere;
     if ('ts' in d) state.tsUrl = d.ts || null;
+    if ('tsHere' in d) state.tsHere = !!d.tsHere;
     if (d.pin) state.phonePin = d.pin;
     if ('fixed' in d) state.lanFixed = !!d.fixed;
     for (const c of [...$('perm-stack').children]) c.remove(); renderPerms(); reportPresence(); if (!$('phone-modal').hidden) renderPhone();
@@ -284,7 +302,6 @@ export let liveES = null;
 const VIA_TUNNEL = /\.trycloudflare\.com$/.test(location.hostname);
 let livePollStop = null;
 let liveSince = -1;
-let presenceTimer = null;
 let currentES = null;
 let lastStreamAt = Date.now();
 let visListenerAdded = false;
@@ -343,11 +360,6 @@ function openEventSource() {
   };
 }
 export function connect() {
-  if (!presenceTimer) {
-    presenceTimer = setInterval(() => {
-      reportPresence();
-    }, 20_000);
-  }
   if (!visListenerAdded) {
     visListenerAdded = true;
     document.addEventListener('visibilitychange', () => {

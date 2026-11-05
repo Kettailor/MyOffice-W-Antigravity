@@ -54,9 +54,39 @@ export async function generateMetadata(): Promise<Metadata> {
 export const viewport: Viewport = { width: 'device-width', initialScale: 1, viewportFit: 'cover', themeColor: '#0E131B' };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
+  const osAttr =
+    process.env.OFFICE_STATIC === '1'
+      ? 'darwin'
+      : process.env.OFFICE_DOCKER === '1'
+      ? 'win32'
+      : process.platform;
+  const extGuardScript = `(function(){
+    function isExtNoise(msg, stack) {
+      var s = String(msg || '') + ' ' + String(stack || '');
+      return /chrome-extension:\\/\\/|moz-extension:\\/\\/|reading 'useCache'|Receiving end does not exist|Extension context invalidated|message port closed before a response/i.test(s);
+    }
+    window.addEventListener('unhandledrejection', function(ev) {
+      var r = ev && ev.reason;
+      var msg = r && (r.message || String(r));
+      var stack = r && r.stack;
+      if (isExtNoise(msg, stack)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+    window.addEventListener('error', function(ev) {
+      if (isExtNoise(ev && ev.message, ev && ev.filename)) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+  })();`;
   return (
     // data-os: the machine's platform, for the words "Mac" / "PC" / "computer" (the online demo is a pretend Mac)
-    <html lang={await getLang()} data-os={process.env.OFFICE_STATIC === '1' ? 'darwin' : process.platform}>
+    <html lang={await getLang()} data-os={osAttr}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: extGuardScript }} />
+      </head>
       <body>
         {children}
         {/* QR codes for "open on your phone" (qrcode.js, MIT), kept local so the office works offline */}

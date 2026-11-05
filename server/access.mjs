@@ -41,7 +41,7 @@ export function isPathAllowed(targetDir = '', allowedWorkspaces = []) {
   for (const w of allowedWorkspaces) {
     const nw = normWinPath(w);
     if (!nw) continue;
-    if (t === nw || t.startsWith(nw + sep) || (t.length > 3 && nw.startsWith(t + sep))) return true;
+    if (t === nw || t.startsWith(nw + sep)) return true;
   }
   return false;
 }
@@ -140,7 +140,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     return false;
   }
 
-  function getMemberFromReq(req, { cookieOnly = false } = {}) {
+  function getMemberFromReq(req, { cookieOnly = true, allowIpFallback = false } = {}) {
     const cookies = parseCookies(req);
     const tok = cookies.office_member || '';
     const ip = clientIp(req);
@@ -153,16 +153,13 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
         return m;
       }
     }
-    if (!cookieOnly && !isSharedOrLocalIp(ip)) {
-      const matches = state.members.filter((x) => x.ip === ip && x.status === 'approved');
-      if (matches.length === 1) {
-        const byIp = matches[0];
-        byIp.lastSeenAt = Date.now();
-        return byIp;
-      }
-      const allMatches = state.members.filter((x) => x.ip === ip);
-      if (allMatches.length === 1) {
-        const byIp = allMatches[0];
+    if (!cookieOnly && allowIpFallback && !isSharedOrLocalIp(ip)) {
+      const ua = shortUa(req);
+      const pendingMatches = state.members.filter(
+        (x) => !x.isDirectorDevice && x.status === 'pending' && x.ip === ip && (!ua || x.ua === ua),
+      );
+      if (pendingMatches.length === 1) {
+        const byIp = pendingMatches[0];
         byIp.lastSeenAt = Date.now();
         return byIp;
       }
@@ -245,7 +242,7 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
   }
 
   function getApprovedMember(req) {
-    const m = getMemberFromReq(req);
+    const m = getMemberFromReq(req, { cookieOnly: true });
     if (m && m.status === 'approved') return m;
     return null;
   }
@@ -256,13 +253,19 @@ export function createAccessManager({ dataDir, onUpdate, onAccessRequest, onTask
     const opts = (isHttpReq ? optsArg : reqOrOpts) || {};
     const { id: optId, name, role, gender, note, ip: optIp, ua: optUa, autoApprove = false, defaultWorkspaces = [] } = opts;
 
-    let m = req ? getMemberFromReq(req) : (optId ? state.members.find((x) => x.id === optId) : null);
+    const ip = optIp || (req ? clientIp(req) : 'unknown');
+    const ua = optUa || (req ? shortUa(req) : 'Thiết bị');
+    let m = req ? getMemberFromReq(req, { cookieOnly: true }) : (optId ? state.members.find((x) => x.id === optId) : null);
+    if (!m && req) {
+      const fallback = getMemberFromReq(req, { cookieOnly: false, allowIpFallback: true });
+      if (fallback && fallback.status === 'pending' && !fallback.isDirectorDevice && fallback.ip === ip && fallback.ua === ua) {
+        m = fallback;
+      }
+    }
     const cleanName = String(name || m?.name || 'Trợ lý từ xa').trim().slice(0, 48) || 'Trợ lý từ xa';
     const cleanRole = String(role || m?.role || state.defaultRole || DEFAULT_ROLE).trim().slice(0, 48) || DEFAULT_ROLE;
     const cleanGender = gender !== undefined ? normalizeGender(gender) : normalizeGender(m?.gender);
     const cleanNote = String(note || '').trim().slice(0, 160);
-    const ip = optIp || (req ? clientIp(req) : 'unknown');
-    const ua = optUa || (req ? shortUa(req) : 'Thiết bị');
     const now = Date.now();
 
     if (!m) {
@@ -780,6 +783,12 @@ const pinGender = document.getElementById('pin-gender');
 const reqGender = document.getElementById('req-gender');
 const genderBtns = document.querySelectorAll('.gender-btn[data-gender]');
 
+function escHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, function(c) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+  });
+}
+
 function selectGender(g) {
   const val = g === 'female' ? 'female' : 'male';
   if (pinGender) pinGender.value = val;
@@ -814,7 +823,7 @@ form.addEventListener('submit', async (e) => {
       return;
     }
     waitPanel.hidden = false;
-    waitInfo.innerHTML = 'Xin chào <strong>' + (d.name || '') + '</strong> (' + (d.role || '') + ').<br>Thông báo đã hiện trên màn hình Giám đốc. Trang sẽ tự động mở ngay khi được duyệt!';
+    waitInfo.innerHTML = 'Xin chào <strong>' + escHtml(d.name) + '</strong> (' + escHtml(d.role) + ').<br>Thông báo đã hiện trên màn hình Giám đốc. Trang sẽ tự động mở ngay khi được duyệt!';
     btnSubmit.textContent = 'Đã gửi · Cập nhật thông tin';
   } catch {
     btnSubmit.textContent = 'Thử gửi lại';

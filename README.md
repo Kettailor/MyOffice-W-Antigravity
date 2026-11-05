@@ -95,16 +95,39 @@ Dự án này được phát triển và mở rộng dựa trên nền tảng d�
 git clone https://github.com/Kettailor/MyOffice-W-Antigravity.git
 cd MyOffice-W-Antigravity
 
-# 2. Cài đặt dependencies
+# 2. Tạo file cấu hình môi trường từ mẫu (tùy chọn)
+cp .env.example .env
+
+# 3. Cài đặt dependencies
 npm install
 
-# 3. Chạy ngay chế độ phát triển (Turbopack + Hot Reload tại http://localhost:4310)
+# 4. Chạy ngay chế độ phát triển (Turbopack + Hot Reload tại http://localhost:4310)
 npm run dev
 ```
 
 - Mở **<http://localhost:4310>** để vào Văn phòng 3D trực quan.
 - Mở **<http://localhost:4310/antigravity>** để sử dụng giao diện **Antigravity Web IDE**.
 - Mở **<http://localhost:4310/?demo>** để trải nghiệm chế độ mô phỏng mà không cần cài đặt Agent.
+
+### ⚙️ Cấu hình `.env` & Chia sẻ Mạng (Wi-Fi Nội bộ / Tailscale)
+
+Sao chép file [`.env.example`](.env.example) thành `.env` để tùy chỉnh cổng, giới hạn tên Wi-Fi hoặc đường dẫn CLI:
+
+```dotenv
+# Cổng HTTP/SSE chính (mặc định: 4310) & Host Bridge (mặc định: 4311)
+PORT=4310
+HOST_BRIDGE_PORT=4311
+
+# Giới hạn tên Wi-Fi (SSID) được phép kết nối từ điện thoại/máy tính bảng:
+# - Đặt "*" (mặc định) để cho phép mọi mạng Wi-Fi mà máy chủ đang kết nối
+# - Hoặc điền tên Wi-Fi cụ thể của bạn (ví dụ: OFFICE_WIFI_SSID=MyHomeWiFi)
+OFFICE_WIFI_SSID=*
+```
+
+Trong giao diện **Cài đặt (`⚙️`) → Truy cập từ xa & Phân quyền**, Giám đốc có thể bật/tắt độc lập từng kênh kết nối thời gian thực mà không cần khởi động lại máy chủ:
+1. **Chia sẻ qua mạng Wi-Fi nội bộ**: Cho phép hoặc khóa tức thì các thiết bị cùng mạng Wi-Fi truy cập vào văn phòng (kèm nút **Bật/Tắt card Wi-Fi** trực tiếp trên máy chủ).
+2. **Chia sẻ qua mạng Tailscale (`100.64.0.0/10`)**: Cho phép hoặc khóa truy cập từ xa qua mạng riêng ảo Tailscale.
+3. **Phân quyền PIN 6 số (`Phó Giám đốc`) & Cổng tên (`Trợ lý Giám đốc`)**: Xem mã QR / đường dẫn kết nối, đổi mã PIN 6 số và cấp quyền từng thư mục dự án (`Workspace`) cho từng Trợ lý.
 
 ### Chạy bằng Docker + On-Demand Host Bridge (Khuyên dùng trên Windows)
 
